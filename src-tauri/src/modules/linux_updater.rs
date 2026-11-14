@@ -63,9 +63,34 @@ pub struct UpdateRuntimeInfo {
     pub updater_target: Option<String>,
 }
 
-/// Map Windows arch + detected installer kind to updater target key.
-/// Unknown/None bundle prefers MSI so MSI installs are not forced onto NSIS packages.
-pub fn windows_updater_target_for_bundle(arch: &str, bundle: Option<&str>) -> String {
+#[cfg(target_os = "windows")]
+fn is_current_exe_dir_writable() -> bool {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            let temp_file = parent.join(format!(
+                ".tauri-updater-write-test-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            if std::fs::write(&temp_file, b"").is_ok() {
+                return std::fs::remove_file(temp_file).is_ok();
+            }
+        }
+    }
+    false
+}
+
+/// Map Windows arch and install state to an updater target key.
+///
+/// The bundle metadata is authoritative when available. Older or unbundled executables can lack
+/// that metadata, so a writable executable directory is used as a fallback signal for a per-user
+/// NSIS installation. Protected directories keep the conservative MSI fallback.
+#[cfg(any(target_os = "windows", test))]
+fn windows_updater_target_for_bundle(
+    arch: &str,
+    bundle: Option<&str>,
+    current_exe_dir_writable: bool,
+) -> String {
     let arch = match arch {
         "x86_64" | "aarch64" => arch,
         _ => "x86_64",
@@ -73,6 +98,7 @@ pub fn windows_updater_target_for_bundle(arch: &str, bundle: Option<&str>) -> St
     let suffix = match bundle {
         Some("nsis") => "nsis",
         Some("msi") => "msi",
+        _ if current_exe_dir_writable => "nsis",
         _ => "msi",
     };
     format!("windows-{}-{}", arch, suffix)
@@ -81,7 +107,7 @@ pub fn windows_updater_target_for_bundle(arch: &str, bundle: Option<&str>) -> St
 #[cfg(target_os = "linux")]
 mod imp {
     use super::{expand_updater_endpoint, LatestManifest, UpdateRuntimeInfo};
-    use crate::modules::{logger, update_checker};
+    use crate::modules::logger;
     use base64::Engine;
     use futures_util::StreamExt;
     use minisign_verify::{PublicKey, Signature};
@@ -94,8 +120,6 @@ mod imp {
     use url::Url;
 
     const UPDATE_PROGRESS_EVENT: &str = "update://linux-progress";
-    const ZH_SECTION_HEADER: &str = "## 更新日志（中文）";
-    const EN_SECTION_HEADER: &str = "## Changelog (English)";
     const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,13 +210,6 @@ mod imp {
         }
 
         let platform = manifest.resolve_platform(&platform_key)?;
-
-        let (release_notes, release_notes_zh) = split_release_notes(&manifest.notes);
-        update_checker::save_pending_update_notes(
-            manifest_version.clone(),
-            release_notes,
-            release_notes_zh,
-        )?;
 
         emit_progress(&app, &manifest_version, "download_started", Some(0));
         logger::log_info(&format!(
@@ -389,36 +406,6 @@ mod imp {
         std::str::from_utf8(&decoded)
             .map(|text| text.to_string())
             .map_err(|error| format!("Decoded updater value is not UTF-8: {}", error))
-    }
-
-    fn split_release_notes(notes: &str) -> (String, String) {
-        let normalized = notes.replace("\r\n", "\n").trim().to_string();
-        if normalized.is_empty() {
-            return (String::new(), String::new());
-        }
-
-        let zh_index = normalized.find(ZH_SECTION_HEADER);
-        let en_index = normalized.find(EN_SECTION_HEADER);
-
-        match (zh_index, en_index) {
-            (Some(zh_pos), Some(en_pos)) if zh_pos < en_pos => (
-                normalized[en_pos + EN_SECTION_HEADER.len()..]
-                    .trim()
-                    .to_string(),
-                normalized[zh_pos + ZH_SECTION_HEADER.len()..en_pos]
-                    .trim()
-                    .to_string(),
-            ),
-            (Some(zh_pos), Some(en_pos)) => (
-                normalized[en_pos + EN_SECTION_HEADER.len()..zh_pos]
-                    .trim()
-                    .to_string(),
-                normalized[zh_pos + ZH_SECTION_HEADER.len()..]
-                    .trim()
-                    .to_string(),
-            ),
-            _ => (normalized.clone(), normalized),
-        }
     }
 
     fn current_platform_key(kind: LinuxInstallKind) -> Result<String, String> {
@@ -659,7 +646,28 @@ mod imp {
             Some(BundleType::Msi) => Some("msi"),
             _ => None,
         };
-        Some(super::windows_updater_target_for_bundle(arch, bundle))
+        let current_exe_dir_writable = bundle
+            .is_none()
+            .then(super::is_current_exe_dir_writable)
+            .unwrap_or(false);
+        let target =
+            super::windows_updater_target_for_bundle(arch, bundle, current_exe_dir_writable);
+
+        tracing::info!(
+            "[Updater] Windows updater target resolved: arch={}, bundle={}, exe_dir_writable={}, target={}",
+            arch,
+            bundle.unwrap_or("unknown"),
+            if bundle.is_some() {
+                "not_checked"
+            } else if current_exe_dir_writable {
+                "true"
+            } else {
+                "false"
+            },
+            target
+        );
+
+        Some(target)
     }
 
     #[cfg(target_os = "macos")]
@@ -711,19 +719,23 @@ mod tests {
     };
 
     #[test]
-    fn windows_unknown_bundle_prefers_msi_target() {
-        assert_eq!(
-            windows_updater_target_for_bundle("x86_64", None),
-            "windows-x86_64-msi"
-        );
-        assert_eq!(
-            windows_updater_target_for_bundle("x86_64", Some("nsis")),
-            "windows-x86_64-nsis"
-        );
-        assert_eq!(
-            windows_updater_target_for_bundle("x86_64", Some("msi")),
-            "windows-x86_64-msi"
-        );
+    fn windows_updater_target_uses_bundle_then_directory_writability() {
+        let cases = [
+            ("x86_64", Some("nsis"), false, "windows-x86_64-nsis"),
+            ("x86_64", Some("nsis"), true, "windows-x86_64-nsis"),
+            ("x86_64", Some("msi"), false, "windows-x86_64-msi"),
+            ("x86_64", Some("msi"), true, "windows-x86_64-msi"),
+            ("x86_64", None, true, "windows-x86_64-nsis"),
+            ("x86_64", None, false, "windows-x86_64-msi"),
+            ("x86", None, true, "windows-x86_64-nsis"),
+        ];
+
+        for (arch, bundle, writable, expected) in cases {
+            assert_eq!(
+                windows_updater_target_for_bundle(arch, bundle, writable),
+                expected
+            );
+        }
     }
 
     #[test]

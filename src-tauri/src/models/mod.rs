@@ -6,11 +6,12 @@ pub mod codex_local_access;
 pub mod cursor;
 pub mod github_copilot;
 pub mod grok;
-pub mod ssh_server;
 pub mod instance;
 pub mod kiro;
+pub mod minimax_code;
 pub mod qoder;
 pub mod quota;
+pub mod ssh_server;
 pub mod token;
 pub mod trae;
 pub mod windsurf;
@@ -20,8 +21,8 @@ pub mod zed;
 
 pub use account::{Account, AccountIndex, AccountSummary, QuotaErrorInfo};
 pub use instance::{
-    DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile, InstanceProfileView,
-    InstanceStore,
+    CodexInstanceApiRoute, CodexInstanceModelRouting, DefaultInstanceSettings, InstanceLaunchMode,
+    InstanceProfile, InstanceProfileView, InstanceStore,
 };
 pub use quota::{CreditInfo, QuotaData};
 pub use token::TokenData;

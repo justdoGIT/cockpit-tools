@@ -1,8 +1,9 @@
+import { useDurableUiSetting } from '../../hooks/useDurableUiSetting';
 import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { confirm as confirmDialog, open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Check, ChevronDown, ChevronRight, Copy, Download, Eye, FileText, Folder, FolderOpen, Minimize2, RefreshCw, RotateCcw, Search, Trash2, Upload, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Copy, Download, Eye, FileText, Folder, FolderOpen, Minimize2, RefreshCw, RotateCcw, Search, Trash2, Upload, Wrench, X } from 'lucide-react';
 import { ModalErrorMessage, useModalErrorState } from '../ModalErrorMessage';
 import { SingleSelectDropdown, type SingleSelectOption } from '../SingleSelectDropdown';
 import { useEscClose } from '../../hooks/useEscClose';
@@ -15,21 +16,31 @@ import type {
   CodexSessionTokenStats,
   CodexSessionTransferOperation,
   CodexSessionTransferProgress,
+  CodexSessionTrashSummary,
   CodexTrashedSessionRecord,
 } from '../../types/codex';
 import type { InstanceProfile } from '../../types/instance';
 import { useCodexInstanceStore } from '../../stores/useCodexInstanceStore';
+import { validateSessionImportPaths } from '../../services/codexInstanceService';
 import {
   filterCodexSessionsByKind,
   type CodexSessionKindFilter,
 } from '../../utils/codexSessionFilters';
 import { CodexSessionVisibilityRepairModal } from './CodexSessionVisibilityRepairModal';
+import {
+  CodexSessionUsagePanel,
+  CodexSessionUsageSummary,
+} from './CodexSessionUsagePanel';
+
+type SessionManagerView = 'list' | 'usage';
 
 type MessageState = { text: string; tone?: 'error' };
 type SessionTokenStatsMap = Record<string, CodexSessionTokenStats>;
 
 type SessionGroup = {
   cwd: string;
+  /** 官方客户端项目名（可重命名），优先用作分组标题。 */
+  projectName?: string | null;
   sessions: CodexSessionRecord[];
   latestUpdatedAt: number;
 };
@@ -48,32 +59,23 @@ type SessionTransferTask = {
   error?: string;
 };
 
-function readCodexInstanceSortPreference(): {
-  field: InstanceSortField;
-  direction: InstanceSortDirection;
-} {
-  const sortField = localStorage.getItem('agtools.codex.instances.sort_field');
-  const sortDirection = localStorage.getItem('agtools.codex.instances.sort_direction');
-  return {
-    field: sortField === 'lastLaunchedAt' ? 'lastLaunchedAt' : 'createdAt',
-    direction: sortDirection === 'desc' ? 'desc' : 'asc',
-  };
-}
-
-function sortInstancesForDisplay(instances: InstanceProfile[]): InstanceProfile[] {
-  const sortPreference = readCodexInstanceSortPreference();
+function sortInstancesForDisplay(
+  instances: InstanceProfile[],
+  field: InstanceSortField,
+  direction: InstanceSortDirection,
+): InstanceProfile[] {
   return [...instances].sort((left, right) => {
     if (left.isDefault && !right.isDefault) return -1;
     if (!left.isDefault && right.isDefault) return 1;
     const leftValue =
-      sortPreference.field === 'createdAt'
+      field === 'createdAt'
         ? left.createdAt || 0
         : left.lastLaunchedAt || 0;
     const rightValue =
-      sortPreference.field === 'createdAt'
+      field === 'createdAt'
         ? right.createdAt || 0
         : right.lastLaunchedAt || 0;
-    return sortPreference.direction === 'asc'
+    return direction === 'asc'
       ? leftValue - rightValue
       : rightValue - leftValue;
   });
@@ -88,13 +90,17 @@ function buildGroups(sessions: CodexSessionRecord[]): SessionGroup[] {
   });
 
   return Array.from(groups.entries())
-    .map(([cwd, groupSessions]) => ({
-      cwd,
-      sessions: [...groupSessions].sort(
-        (left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || left.title.localeCompare(right.title),
-      ),
-      latestUpdatedAt: Math.max(...groupSessions.map((item) => item.updatedAt ?? 0), 0),
-    }))
+    .map(([cwd, groupSessions]) => {
+      const projectName = groupSessions.find((session) => session.projectName?.trim())?.projectName ?? null;
+      return {
+        cwd,
+        projectName,
+        sessions: [...groupSessions].sort(
+          (left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || left.title.localeCompare(right.title),
+        ),
+        latestUpdatedAt: Math.max(...groupSessions.map((item) => item.updatedAt ?? 0), 0),
+      };
+    })
     .sort(
       (left, right) =>
         right.latestUpdatedAt - left.latestUpdatedAt || left.cwd.localeCompare(right.cwd, 'zh-CN'),
@@ -129,7 +135,9 @@ function formatRelativeTime(value: number | null | undefined, isZh: boolean): st
   return isZh ? `${weeks} 周` : `${weeks}w`;
 }
 
-function resolveGroupLabel(cwd: string): string {
+function resolveGroupLabel(cwd: string, projectName?: string | null): string {
+  const trimmedProjectName = projectName?.trim();
+  if (trimmedProjectName) return trimmedProjectName;
   const normalized = cwd.replace(/\\/g, '/').replace(/\/$/, '');
   const parts = normalized.split('/').filter(Boolean);
   return parts[parts.length - 1] || cwd;
@@ -262,7 +270,9 @@ export function CodexSessionManager() {
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
-  const [showRepairVisibilityModal, setShowRepairVisibilityModal] = useState(false);
+  const exportPreviewActive = useRef(false);
+  const importPreviewActive = useRef(false);
+  const [repairDialogKind, setRepairDialogKind] = useState<'visibility' | 'history' | null>(null);
   const [trashedSessions, setTrashedSessions] = useState<CodexTrashedSessionRecord[]>([]);
   const [selectedTrashIds, setSelectedTrashIds] = useState<string[]>([]);
   const [exportPreview, setExportPreview] = useState<CodexSessionExportPreview | null>(null);
@@ -273,6 +283,7 @@ export function CodexSessionManager() {
   const [exportSelectionFilter, setExportSelectionFilter] = useState<ExportSelectionFilter>('all');
   const [importPreview, setImportPreview] = useState<CodexSessionImportPreview | null>(null);
   const [importTargetInstanceId, setImportTargetInstanceId] = useState('');
+  const [importCwdMappings, setImportCwdMappings] = useState<Record<string, string>>({});
   const [selectedImportIds, setSelectedImportIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -296,6 +307,12 @@ export function CodexSessionManager() {
   const [titleSearchInput, setTitleSearchInput] = useState('');
   const [appliedTitleSearch, setAppliedTitleSearch] = useState('');
   const [sessionKindFilter, setSessionKindFilter] = useState<CodexSessionKindFilter>('conversation');
+  const [sessionView, setSessionView] = useState<SessionManagerView>('list');
+  const [sessionLocationTarget, setSessionLocationTarget] = useState<{
+    session: CodexSessionRecord;
+    action: 'location' | 'rollout';
+  } | null>(null);
+  const [openingSessionLocation, setOpeningSessionLocation] = useState(false);
   const {
     message: restoreModalError,
     scrollKey: restoreModalErrorScrollKey,
@@ -311,10 +328,24 @@ export function CodexSessionManager() {
     scrollKey: importModalErrorScrollKey,
     set: setImportModalError,
   } = useModalErrorState();
+  const [importPathErrors, setImportPathErrors] = useState<Record<string, string>>({});
+  const importPathInputs = useRef<Record<string, HTMLInputElement | null>>({});
+  useEffect(() => {
+    const source = Object.keys(importPathErrors)[0];
+    if (!source) return;
+    const input = importPathInputs.current[source];
+    input?.scrollIntoView({ block: 'center' });
+    input?.focus();
+  }, [importPathErrors]);
   const {
     message: exportModalError,
     scrollKey: exportModalErrorScrollKey,
     set: setExportModalError,
+  } = useModalErrorState();
+  const {
+    message: sessionLocationError,
+    scrollKey: sessionLocationErrorScrollKey,
+    set: setSessionLocationError,
   } = useModalErrorState();
   const hasInitializedExpandedGroupsRef = useRef(false);
   const loadSessionsPromiseRef = useRef<Promise<void> | null>(null);
@@ -361,7 +392,13 @@ export function CodexSessionManager() {
       return next.length === previous.length ? previous : next;
     });
   }, [visibleSessions]);
-  const orderedInstances = useMemo(() => sortInstancesForDisplay(instances), [instances]);
+  const instanceSortField = useDurableUiSetting('agtools.codex.instances.sort_field') === 'lastLaunchedAt'
+    ? 'lastLaunchedAt' : 'createdAt';
+  const instanceSortDirection = useDurableUiSetting('agtools.codex.instances.sort_direction') === 'desc' ? 'desc' : 'asc';
+  const orderedInstances = useMemo(
+    () => sortInstancesForDisplay(instances, instanceSortField, instanceSortDirection),
+    [instances, instanceSortField, instanceSortDirection],
+  );
   const targetInstanceOptions = useMemo<SingleSelectOption[]>(
     () => [
       {
@@ -411,6 +448,17 @@ export function CodexSessionManager() {
   const importReadyItems = useMemo(
     () => importPreview?.items.filter((item) => item.status === 'ready') ?? [],
     [importPreview],
+  );
+  const importSourceCwds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          importReadyItems
+            .map((item) => item.cwd.trim())
+            .filter((cwd) => cwd.length > 0),
+        ),
+      ).sort((left, right) => left.localeCompare(right)),
+    [importReadyItems],
   );
   const exportPreviewItems = useMemo(
     () => exportPreview?.items ?? [],
@@ -721,9 +769,9 @@ export function CodexSessionManager() {
   };
 
   const toggleGroupSelection = (sessionIds: string[]) => {
-    const allSelected = sessionIds.every((id) => selectedIdSet.has(id));
     setSelectedIds((prev) => {
       const next = new Set(prev);
+      const allSelected = sessionIds.every((id) => next.has(id));
       if (allSelected) {
         sessionIds.forEach((id) => next.delete(id));
       } else {
@@ -780,6 +828,8 @@ export function CodexSessionManager() {
       const latestInstances = await refreshInstances();
       const targetCandidates = sortInstancesForDisplay(
         latestInstances.length > 0 ? latestInstances : instances,
+        instanceSortField,
+        instanceSortDirection,
       );
       const firstMissingTarget = targetCandidates.find((instance) =>
         selectedSessions.some((session) =>
@@ -837,10 +887,7 @@ export function CodexSessionManager() {
       }
 
       const confirmed = await confirmDialog(
-        t(
-          'codex.sessionManager.confirm.syncMessage',
-          '会将缺失会话的 rollout、session_index 条目和会话文件时间同步到所有实例，并对同 ID 会话做事件级合并，随后触发官方 Codex 重建会话索引；写入前会备份目标文件。确认继续？',
-        ),
+        t('codex.sessionManager.confirm.syncMessage'),
         {
           title: t('codex.sessionManager.actions.syncSessions', '同步会话'),
           okLabel: t('common.confirm', '确认'),
@@ -910,9 +957,62 @@ export function CodexSessionManager() {
     setAppliedTitleSearch('');
   };
 
-  const handleRepairVisibility = async () => {
+  const handleOpenRepair = (kind: 'visibility' | 'history') => {
     setMessage(null);
-    setShowRepairVisibilityModal(true);
+    setRepairDialogKind(kind);
+  };
+
+  /** 用翻译键组装“移到废纸篓”结果提示；后端未返回结构化计数时回退到后端文案。 */
+  const buildTrashSummaryText = (summary: CodexSessionTrashSummary): string => {
+    const hasStructuredCounts =
+      summary.runningInstanceCount !== undefined
+      || summary.officialDeleteFallbackInstanceCount !== undefined
+      || summary.metadataRebuildFailedInstanceCount !== undefined;
+    if (!hasStructuredCounts && summary.message.trim()) {
+      return summary.message;
+    }
+    if (summary.trashedSessionCount === 0) {
+      return t('codex.sessionManager.messages.trashSummaryEmpty', '所选会话在当前实例集合中不存在，无需处理');
+    }
+
+    const separator = isZh ? '；' : '; ';
+    const fallbackInstanceCount = summary.officialDeleteFallbackInstanceCount ?? 0;
+    const rebuildFailedInstanceCount = summary.metadataRebuildFailedInstanceCount ?? 0;
+    const runningInstanceCount = summary.runningInstanceCount ?? 0;
+    const parts = [
+      fallbackInstanceCount > 0
+        ? t(
+          'codex.sessionManager.messages.trashSummaryFallback',
+          '已将 {{count}} 条会话移到废纸篓，并已触发官方 Codex 重建会话索引',
+          { count: summary.trashedSessionCount },
+        )
+        : t(
+          'codex.sessionManager.messages.trashSummary',
+          '已将 {{count}} 条会话移到废纸篓，并已在官方 Codex 中删除',
+          { count: summary.trashedSessionCount },
+        ),
+    ];
+    if (runningInstanceCount > 0) {
+      parts.push(t(
+        'codex.sessionManager.messages.trashSummaryRunningHint',
+        '运行中的实例可能需要刷新或重启后显示',
+      ));
+    }
+    if (fallbackInstanceCount > 0) {
+      parts.push(t(
+        'codex.sessionManager.messages.trashSummaryFallbackHint',
+        '{{count}} 个实例的官方删除未完成，已按文件方式移除，Codex 重启后会同步',
+        { count: fallbackInstanceCount },
+      ));
+    }
+    if (rebuildFailedInstanceCount > 0) {
+      parts.push(t(
+        'codex.sessionManager.messages.trashSummaryRebuildFailedHint',
+        '{{count}} 个实例的官方侧边栏索引重建未完成，重启 Codex 后会重新加载',
+        { count: rebuildFailedInstanceCount },
+      ));
+    }
+    return parts.join(separator);
   };
 
   const handleMoveToTrash = async () => {
@@ -939,7 +1039,7 @@ export function CodexSessionManager() {
     setMessage(null);
     try {
       const summary = await moveSessionsToTrashAcrossInstances(selectedIds);
-      setMessage({ text: summary.message });
+      setMessage({ text: buildTrashSummaryText(summary) });
       setSelectedIds([]);
       await loadSessions();
       if (showRestoreModal) {
@@ -1065,23 +1165,17 @@ export function CodexSessionManager() {
 
   const previewImportPackage = useCallback(
     async (filePath: string, targetInstanceId: string) => {
-      setLoadingImportPreview(true);
-      setImportModalError(null);
-      try {
-        const preview = await previewSessionImport(filePath, targetInstanceId);
-        setImportPreview(preview);
-        setImportTargetInstanceId(preview.targetInstanceId);
-        setSelectedImportIds(
-          preview.items
-            .filter((item) => item.status === 'ready')
-            .map((item) => item.sessionId),
-        );
-        return preview;
-      } finally {
-        setLoadingImportPreview(false);
-      }
+      const preview = await previewSessionImport(filePath, targetInstanceId);
+      if (!importPreviewActive.current) return;
+      setImportPreview(preview);
+      setImportTargetInstanceId(preview.targetInstanceId);
+      setSelectedImportIds(
+        preview.items
+          .filter((item) => item.status === 'ready')
+          .map((item) => item.sessionId),
+      );
     },
-    [previewSessionImport, setImportModalError],
+    [previewSessionImport],
   );
 
   const resetExportModalSelection = useCallback(() => {
@@ -1147,6 +1241,7 @@ export function CodexSessionManager() {
     }
 
     setMessage(null);
+    exportPreviewActive.current = true;
     setShowExportModal(true);
     setExportPreview(null);
     setExportPath('');
@@ -1155,17 +1250,19 @@ export function CodexSessionManager() {
     setLoadingExportPreview(true);
     try {
       const preview = await previewSessionExport(selectedIds);
+      if (!exportPreviewActive.current) return;
       setExportPreview(preview);
       setSelectedExportIds(preview.items.map((item) => item.sessionId));
     } catch (error) {
-      setExportModalError(String(error));
+      if (exportPreviewActive.current) setExportModalError(String(error));
     } finally {
       setLoadingExportPreview(false);
     }
   };
 
   const handleCloseExportModal = () => {
-    if (loadingExportPreview || exporting) return;
+    if (exporting) return;
+    exportPreviewActive.current = false;
     setShowExportModal(false);
     setExportPreview(null);
     setExportPath('');
@@ -1266,14 +1363,21 @@ export function CodexSessionManager() {
     if (!filePath) return;
 
     setMessage(null);
+    importPreviewActive.current = true;
+    setLoadingImportPreview(true);
     setShowImportModal(true);
     setImportPreview(null);
+    setImportCwdMappings({});
+    setImportPathErrors({});
     setSelectedImportIds([]);
     setImportModalError(null);
     try {
       const latestInstances = await refreshInstances();
+      if (!importPreviewActive.current) return;
       const targetCandidates = sortInstancesForDisplay(
         latestInstances.length > 0 ? latestInstances : instances,
+        instanceSortField,
+        instanceSortDirection,
       );
       const defaultTarget = targetCandidates.find((instance) => instance.isDefault) ?? targetCandidates[0];
       const targetInstanceId = importTargetInstanceId || defaultTarget?.id || '';
@@ -1283,14 +1387,19 @@ export function CodexSessionManager() {
       }
       await previewImportPackage(filePath, targetInstanceId);
     } catch (error) {
-      setImportModalError(String(error));
+      if (importPreviewActive.current) setImportModalError(String(error));
+    } finally {
+      setLoadingImportPreview(false);
     }
   };
 
   const handleCloseImportModal = () => {
-    if (importing || loadingImportPreview) return;
+    if (importing) return;
+    importPreviewActive.current = false;
     setShowImportModal(false);
     setImportPreview(null);
+    setImportCwdMappings({});
+    setImportPathErrors({});
     setSelectedImportIds([]);
     setImportModalError(null);
   };
@@ -1299,13 +1408,17 @@ export function CodexSessionManager() {
 
   const handleChangeImportTarget = async (targetInstanceId: string) => {
     setImportTargetInstanceId(targetInstanceId);
+    setImportPathErrors({});
     setImportModalError(null);
     const filePath = importPreview?.importFilePath;
     if (!filePath || !targetInstanceId) return;
+    setLoadingImportPreview(true);
     try {
       await previewImportPackage(filePath, targetInstanceId);
     } catch (error) {
-      setImportModalError(String(error));
+      if (importPreviewActive.current) setImportModalError(String(error));
+    } finally {
+      setLoadingImportPreview(false);
     }
   };
 
@@ -1347,6 +1460,26 @@ export function CodexSessionManager() {
 
     setImporting(true);
     setImportModalError(null);
+    setImportPathErrors({});
+    const selectedSources = new Set(importReadyItems
+      .filter((item) => selectedImportIds.includes(item.sessionId)).map((item) => item.cwd.trim()));
+    const cwdMappings = Object.fromEntries(Object.entries(importCwdMappings)
+      .map(([source, target]) => [source.trim(), target.trim()] as const)
+      .filter(([source, target]) => selectedSources.has(source) && target.length > 0 && source !== target));
+    try {
+      if (Object.keys(cwdMappings).length > 0) {
+        const errors = await validateSessionImportPaths(cwdMappings);
+        if (Object.keys(errors).length > 0) {
+          setImportPathErrors(errors);
+          setImporting(false);
+          return;
+        }
+      }
+    } catch (error) {
+      setImportModalError(String(error));
+      setImporting(false);
+      return;
+    }
     const transferId = createSessionTransferId();
     transferTaskIdRef.current = transferId;
     setTransferTask({
@@ -1362,6 +1495,7 @@ export function CodexSessionManager() {
         importPreview.importFilePath,
         importTargetInstanceId,
         selectedImportIds,
+        cwdMappings,
         transferId,
       );
       setTransferTask((current) =>
@@ -1418,65 +1552,78 @@ export function CodexSessionManager() {
     return null;
   };
 
-  const handleOpenSessionLocation = async (
-    event: MouseEvent<HTMLButtonElement>,
+  const openSessionAtInstance = async (
     session: CodexSessionRecord,
+    action: 'location' | 'rollout',
+    instanceId: string | null,
+    insidePicker: boolean,
   ) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setMessage(null);
+    setOpeningSessionLocation(true);
+    if (insidePicker) {
+      setSessionLocationError(null);
+    }
     try {
-      if (session.locations.length > 1) {
-        // Require explicit choice when ambiguous (#1510).
-        const chosen = window.prompt(
-          t(
-            'codex.sessionManager.pickInstancePrompt',
-            '该会话存在于多个实例，请输入实例 ID（可在位置列查看）：',
-          ),
-          session.locations[0]?.instanceId ?? '',
-        );
-        if (!chosen?.trim()) {
-          return;
-        }
-        await openSessionLocation(session.sessionId, chosen.trim());
+      if (action === 'location') {
+        await openSessionLocation(session.sessionId, instanceId);
       } else {
-        await openSessionLocation(
-          session.sessionId,
-          pickSessionInstanceId(session),
-        );
+        await openSessionRollout(session.sessionId, instanceId);
       }
+      setSessionLocationTarget(null);
+      setSessionLocationError(null);
     } catch (error) {
-      setMessage({ text: String(error), tone: 'error' });
+      const errorText = String(error);
+      if (insidePicker) {
+        setSessionLocationError(errorText);
+        return;
+      }
+      setMessage({ text: errorText, tone: 'error' });
+    } finally {
+      setOpeningSessionLocation(false);
     }
   };
 
-  const handleOpenSessionRollout = async (
+  const handleOpenSessionTarget = (
     event: MouseEvent<HTMLButtonElement>,
     session: CodexSessionRecord,
+    action: 'location' | 'rollout',
   ) => {
     event.preventDefault();
     event.stopPropagation();
     setMessage(null);
-    try {
-      let instanceId = pickSessionInstanceId(session);
-      if (session.locations.length > 1) {
-        const chosen = window.prompt(
-          t(
-            'codex.sessionManager.pickInstancePrompt',
-            '该会话存在于多个实例，请输入实例 ID（可在位置列查看）：',
-          ),
-          session.locations[0]?.instanceId ?? '',
-        );
-        if (!chosen?.trim()) {
-          return;
-        }
-        instanceId = chosen.trim();
-      }
-      await openSessionRollout(session.sessionId, instanceId);
-    } catch (error) {
-      setMessage({ text: String(error), tone: 'error' });
+    if (session.locations.length > 1) {
+      // Require explicit choice when ambiguous (#1510); use an in-app picker so the
+      // instance name shown in the location column is directly selectable (#2129).
+      setSessionLocationError(null);
+      setSessionLocationTarget({ session, action });
+      return;
     }
+    void openSessionAtInstance(session, action, pickSessionInstanceId(session), false);
   };
+
+  const handleOpenSessionLocation = (
+    event: MouseEvent<HTMLButtonElement>,
+    session: CodexSessionRecord,
+  ) => {
+    handleOpenSessionTarget(event, session, 'location');
+  };
+
+  const handleOpenSessionRollout = (
+    event: MouseEvent<HTMLButtonElement>,
+    session: CodexSessionRecord,
+  ) => {
+    handleOpenSessionTarget(event, session, 'rollout');
+  };
+
+  const handleCloseSessionLocationPicker = () => {
+    if (openingSessionLocation) return;
+    setSessionLocationTarget(null);
+    setSessionLocationError(null);
+  };
+
+  useEscClose(
+    Boolean(sessionLocationTarget) && !openingSessionLocation,
+    handleCloseSessionLocationPicker,
+  );
 
   const getImportStatusLabel = (item: CodexSessionImportPreviewItem): string => {
     if (item.status === 'ready') {
@@ -1516,6 +1663,12 @@ export function CodexSessionManager() {
 
   return (
     <section className="codex-session-manager">
+      {sessionView === 'usage' ? (
+        <CodexSessionUsagePanel onBack={() => setSessionView('list')} />
+      ) : null}
+      {sessionView === 'list' ? (
+      <>
+      <CodexSessionUsageSummary onOpenDetail={() => setSessionView('usage')} />
       <div className="codex-session-manager__header">
         <div className="codex-session-manager__search">
           <label className="codex-session-search-field">
@@ -1551,56 +1704,6 @@ export function CodexSessionManager() {
           />
         </div>
         <div className="codex-session-manager__actions">
-          <div className="codex-session-manager__action-group is-selection">
-            <button
-              className="btn btn-secondary codex-session-manager__action-button"
-              type="button"
-              onClick={toggleAllSessions}
-              disabled={loading || allSessionIds.length === 0}
-              title={
-                allSessionsSelected
-                  ? t('codex.sessionManager.actions.clearSelectedSessions', '取消全选')
-                  : t('codex.sessionManager.actions.selectAllSessions', '全选全部会话')
-              }
-              aria-label={
-                allSessionsSelected
-                  ? t('codex.sessionManager.actions.clearSelectedSessions', '取消全选')
-                  : t('codex.sessionManager.actions.selectAllSessions', '全选全部会话')
-              }
-            >
-              {allSessionsSelected ? <X size={14} /> : <Check size={14} />}
-              {allSessionsSelected
-                ? t('codex.sessionManager.actions.clearSelectedSessions', '取消全选')
-                : t('codex.sessionManager.actions.selectAllSessions', '全选全部会话')}
-            </button>
-            <button
-              className="btn btn-secondary codex-session-manager__action-button"
-              type="button"
-              onClick={() => void handleOpenSyncTargetModal()}
-              disabled={syncing || syncingToInstance || repairingVisibility || deleting || loading || exporting || selectedIds.length === 0}
-            >
-              <Copy size={14} className={syncingToInstance ? 'icon-spin' : undefined} />
-              {t('codex.sessionManager.actions.copyToInstance', '复制到实例')} ({selectedIds.length})
-            </button>
-            <button
-              className="btn btn-secondary codex-session-manager__action-button"
-              type="button"
-              onClick={() => void handleExportSessions()}
-              disabled={syncing || syncingToInstance || repairingVisibility || deleting || loading || loadingExportPreview || exporting || selectedIds.length === 0}
-            >
-              <Download size={14} className={loadingExportPreview || exporting ? 'icon-spin' : undefined} />
-              {t('codex.sessionManager.actions.exportSessions', '导出会话')} ({selectedIds.length})
-            </button>
-            <button
-              className="btn btn-danger codex-session-manager__action-button"
-              type="button"
-              onClick={() => void handleMoveToTrash()}
-              disabled={deleting || loading || syncing || syncingToInstance || repairingVisibility || selectedIds.length === 0}
-            >
-              <Trash2 size={14} />
-              {t('codex.sessionManager.actions.moveToTrash', '移到废纸篓')} ({selectedIds.length})
-            </button>
-          </div>
           <div className="codex-session-manager__action-group is-maintenance">
             <button
               className="btn btn-secondary codex-session-manager__action-button"
@@ -1628,11 +1731,20 @@ export function CodexSessionManager() {
             <button
               className="btn btn-secondary codex-session-manager__action-button"
               type="button"
-              onClick={() => void handleRepairVisibility()}
+              onClick={() => handleOpenRepair('visibility')}
               disabled={repairingVisibility || loading || deleting || syncing || syncingToInstance || exporting}
             >
               <Eye size={14} />
               {t('codex.sessionManager.actions.repairVisibility', '修复可见性')}
+            </button>
+            <button
+              className="btn btn-secondary codex-session-manager__action-button"
+              type="button"
+              onClick={() => handleOpenRepair('history')}
+              disabled={repairingVisibility || loading || deleting || syncing || syncingToInstance || exporting}
+            >
+              <Wrench size={14} />
+              {t('codex.sessionManager.actions.repairIndex')}
             </button>
             <button
               className="btn btn-secondary codex-session-manager__action-button"
@@ -1653,6 +1765,72 @@ export function CodexSessionManager() {
               {t('common.refresh', '刷新')}
             </button>
           </div>
+          {allSessionIds.length > 0 && (
+            <div className="codex-session-manager__action-group is-selection">
+              <button
+                className="btn btn-secondary codex-session-manager__action-button"
+                type="button"
+                onClick={toggleAllSessions}
+                disabled={loading || allSessionIds.length === 0}
+                title={
+                  allSessionsSelected
+                    ? t('codex.sessionManager.actions.clearSelectedSessions', '取消全选')
+                    : t('codex.sessionManager.actions.selectAllSessions', '全选全部会话')
+                }
+                aria-label={
+                  allSessionsSelected
+                    ? t('codex.sessionManager.actions.clearSelectedSessions', '取消全选')
+                    : t('codex.sessionManager.actions.selectAllSessions', '全选全部会话')
+                }
+              >
+                {allSessionsSelected ? <X size={14} /> : <Check size={14} />}
+                <span className="codex-session-manager__selection-toggle-label" aria-hidden="true">
+                  <span style={{ visibility: allSessionsSelected ? 'hidden' : 'visible' }}>
+                    {t('codex.sessionManager.actions.selectAllSessions', '全选全部会话')}
+                  </span>
+                  <span style={{ visibility: allSessionsSelected ? 'visible' : 'hidden' }}>
+                    {t('codex.sessionManager.actions.clearSelectedSessions', '取消全选')}
+                  </span>
+                </span>
+              </button>
+              <button
+                className="btn btn-secondary codex-session-manager__action-button"
+                type="button"
+                onClick={() => void handleOpenSyncTargetModal()}
+                disabled={syncing || syncingToInstance || repairingVisibility || deleting || loading || exporting || selectedIds.length === 0}
+              >
+                <Copy size={14} className={syncingToInstance ? 'icon-spin' : undefined} />
+                {t('codex.sessionManager.actions.copyToInstance', '复制到实例')}
+                <span className="codex-session-manager__action-count" style={{ minWidth: `${String(allSessionIds.length).length + 2}ch` }}>
+                  ({selectedIds.length})
+                </span>
+              </button>
+              <button
+                className="btn btn-secondary codex-session-manager__action-button"
+                type="button"
+                onClick={() => void handleExportSessions()}
+                disabled={syncing || syncingToInstance || repairingVisibility || deleting || loading || loadingExportPreview || exporting || selectedIds.length === 0}
+              >
+                <Download size={14} className={loadingExportPreview || exporting ? 'icon-spin' : undefined} />
+                {t('codex.sessionManager.actions.exportSessions', '导出会话')}
+                <span className="codex-session-manager__action-count" style={{ minWidth: `${String(allSessionIds.length).length + 2}ch` }}>
+                  ({selectedIds.length})
+                </span>
+              </button>
+              <button
+                className="btn btn-danger codex-session-manager__action-button"
+                type="button"
+                onClick={() => void handleMoveToTrash()}
+                disabled={deleting || loading || syncing || syncingToInstance || repairingVisibility || selectedIds.length === 0}
+              >
+                <Trash2 size={14} />
+                {t('codex.sessionManager.actions.moveToTrash', '移到废纸篓')}
+                <span className="codex-session-manager__action-count" style={{ minWidth: `${String(allSessionIds.length).length + 2}ch` }}>
+                  ({selectedIds.length})
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1752,7 +1930,7 @@ export function CodexSessionManager() {
                       onClick={() => toggleGroupExpanded(group.cwd)}
                       title={group.cwd}
                     >
-                      {resolveGroupLabel(group.cwd)}
+                      {resolveGroupLabel(group.cwd, group.projectName)}
                     </button>
                   </div>
                   <span className="codex-session-folder__time">
@@ -1839,6 +2017,8 @@ export function CodexSessionManager() {
             );
           })}
         </div>
+      ) : null}
+      </>
       ) : null}
 
       {showSyncTargetModal ? (
@@ -1928,7 +2108,7 @@ export function CodexSessionManager() {
                 className="modal-close"
                 type="button"
                 onClick={handleCloseExportModal}
-                disabled={loadingExportPreview || exporting}
+                disabled={exporting}
                 aria-label={t('common.close', '关闭')}
               >
                 <X size={18} />
@@ -2016,6 +2196,12 @@ export function CodexSessionManager() {
                       })}
                     </div>
                   ) : null}
+                  {exportPreview.unavailable?.map((item) => (
+                    <div key={item.sessionId} className="codex-session-export-modal__notice">
+                      <strong>{item.title}</strong>
+                      <div>{item.reason}</div>
+                    </div>
+                  ))}
                   {exportAvailableItems.length > 0 ? (
                     <>
                       <div className="codex-session-export-filter">
@@ -2172,7 +2358,7 @@ export function CodexSessionManager() {
                 className="btn btn-secondary"
                 type="button"
                 onClick={handleCloseExportModal}
-                disabled={loadingExportPreview || exporting}
+                disabled={exporting}
               >
                 {t('common.cancel', '取消')}
               </button>
@@ -2199,7 +2385,7 @@ export function CodexSessionManager() {
                 className="modal-close"
                 type="button"
                 onClick={handleCloseImportModal}
-                disabled={importing || loadingImportPreview}
+                disabled={importing}
                 aria-label={t('common.close', '关闭')}
               >
                 <X size={18} />
@@ -2250,6 +2436,56 @@ export function CodexSessionManager() {
                       : t('codex.sessionManager.importModal.selectReady', '选择可导入')}
                   </button>
                 </div>
+              ) : null}
+              {!loadingImportPreview && importSourceCwds.length > 0 ? (
+                <section className="codex-session-import-mappings">
+                  <div className="codex-session-import-mappings__intro">
+                    <strong>
+                      {t('codex.sessionManager.importModal.cwdMappingTitle', '项目路径映射（可选）')}
+                    </strong>
+                    <p>
+                      {t(
+                        'codex.sessionManager.importModal.cwdMappingHint',
+                        '将源工作目录映射到此电脑上已添加到 Codex 的项目路径；留空则保留源路径。',
+                      )}
+                    </p>
+                  </div>
+                  <div className="codex-session-import-mappings__list">
+                    {importSourceCwds.map((sourceCwd) => (
+                      <label className="codex-session-import-mappings__row" key={sourceCwd}>
+                        <code className="codex-session-import-mappings__source" title={sourceCwd}>
+                          {sourceCwd}
+                        </code>
+                        <input
+                          className="codex-session-import-mappings__target"
+                          ref={(input) => { importPathInputs.current[sourceCwd.trim()] = input; }}
+                          aria-invalid={Boolean(importPathErrors[sourceCwd.trim()])}
+                          type="text"
+                          value={importCwdMappings[sourceCwd] ?? ''}
+                          placeholder={t(
+                            'codex.sessionManager.importModal.cwdTargetPlaceholder',
+                            '输入此电脑上的项目绝对路径',
+                          )}
+                          aria-label={`${t('codex.sessionManager.importModal.cwdMappingTitle', '项目路径映射')}: ${sourceCwd}`}
+                          disabled={importing}
+                          onChange={(event) => {
+                            setImportPathErrors({});
+                            setImportModalError(null);
+                            setImportCwdMappings((previous) => ({
+                              ...previous,
+                              [sourceCwd]: event.target.value,
+                            }));
+                          }}
+                        />
+                        {importPathErrors[sourceCwd.trim()] ? (
+                          <span className="codex-session-import-mappings__error" role="alert">
+                            {t(`codex.sessionManager.importModal.${importPathErrors[sourceCwd.trim()]}`)}
+                          </span>
+                        ) : null}
+                      </label>
+                    ))}
+                  </div>
+                </section>
               ) : null}
               {loadingImportPreview ? (
                 <div className="codex-session-restore-modal__empty">
@@ -2308,7 +2544,7 @@ export function CodexSessionManager() {
                 className="btn btn-secondary"
                 type="button"
                 onClick={handleCloseImportModal}
-                disabled={importing || loadingImportPreview}
+                disabled={importing}
               >
                 {t('common.cancel', '取消')}
               </button>
@@ -2392,10 +2628,11 @@ export function CodexSessionManager() {
       ) : null}
 
       <CodexSessionVisibilityRepairModal
-        open={showRepairVisibilityModal}
+        open={repairDialogKind !== null}
+        repairKind={repairDialogKind ?? 'visibility'}
         selectedSessionIds={selectedIds}
         totalSessionCount={allSessionIds.length}
-        onClose={() => setShowRepairVisibilityModal(false)}
+        onClose={() => setRepairDialogKind(null)}
         onRunningChange={setRepairingVisibility}
         onRepaired={() => loadSessions()}
       />
@@ -2546,6 +2783,81 @@ export function CodexSessionManager() {
               >
                 <RotateCcw size={14} className={restoring ? 'icon-spin' : undefined} />
                 {t('codex.sessionManager.restoreModal.restoreAction', '恢复选中会话')} ({selectedTrashIds.length})
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {sessionLocationTarget ? (
+        <div className="modal-overlay">
+          <div
+            className="modal codex-session-location-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h2>{t('codex.sessionManager.locationPicker.title', '选择实例')}</h2>
+              <button
+                className="modal-close"
+                type="button"
+                onClick={handleCloseSessionLocationPicker}
+                disabled={openingSessionLocation}
+                aria-label={t('common.close', '关闭')}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <ModalErrorMessage
+                message={sessionLocationError}
+                scrollKey={sessionLocationErrorScrollKey}
+              />
+              <p className="codex-session-location-modal__hint">
+                {sessionLocationTarget.action === 'rollout'
+                  ? t(
+                      'codex.sessionManager.locationPicker.rolloutHint',
+                      '该会话存在于多个实例，请选择要打开会话文件的实例：',
+                    )
+                  : t(
+                      'codex.sessionManager.locationPicker.hint',
+                      '该会话存在于多个实例，请选择要打开文件所在位置的实例：',
+                    )}
+              </p>
+              <div className="codex-session-location-modal__list">
+                {sessionLocationTarget.session.locations.map((location) => (
+                  <button
+                    key={location.instanceId}
+                    className="codex-session-location-modal__option"
+                    type="button"
+                    onClick={() =>
+                      void openSessionAtInstance(
+                        sessionLocationTarget.session,
+                        sessionLocationTarget.action,
+                        location.instanceId,
+                        true,
+                      )
+                    }
+                    disabled={openingSessionLocation}
+                  >
+                    <span className="codex-session-location-modal__option-name">
+                      {location.instanceName}
+                    </span>
+                    {location.running ? (
+                      <span className="codex-session-location-modal__option-badge">
+                        {t('codex.sessionManager.locationPicker.running', '运行中')}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={handleCloseSessionLocationPicker}
+                disabled={openingSessionLocation}
+              >
+                {t('common.cancel', '取消')}
               </button>
             </div>
           </div>

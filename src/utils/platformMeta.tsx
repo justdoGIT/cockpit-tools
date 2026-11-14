@@ -14,6 +14,7 @@ import { CodebuddyIcon } from '../components/icons/CodebuddyIcon';
 import { QoderIcon } from '../components/icons/QoderIcon';
 import { TraeCnIcon, TraeIcon, TraeSoloCnIcon, TraeSoloIcon } from '../components/icons/TraeIcon';
 import { WorkbuddyIcon } from '../components/icons/WorkbuddyIcon';
+import { MinimaxCodeIcon } from '../components/icons/MinimaxCodeIcon';
 import { ZedIcon } from '../components/icons/ZedIcon';
 import { ZcodeIcon } from '../components/icons/ZcodeIcon';
 export function getPlatformLabel(platformId: PlatformId, _t: TFunction): string {
@@ -24,6 +25,8 @@ export function getPlatformLabel(platformId: PlatformId, _t: TFunction): string 
       return 'Antigravity IDE';
     case 'codex':
       return 'Codex';
+    case 'codex_api_service':
+      return _t('codex.apiService.navTitle', 'Codex API Service');
     case 'claude_manager':
       return 'Claude';
     case 'zed':
@@ -49,13 +52,15 @@ export function getPlatformLabel(platformId: PlatformId, _t: TFunction): string 
     case 'trae':
       return _t('nav.trae', 'Trae');
     case 'trae_solo':
-      return _t('nav.traeSolo', 'TRAE SOLO');
+      return _t('nav.traeSolo', 'TraeWork');
     case 'trae_cn':
       return _t('nav.traeCn', 'Trae CN');
     case 'trae_solo_cn':
-      return _t('nav.traeSoloCn', 'TRAE SOLO CN');
+      return _t('nav.traeSoloCn', 'TraeWork CN');
     case 'workbuddy':
       return 'WorkBuddy';
+    case 'minimaxcode':
+      return 'MiniMax Code';
     default:
       return platformId;
   }
@@ -68,6 +73,8 @@ export function renderPlatformIcon(platformId: PlatformId, size = 20): ReactNode
     case 'antigravity_ide':
       return <AntigravityIdeIcon style={{ width: size, height: size }} />;
     case 'codex':
+      return <CodexIcon size={size} />;
+    case 'codex_api_service':
       return <CodexIcon size={size} />;
     case 'claude_manager':
       return <ClaudeIcon size={size} />;
@@ -101,6 +108,8 @@ export function renderPlatformIcon(platformId: PlatformId, size = 20): ReactNode
       return <TraeSoloCnIcon style={{ width: size, height: size }} />;
     case 'workbuddy':
       return <WorkbuddyIcon style={{ width: size, height: size }} />;
+    case 'minimaxcode':
+      return <MinimaxCodeIcon style={{ width: size, height: size }} />;
     default:
       return null;
   }

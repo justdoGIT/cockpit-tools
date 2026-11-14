@@ -1,3 +1,5 @@
+import { useAccountsOverviewFilterState } from '../hooks/useAccountsOverviewFilterState';
+import { formatKiroImportError } from '../services/kiroImportErrors';
 import { useState, useEffect, useMemo, useCallback, Fragment } from 'react';
 import {
   Plus,
@@ -26,6 +28,7 @@ import {
   Lock,
   BookOpen,
 } from 'lucide-react';
+import { AccountLastUsed } from '../components/AccountLastUsed';
 import { useKiroAccountStore } from '../stores/useKiroAccountStore';
 import * as kiroService from '../services/kiroService';
 import { TagEditModal } from '../components/TagEditModal';
@@ -34,6 +37,7 @@ import { ModalErrorMessage } from '../components/ModalErrorMessage';
 import { MfaQuickCodeSelect } from '../components/MfaQuickCodeSelect';
 import { PaginationControls } from '../components/PaginationControls';
 import { AccountSelectionToolbar } from '../components/AccountSelectionToolbar';
+import { usePlatformAccountGroups } from '../hooks/usePlatformAccountGroups';
 import {
   getKiroCreditsSummary,
   hasKiroQuotaData,
@@ -63,12 +67,9 @@ import {
   normalizeAccountsOverviewScope,
   readAccountsOverviewFilterPersistenceEnabled,
   readAccountsOverviewFilterStringArray,
-  removeAccountsOverviewFilterField,
-  writeAccountsOverviewFilterField,
 } from '../utils/accountsOverviewFilterPersistence';
 
 const KIRO_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.kiro.flow_notice_collapsed';
-const KIRO_CURRENT_ACCOUNT_ID_KEY = 'agtools.kiro.current_account_id';
 const KIRO_KNOWN_PLAN_FILTERS = ['FREE', 'INDIVIDUAL', 'PRO', 'BUSINESS', 'ENTERPRISE'] as const;
 const KIRO_FILTER_PERSISTENCE_SCOPE = normalizeAccountsOverviewScope('Kiro');
 const FILTER_TYPES_FIELD = 'filter_types';
@@ -80,7 +81,11 @@ const KIRO_TOKEN_BATCH_EXAMPLE = `[
 
 export function KiroAccountsPage() {
   const [activeTab, setActiveTab] = useState<KiroTab>('overview');
-  const [filterTypes, setFilterTypes] = useState<string[]>(() =>
+  const [idcLoginMethod, setIdcLoginMethod] = useState<'builderId' | 'enterprise'>('builderId');
+  const [idcRegion, setIdcRegion] = useState('us-east-1');
+  const [idcStartUrl, setIdcStartUrl] = useState('');
+  const [idcFormError, setIdcFormError] = useState<string | null>(null);
+  const [filterTypes, setFilterTypes] = useAccountsOverviewFilterState<string[]>(KIRO_FILTER_PERSISTENCE_SCOPE, FILTER_TYPES_FIELD, () =>
     readAccountsOverviewFilterPersistenceEnabled(KIRO_FILTER_PERSISTENCE_SCOPE)
       ? readAccountsOverviewFilterStringArray(KIRO_FILTER_PERSISTENCE_SCOPE, FILTER_TYPES_FIELD)
       : [],
@@ -93,7 +98,6 @@ export function KiroAccountsPage() {
     platformKey: 'Kiro',
     oauthLogPrefix: 'KiroOAuth',
     flowNoticeCollapsedKey: KIRO_FLOW_NOTICE_COLLAPSED_KEY,
-    currentAccountIdKey: KIRO_CURRENT_ACCOUNT_ID_KEY,
     exportFilePrefix: 'kiro_accounts',
     store: {
       accounts: store.accounts,
@@ -109,11 +113,21 @@ export function KiroAccountsPage() {
       updateAccountTags: store.updateAccountTags,
     },
     oauthService: {
-      startLogin: kiroService.startKiroOAuthLogin,
+      startLogin: (options) => kiroService.startKiroOAuthLogin(
+        options?.tabKey === 'idc'
+          ? {
+              method: idcLoginMethod,
+              region: idcRegion,
+              startUrl: idcStartUrl,
+            }
+          : { method: 'social' },
+      ),
       completeLogin: kiroService.completeKiroOAuthLogin,
       cancelLogin: kiroService.cancelKiroOAuthLogin,
       submitCallbackUrl: kiroService.submitKiroOAuthCallbackUrl,
     },
+    oauthTabKeys: ['oauth', 'idc'],
+    oauthAutoPrepare: (tabKey) => tabKey === 'oauth' || idcLoginMethod === 'builderId',
     dataService: {
       importFromJson: kiroService.importKiroFromJson,
       importFromLocal: kiroService.importKiroFromLocal,
@@ -128,7 +142,6 @@ export function KiroAccountsPage() {
   const {
     t, locale, privacyModeEnabled, togglePrivacyMode, maskAccountText,
     viewMode, setViewMode, searchQuery, setSearchQuery,
-    filterPersistenceEnabled, filterPersistenceScope,
     sortBy, setSortBy, sortDirection, setSortDirection,
     selected, toggleSelect, toggleSelectAll,
     tagFilter, groupByTag, setGroupByTag, showTagFilter, setShowTagFilter,
@@ -153,19 +166,35 @@ export function KiroAccountsPage() {
     oauthManualCallbackSubmitting, oauthManualCallbackError, oauthSupportsManualCallback,
     handleCopyOauthUrl, handleCopyOauthUserCode, handleRetryOauth, handleOpenOauthUrl,
     handleSubmitOauthCallbackUrl,
+    prepareOauthUrl,
     handleInjectToVSCode,
     isFlowNoticeCollapsed, setIsFlowNoticeCollapsed,
     currentAccountId,
     formatDate, normalizeTag,
   } = page;
 
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_TYPES_FIELD);
+  const grouping = usePlatformAccountGroups('kiro', () => toggleSelectAll(Array.from(selected)));
+
+  const handleSelectIdcLoginMethod = useCallback((method: 'builderId' | 'enterprise') => {
+    setIdcLoginMethod(method);
+    setIdcFormError(null);
+    openAddModal('idc');
+  }, [openAddModal]);
+
+  const handleStartEnterpriseLogin = useCallback(() => {
+    const region = idcRegion.trim();
+    const startUrl = idcStartUrl.trim();
+    if (!region) {
+      setIdcFormError(t('kiro.idc.regionRequired', '请填写 AWS Region'));
       return;
     }
-    writeAccountsOverviewFilterField(filterPersistenceScope, FILTER_TYPES_FIELD, filterTypes);
-  }, [filterPersistenceEnabled, filterPersistenceScope, filterTypes]);
+    if (!startUrl) {
+      setIdcFormError(t('kiro.idc.startUrlRequired', '请填写 IAM Identity Center Start URL'));
+      return;
+    }
+    setIdcFormError(null);
+    prepareOauthUrl();
+  }, [idcRegion, idcStartUrl, prepareOauthUrl, t]);
 
   const toggleFilterTypeValue = useCallback((value: string) => {
     setFilterTypes((prev) => {
@@ -469,6 +498,10 @@ export function KiroAccountsPage() {
   const filteredAccounts = useMemo(() => {
     let result = [...accounts];
 
+    if (grouping.activeGroupId) {
+      result = grouping.filterAccountsByGroup(result);
+    }
+
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       result = result.filter((account) => {
@@ -502,7 +535,7 @@ export function KiroAccountsPage() {
     result.sort(compareAccountsBySort);
 
     return result;
-  }, [accounts, compareAccountsBySort, filterTypes, isAbnormalAccount, normalizeTag, resolvePlanKey, resolvePresentation, searchQuery, tagFilter]);
+  }, [accounts, grouping.activeGroupId, grouping.filterAccountsByGroup, compareAccountsBySort, filterTypes, isAbnormalAccount, normalizeTag, resolvePlanKey, resolvePresentation, searchQuery, tagFilter]);
 
   const filteredIds = useMemo(() => filteredAccounts.map((account) => account.id), [filteredAccounts]);
   const exportSelectionCount = getScopedSelectedCount(filteredIds);
@@ -576,9 +609,11 @@ export function KiroAccountsPage() {
       const moreTagCount = Math.max(0, accountTags.length - visibleTags.length);
       const isSelected = selected.has(account.id);
       const isCurrent = currentAccountId === account.id;
-      const quotaError = account.quota_query_last_error?.trim();
+      const quotaError = account.quota_query_last_error?.trim()
+        ? formatKiroImportError(account.quota_query_last_error.trim(), t) : undefined;
       const hasQuotaData = hasKiroQuotaData(account);
-      const statusReason = presentation.accountStatusReason;
+      const statusReason = presentation.accountStatusReason
+        ? formatKiroImportError(presentation.accountStatusReason, t) : null;
       const isBanned = presentation.isBanned;
       const hasStatusError = presentation.hasStatusError;
       const bannedTitle = statusReason || t('accounts.status.forbidden_tooltip');
@@ -680,7 +715,7 @@ export function KiroAccountsPage() {
           </div>
 
           <div className="card-footer">
-            <span className="card-date">{formatDate(account.created_at)}</span>
+            <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} createdAt={account.created_at} formatDate={formatDate} />
             <div className="card-actions">
               <button className="card-action-btn success" onClick={() => handleInjectToVSCode?.(account.id)} disabled={!!injecting || isBanned}
                 title={isBanned ? t('accounts.status.forbidden_msg') : t('kiro.injectToVSCode', '切换到 Kiro')}>
@@ -728,9 +763,11 @@ export function KiroAccountsPage() {
       const visibleTags = accountTags.slice(0, 3);
       const moreTagCount = Math.max(0, accountTags.length - visibleTags.length);
       const isCurrent = currentAccountId === account.id;
-      const quotaError = account.quota_query_last_error?.trim();
+      const quotaError = account.quota_query_last_error?.trim()
+        ? formatKiroImportError(account.quota_query_last_error.trim(), t) : undefined;
       const hasQuotaData = hasKiroQuotaData(account);
-      const statusReason = presentation.accountStatusReason;
+      const statusReason = presentation.accountStatusReason
+        ? formatKiroImportError(presentation.accountStatusReason, t) : null;
       const isBanned = presentation.isBanned;
       const hasStatusError = presentation.hasStatusError;
       const bannedTitle = statusReason || t('accounts.status.forbidden_tooltip');
@@ -891,7 +928,7 @@ export function KiroAccountsPage() {
           <MultiSelectFilterDropdown
             options={tierFilterOptions}
             selectedValues={filterTypes}
-            allLabel={`ALL (${tierSummary.all})`}
+            allLabel={t('common.shared.filter.all', '全部 ({{count}})', { count: tierSummary.all })}
             filterLabel={t('common.shared.filterLabel', '筛选')}
             clearLabel={t('accounts.clearFilter', '清空筛选')}
             emptyLabel={t('common.none', '暂无')}
@@ -976,13 +1013,16 @@ export function KiroAccountsPage() {
         </div>
       </div>
 
-      {filteredAccounts.length > 0 && (
+      {(accounts.length > 0 || grouping.groups.length > 0) && (
         <AccountSelectionToolbar
           selectedCount={selected.size}
           allSelected={isAllPaginatedSelected}
           disabled={paginatedIds.length === 0}
           onToggleSelectAll={() => toggleSelectAll(paginatedIds)}
           onClearSelection={() => toggleSelectAll(Array.from(selected))}
+          grouping={grouping}
+          accounts={accounts}
+          selectedIds={Array.from(selected)}
           actions={(
             <button
               className="btn btn-danger icon-only"
@@ -1021,14 +1061,6 @@ export function KiroAccountsPage() {
         </div>
       ) : viewMode === 'grid' ? (
         <div className="grid-view-container">
-          {paginatedAccounts.length > 0 && (
-            <div className="grid-view-header" style={{ marginBottom: '12px', paddingLeft: '4px' }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-color)' }}>
-                <input type="checkbox" checked={isAllPaginatedSelected} onChange={() => toggleSelectAll(paginatedIds)} />
-                {t('common.selectAll', '全选')}
-              </label>
-            </div>
-          )}
           {groupByTag ? (
           <div className="tag-group-list">
             {paginatedGroupedAccounts.map(({ groupKey, items, totalCount }) => (
@@ -1114,7 +1146,7 @@ export function KiroAccountsPage() {
 
       {showAddModal && (
         <div className="modal-overlay">
-          <div className="modal-content ghcp-add-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content ghcp-add-modal platform-account-add-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <button className="btn btn-secondary icon-only" onClick={closeAddModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('kiro.addModal.title', '添加 Kiro 账号')}</h2>
@@ -1123,15 +1155,67 @@ export function KiroAccountsPage() {
 
             <div className="modal-tabs">
               <button className={`modal-tab ${addTab === 'oauth' ? 'active' : ''}`} onClick={() => openAddModal('oauth')}><Globe size={14} />{t('common.shared.addModal.oauth', 'OAuth Authorization')}</button>
+              <button className={`modal-tab ${addTab === 'idc' ? 'active' : ''}`} onClick={() => handleSelectIdcLoginMethod('builderId')}><Lock size={14} />{t('kiro.addModal.idc', 'IAM Identity Center')}</button>
               <button className={`modal-tab ${addTab === 'token' ? 'active' : ''}`} onClick={() => openAddModal('token')}><KeyRound size={14} />{t('common.shared.addModal.token', 'Token / JSON')}</button>
               <button className={`modal-tab ${addTab === 'import' ? 'active' : ''}`} onClick={() => openAddModal('import')}><Database size={14} />{t('common.shared.addModal.import', '本地导入')}</button>
             </div>
 
             <div className="modal-body">
               <MfaQuickCodeSelect />
-              {addTab === 'oauth' && (
+              {(addTab === 'oauth' || addTab === 'idc') && (
                 <div className="add-section">
-                  <p className="section-desc">{t('kiro.oauth.desc', '点击下方按钮，在浏览器中完成 Kiro OAuth 授权。')}</p>
+                  {addTab === 'idc' && (
+                    <>
+                      <div className="oauth-provider-switch">
+                        <button
+                          className={`btn btn-sm ${idcLoginMethod === 'builderId' ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={() => handleSelectIdcLoginMethod('builderId')}
+                        >
+                          {t('kiro.idc.builderId', 'AWS Builder ID')}
+                        </button>
+                        <button
+                          className={`btn btn-sm ${idcLoginMethod === 'enterprise' ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={() => handleSelectIdcLoginMethod('enterprise')}
+                        >
+                          {t('kiro.idc.enterprise', 'Enterprise')}
+                        </button>
+                      </div>
+                      {idcLoginMethod === 'enterprise' && !oauthUrl && (
+                        <div className="oauth-idc-form">
+                          <label>
+                            <span>{t('kiro.idc.region', 'AWS Region')}</span>
+                            <input
+                              type="text"
+                              value={idcRegion}
+                              onChange={(event) => {
+                                setIdcRegion(event.target.value);
+                                setIdcFormError(null);
+                              }}
+                              placeholder="us-east-1"
+                            />
+                          </label>
+                          <label>
+                            <span>{t('kiro.idc.startUrl', 'IAM Identity Center Start URL')}</span>
+                            <input
+                              type="url"
+                              value={idcStartUrl}
+                              onChange={(event) => {
+                                setIdcStartUrl(event.target.value);
+                                setIdcFormError(null);
+                              }}
+                              placeholder="https://example.awsapps.com/start"
+                            />
+                          </label>
+                          {idcFormError && <div className="add-status error"><CircleAlert size={16} /><span>{idcFormError}</span></div>}
+                          <button className="btn btn-primary btn-full" onClick={handleStartEnterpriseLogin}>
+                            <Globe size={16} />{t('kiro.idc.start', '开始企业登录')}
+                          </button>
+                        </div>
+                      )}
+                      <p className="section-desc">{t('kiro.idc.desc', '在浏览器中完成 AWS IAM Identity Center 授权，授权完成后账号会自动保存。')}</p>
+                    </>
+                  )}
+                  {addTab === 'oauth' && <p className="section-desc">{t('kiro.oauth.desc', '点击下方按钮，在浏览器中完成 Kiro OAuth 授权。')}</p>}
 
                   {oauthPrepareError ? (
                     <div className="add-status error">
@@ -1192,9 +1276,9 @@ export function KiroAccountsPage() {
                       )}
                       <p className="oauth-hint">{t('common.shared.oauth.hint', 'Once authorized, this window will update automatically')}</p>
                     </div>
-                  ) : (
+                  ) : (!oauthUrl && addTab === 'idc' && idcLoginMethod === 'enterprise' ? null : (
                     <div className="oauth-loading"><RefreshCw size={24} className="loading-spinner" /><span>{t('common.shared.oauth.preparing', '正在准备授权信息...')}</span></div>
-                  )}
+                  ))}
                 </div>
               )}
 

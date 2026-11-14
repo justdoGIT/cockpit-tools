@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useAccountsOverviewFilterState } from '../hooks/useAccountsOverviewFilterState';
+import { Fragment, useCallback, useEffect, useMemo } from 'react';
 import {
   ArrowDownWideNarrow,
   Check,
@@ -24,12 +25,14 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { AccountLastUsed } from '../components/AccountLastUsed';
 import { useTranslation } from 'react-i18next';
 import { ExportJsonModal } from '../components/ExportJsonModal';
 import { ModalErrorMessage } from '../components/ModalErrorMessage';
 import { MfaQuickCodeSelect } from '../components/MfaQuickCodeSelect';
 import { PaginationControls } from '../components/PaginationControls';
 import { AccountSelectionToolbar } from '../components/AccountSelectionToolbar';
+import { usePlatformAccountGroups } from '../hooks/usePlatformAccountGroups';
 import { MultiSelectFilterDropdown, type MultiSelectFilterOption } from '../components/MultiSelectFilterDropdown';
 import { QuickSettingsPopover } from '../components/QuickSettingsPopover';
 import { SingleSelectFilterDropdown } from '../components/SingleSelectFilterDropdown';
@@ -43,6 +46,7 @@ import {
   getZedAccountDisplayEmail,
   getZedEditPredictionsMetrics,
   getZedPlanBadge,
+  getZedPlanTone,
   hasZedQuotaData,
   type ZedAccount,
 } from '../types/zed';
@@ -61,15 +65,12 @@ import {
   normalizeAccountsOverviewScope,
   readAccountsOverviewFilterPersistenceEnabled,
   readAccountsOverviewFilterStringArray,
-  removeAccountsOverviewFilterField,
-  writeAccountsOverviewFilterField,
 } from '../utils/accountsOverviewFilterPersistence';
 import './ZedAccountsPage.css';
 
 type ZedSortKey = 'created_at' | 'token_spend' | 'billing_end';
 
 const ZED_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.zed.flow_notice_collapsed';
-const ZED_CURRENT_ACCOUNT_ID_KEY = 'agtools.zed.current_account_id';
 const ZED_UNTAGGED_KEY = '__untagged__';
 const ZED_FILTER_PERSISTENCE_SCOPE = normalizeAccountsOverviewScope('Zed');
 const FILTER_TYPES_FIELD = 'filter_types';
@@ -81,23 +82,6 @@ function parseFiniteNumber(value: unknown): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
-}
-
-function getZedPlanTone(planRaw?: string | null): string {
-  const normalized = (planRaw || '').trim().toLowerCase();
-  if (!normalized) return 'unknown';
-  if (normalized.includes('enterprise') || normalized.includes('team')) return 'enterprise';
-  if (normalized.includes('trial')) return 'trial';
-  if (
-    normalized.includes('pro') ||
-    normalized.includes('plus') ||
-    normalized.includes('ultra') ||
-    normalized.includes('ultimate')
-  ) {
-    return 'pro';
-  }
-  if (normalized.includes('free')) return 'free';
-  return 'unknown';
 }
 
 function getZedStatusTone(status?: string | null): 'normal' | 'warning' | 'forbidden' | 'neutral' {
@@ -195,7 +179,7 @@ export function ZedAccountsPage() {
   const { t } = useTranslation();
   const isMacOS = usePlatformRuntimeSupport('macos-only');
   const store = useZedAccountStore();
-  const [filterTypes, setFilterTypes] = useState<string[]>(() =>
+  const [filterTypes, setFilterTypes] = useAccountsOverviewFilterState<string[]>(ZED_FILTER_PERSISTENCE_SCOPE, FILTER_TYPES_FIELD, () =>
     readAccountsOverviewFilterPersistenceEnabled(ZED_FILTER_PERSISTENCE_SCOPE)
       ? readAccountsOverviewFilterStringArray(ZED_FILTER_PERSISTENCE_SCOPE, FILTER_TYPES_FIELD)
       : [],
@@ -205,7 +189,6 @@ export function ZedAccountsPage() {
     platformKey: 'Zed',
     oauthLogPrefix: 'ZedOAuth',
     flowNoticeCollapsedKey: ZED_FLOW_NOTICE_COLLAPSED_KEY,
-    currentAccountIdKey: ZED_CURRENT_ACCOUNT_ID_KEY,
     exportFilePrefix: 'zed_accounts',
     store: {
       accounts: store.accounts,
@@ -253,8 +236,6 @@ export function ZedAccountsPage() {
     setViewMode,
     searchQuery,
     setSearchQuery,
-    filterPersistenceEnabled,
-    filterPersistenceScope,
     sortBy,
     setSortBy,
     sortDirection,
@@ -354,13 +335,7 @@ export function ZedAccountsPage() {
     normalizeTag,
   } = page;
 
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_TYPES_FIELD);
-      return;
-    }
-    writeAccountsOverviewFilterField(filterPersistenceScope, FILTER_TYPES_FIELD, filterTypes);
-  }, [filterPersistenceEnabled, filterPersistenceScope, filterTypes]);
+  const grouping = usePlatformAccountGroups('zed', () => toggleSelectAll(Array.from(selected)));
 
   const accounts = store.accounts;
   const loading = store.loading;
@@ -469,6 +444,10 @@ export function ZedAccountsPage() {
   const filteredAccounts = useMemo(() => {
     let result = [...accounts];
 
+    if (grouping.activeGroupId) {
+      result = grouping.filterAccountsByGroup(result);
+    }
+
     if (searchQuery.trim()) {
       const query = searchQuery.trim().toLowerCase();
       result = result.filter((account) => {
@@ -504,7 +483,7 @@ export function ZedAccountsPage() {
 
     result.sort(compareAccountsBySort);
     return result;
-  }, [accounts, compareAccountsBySort, filterTypes, normalizeTag, resolvePlanKey, searchQuery, tagFilter]);
+  }, [accounts, grouping.activeGroupId, grouping.filterAccountsByGroup, compareAccountsBySort, filterTypes, normalizeTag, resolvePlanKey, searchQuery, tagFilter]);
 
   const filteredIds = useMemo(() => filteredAccounts.map((account) => account.id), [filteredAccounts]);
   const exportSelectionCount = getScopedSelectedCount(filteredIds);
@@ -818,7 +797,7 @@ export function ZedAccountsPage() {
           {renderPlanDetails(cycleDisplay)}
 
           <div className="card-footer">
-            <span className="card-date">{formatDate(account.last_used || account.created_at)}</span>
+            <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} createdAt={account.created_at} formatDate={formatDate} />
             <div className="card-actions">
               <button
                 className="card-action-btn success"
@@ -1073,7 +1052,7 @@ export function ZedAccountsPage() {
           <MultiSelectFilterDropdown
             options={tierFilterOptions}
             selectedValues={filterTypes}
-            allLabel={`ALL (${accounts.length})`}
+            allLabel={t('common.shared.filter.all', '全部 ({{count}})', { count: accounts.length })}
             filterLabel={t('common.shared.filterLabel', '筛选')}
             clearLabel={t('accounts.clearFilter', '清空筛选')}
             emptyLabel={t('common.none', '暂无')}
@@ -1228,13 +1207,16 @@ export function ZedAccountsPage() {
         </div>
       </div>
 
-      {filteredAccounts.length > 0 && (
+      {(accounts.length > 0 || grouping.groups.length > 0) && (
         <AccountSelectionToolbar
           selectedCount={selected.size}
           allSelected={isAllPaginatedSelected}
           disabled={paginatedIds.length === 0}
           onToggleSelectAll={() => toggleSelectAll(paginatedIds)}
           onClearSelection={() => toggleSelectAll(Array.from(selected))}
+          grouping={grouping}
+          accounts={accounts}
+          selectedIds={Array.from(selected)}
           actions={(
             <button
               className="btn btn-danger icon-only"
@@ -1269,14 +1251,6 @@ export function ZedAccountsPage() {
         </div>
       ) : viewMode === 'grid' ? (
         <div className="grid-view-container">
-          {paginatedAccounts.length > 0 && (
-            <div className="grid-view-header" style={{ marginBottom: '12px', paddingLeft: '4px' }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-color)' }}>
-                <input type="checkbox" checked={isAllPaginatedSelected} onChange={() => toggleSelectAll(paginatedIds)} />
-                {t('common.selectAll', '全选')}
-              </label>
-            </div>
-          )}
           {groupByTag ? (
           <div className="tag-group-list">
             {paginatedGroupedAccounts.map(({ groupKey, items, totalCount }) => (
@@ -1374,7 +1348,7 @@ export function ZedAccountsPage() {
 
       {showAddModal && (
         <div className="modal-overlay">
-          <div className="modal-content ghcp-add-modal zed-add-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-content ghcp-add-modal platform-account-add-modal zed-add-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <button className="btn btn-secondary icon-only" onClick={closeAddModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('zed.addModal.title', '添加 Zed 账号')}</h2>

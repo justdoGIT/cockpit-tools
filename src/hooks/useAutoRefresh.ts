@@ -1,7 +1,16 @@
+import { hydrateDurableUiSettings } from '../utils/durableUiSettings';
+import {
+  hasActiveWakeupQuotaReset,
+  loadAntigravityWakeupState,
+  WAKEUP_TASKS_UPDATED,
+} from '../services/antigravityWakeupStateService';
+import { createCodexAutomaticQuotaRefreshPredicate } from '../utils/codexAutoRefreshPlanScope';
+import { listenSafely as listen, subscribeTauriEvent } from "../utils/tauriEventListener";
 import { useCallback, useEffect, useRef, type MutableRefObject } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { type UnlistenFn } from "@tauri-apps/api/event";
 import { useAccountStore } from '../stores/useAccountStore';
+import { isPlatformDisabled } from '../stores/usePlatformLayoutStore';
 import { useCodexAccountStore } from '../stores/useCodexAccountStore';
 import { useClaudeAccountStore } from '../stores/useClaudeAccountStore';
 import { useGitHubCopilotAccountStore } from '../stores/useGitHubCopilotAccountStore';
@@ -12,6 +21,7 @@ import { useGrokAccountStore } from '../stores/useGrokAccountStore';
 import { useCodebuddyAccountStore } from '../stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from '../stores/useCodebuddyCnAccountStore';
 import { useWorkbuddyAccountStore } from '../stores/useWorkbuddyAccountStore';
+import { useMinimaxCodeAccountStore } from '../stores/useMinimaxCodeAccountStore';
 import { useQoderAccountStore } from '../stores/useQoderAccountStore';
 import { useZcodeAccountStore } from '../stores/useZcodeAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
@@ -24,15 +34,13 @@ import { getGrokAccountDisplayEmail } from '../types/grok';
 import { getClaudeAccountDisplayEmail } from '../types/claude';
 import { getCodebuddyAccountDisplayEmail } from '../types/codebuddy';
 import { getWorkbuddyAccountDisplayEmail } from '../types/workbuddy';
+import { getMinimaxCodeAccountDisplayEmail } from '../types/minimaxCode';
 import { getQoderAccountDisplayEmail } from '../types/qoder';
 import { getZcodeAccountDisplayEmail } from '../types/zcode';
-import {
-  getTraeAccountDisplayEmail,
-  getTraeAccountPlatformId,
-} from '../types/trae';
 import { getZedAccountDisplayEmail } from '../types/zed';
 import * as traeService from '../services/traeService';
 import {
+  CURRENT_ACCOUNT_REFRESH_PREFERENCES_CHANGED_EVENT,
   loadCurrentAccountRefreshMinutesMap,
   getAccountRefreshMinutes,
   type CurrentAccountRefreshPlatform,
@@ -42,14 +50,27 @@ import {
   type AutoRefreshSchedulerHandle,
   type AutoRefreshSchedulerTask,
 } from '../utils/autoRefreshScheduler';
-import { CURRENT_ACCOUNT_CHANGED_EVENT } from '../utils/accountSyncEvents';
+import {
+  ACCOUNTS_CHANGED_EVENT,
+  CURRENT_ACCOUNT_CHANGED_EVENT,
+  type AccountSyncEventPayload,
+} from '../utils/accountSyncEvents';
+import { getAntigravityRuntimeTarget } from '../utils/antigravityRuntimeTarget';
 import { refreshCodexApiKeyUsageForAccounts } from '../services/codexApiKeyUsageRefreshService';
+import * as codexService from '../services/codexService';
+import {
+  getCodexAccountGroups,
+  getCodexCustomQuotaRefreshAccountIdsByMinutes,
+  getCodexInheritPlatformQuotaRefreshAccountIds,
+  resolveCodexGroupQuotaAutoRefreshMinutes,
+} from '../services/codexAccountGroupService';
 
 interface GeneralConfig {
   language: string;
   theme: string;
   auto_refresh_minutes: number;
   codex_auto_refresh_minutes: number;
+  codex_auto_refresh_plan_types?: string[];
   claude_auto_refresh_minutes: number;
   codex_sync_wsl: boolean;
   codex_wsl_config_dir: string;
@@ -61,6 +82,7 @@ interface GeneralConfig {
   codebuddy_auto_refresh_minutes: number;
   codebuddy_cn_auto_refresh_minutes: number;
   workbuddy_auto_refresh_minutes: number;
+  minimax_code_auto_refresh_minutes: number;
   qoder_auto_refresh_minutes: number;
   zcode_auto_refresh_minutes: number;
   trae_auto_refresh_minutes: number;
@@ -108,13 +130,6 @@ interface PlatformRefreshDescriptor {
 const STARTUP_AUTO_REFRESH_SETUP_DELAY_MS = 2500;
 const AUTO_REFRESH_TICK_MS = 5_000;
 const AUTO_REFRESH_MAX_CONCURRENT = 1;
-const TRAE_CURRENT_ACCOUNT_ID_KEYS = {
-  trae: 'agtools.trae.current_account_id',
-  trae_solo: 'agtools.trae_solo.current_account_id',
-  trae_cn: 'agtools.trae_cn.current_account_id',
-  trae_solo_cn: 'agtools.trae_solo_cn.current_account_id',
-} as const;
-
 function minutesToMs(minutes: number): number {
   return minutes * 60 * 1000;
 }
@@ -146,7 +161,10 @@ function resolveCurrentMinutes(
     : defaultMap[platform];
 }
 
-function getCurrentAccountEmails(): Record<CurrentAccountRefreshPlatform, string | null> {
+type TraeRefreshPlatform = traeService.TraePlatformId;
+type OtherRefreshPlatform = Exclude<CurrentAccountRefreshPlatform, TraeRefreshPlatform | 'antigravity'>;
+
+function getCurrentAccountEmails(): Record<OtherRefreshPlatform, string | null> {
   const getProviderEmail = <T extends { id: string; email?: string | null }>(
     store: { getState: () => { currentAccountId: string | null; accounts: T[] } },
     getDisplayEmail: (account: T) => string,
@@ -156,30 +174,7 @@ function getCurrentAccountEmails(): Record<CurrentAccountRefreshPlatform, string
     if (!account) return null;
     return getDisplayEmail(account);
   };
-  const getTraeProviderEmail = (
-    platform: keyof typeof TRAE_CURRENT_ACCOUNT_ID_KEYS,
-  ): string | null => {
-    let currentAccountId: string | null = null;
-    try {
-      currentAccountId = localStorage.getItem(TRAE_CURRENT_ACCOUNT_ID_KEYS[platform]);
-    } catch {
-      currentAccountId = null;
-    }
-    const normalizedCurrentAccountId = currentAccountId?.trim();
-    if (!normalizedCurrentAccountId) return null;
-    const account = useTraeAccountStore
-      .getState()
-      .accounts.find(
-        (item) =>
-          item.id === normalizedCurrentAccountId &&
-          getTraeAccountPlatformId(item) === platform,
-      );
-    if (!account) return null;
-    return account.email ?? getTraeAccountDisplayEmail(account);
-  };
-
   return {
-    antigravity: useAccountStore.getState().currentAccount?.email ?? null,
     codex: useCodexAccountStore.getState().currentAccount?.email ?? null,
     claude: getProviderEmail(useClaudeAccountStore, getClaudeAccountDisplayEmail),
     ghcp: getProviderEmail(useGitHubCopilotAccountStore, getGitHubCopilotAccountDisplayEmail),
@@ -190,22 +185,15 @@ function getCurrentAccountEmails(): Record<CurrentAccountRefreshPlatform, string
     codebuddy: getProviderEmail(useCodebuddyAccountStore, getCodebuddyAccountDisplayEmail),
     codebuddy_cn: getProviderEmail(useCodebuddyCnAccountStore, getCodebuddyAccountDisplayEmail),
     workbuddy: getProviderEmail(useWorkbuddyAccountStore, getWorkbuddyAccountDisplayEmail),
+    minimaxcode: getProviderEmail(useMinimaxCodeAccountStore, getMinimaxCodeAccountDisplayEmail),
     qoder: getProviderEmail(useQoderAccountStore, getQoderAccountDisplayEmail),
     zcode: getProviderEmail(useZcodeAccountStore, getZcodeAccountDisplayEmail),
-    trae: getTraeProviderEmail('trae'),
-    trae_solo: getTraeProviderEmail('trae_solo'),
-    trae_cn: getTraeProviderEmail('trae_cn'),
-    trae_solo_cn: getTraeProviderEmail('trae_solo_cn'),
     zed: getProviderEmail(useZedAccountStore, getZedAccountDisplayEmail),
   };
 }
 
 export function useAutoRefresh() {
-  const refreshAllQuotas = useAccountStore((state) => state.refreshAllQuotas);
-  const fetchAccounts = useAccountStore((state) => state.fetchAccounts);
-  const fetchCurrentAccount = useAccountStore((state) => state.fetchCurrentAccount);
 
-  const refreshAllCodexQuotas = useCodexAccountStore((state) => state.refreshAllQuotas);
   const fetchCodexAccounts = useCodexAccountStore((state) => state.fetchAccounts);
   const fetchCurrentCodexAccount = useCodexAccountStore((state) => state.fetchCurrentAccount);
   const refreshAllClaudeQuotas = useClaudeAccountStore((state) => state.refreshAllTokens);
@@ -235,6 +223,9 @@ export function useAutoRefresh() {
   const refreshAllWorkbuddyTokens = useWorkbuddyAccountStore((state) => state.refreshAllTokens);
   const fetchCurrentWorkbuddyAccountId = useWorkbuddyAccountStore((state) => state.fetchCurrentAccountId);
   const refreshWorkbuddyToken = useWorkbuddyAccountStore((state) => state.refreshToken);
+  const refreshAllMinimaxCodeTokens = useMinimaxCodeAccountStore((state) => state.refreshAllTokens);
+  const fetchCurrentMinimaxCodeAccountId = useMinimaxCodeAccountStore((state) => state.fetchCurrentAccountId);
+  const refreshMinimaxCodeToken = useMinimaxCodeAccountStore((state) => state.refreshToken);
   const refreshAllQoderTokens = useQoderAccountStore((state) => state.refreshAllTokens);
   const fetchCurrentQoderAccountId = useQoderAccountStore((state) => state.fetchCurrentAccountId);
   const refreshQoderToken = useQoderAccountStore((state) => state.refreshToken);
@@ -247,8 +238,6 @@ export function useAutoRefresh() {
   const fetchCurrentZedAccountId = useZedAccountStore((state) => state.fetchCurrentAccountId);
   const refreshZedToken = useZedAccountStore((state) => state.refreshToken);
 
-  const antigravityRefreshingRef = useRef(false);
-  const antigravityCurrentRefreshingRef = useRef(false);
   const codexRefreshingRef = useRef(false);
   const codexCurrentRefreshingRef = useRef(false);
   const claudeRefreshingRef = useRef(false);
@@ -269,6 +258,8 @@ export function useAutoRefresh() {
   const codebuddyCnCurrentRefreshingRef = useRef(false);
   const workbuddyRefreshingRef = useRef(false);
   const workbuddyCurrentRefreshingRef = useRef(false);
+  const minimaxcodeRefreshingRef = useRef(false);
+  const minimaxcodeCurrentRefreshingRef = useRef(false);
   const qoderRefreshingRef = useRef(false);
   const qoderCurrentRefreshingRef = useRef(false);
   const zcodeRefreshingRef = useRef(false);
@@ -353,55 +344,50 @@ export function useAutoRefresh() {
             return;
           }
 
-          const wakeupEnabled = localStorage.getItem('agtools.wakeup.enabled') === 'true';
-          if (wakeupEnabled) {
-            const tasksJson = localStorage.getItem('agtools.wakeup.tasks');
-            if (tasksJson) {
-              try {
-                const tasks = JSON.parse(tasksJson);
-                const hasActiveResetTask = Array.isArray(tasks)
-                  && tasks.some((task: unknown) => {
-                    if (!task || typeof task !== 'object') {
-                      return false;
-                    }
-                    const taskObject = task as {
-                      enabled?: boolean;
-                      schedule?: { wakeOnReset?: boolean };
-                    };
-                    return Boolean(taskObject.enabled && taskObject.schedule?.wakeOnReset);
-                  });
-
-                if (
-                  hasActiveResetTask
-                  && (config.auto_refresh_minutes === -1 || config.auto_refresh_minutes > 2)
-                ) {
-                  console.log(
-                    `[AutoRefresh] 检测到活跃的配额重置任务，自动修正刷新间隔: ${config.auto_refresh_minutes} -> 2`,
-                  );
-                  const saveConfigStartedAt = performance.now();
-                  await invoke('save_refresh_interval_config', {
-                    autoRefreshMinutes: 2,
-                  });
-                  console.log(
-                    `[StartupPerf][AutoRefresh] save_refresh_interval_config completed in ${(performance.now() - saveConfigStartedAt).toFixed(2)}ms`,
-                  );
-                  config.auto_refresh_minutes = 2;
-                }
-              } catch (error) {
-                console.error('[AutoRefresh] 解析任务列表失败:', error);
-              }
+          try {
+            const wakeup = await loadAntigravityWakeupState();
+            if (hasActiveWakeupQuotaReset(wakeup) && (config.auto_refresh_minutes === -1 || config.auto_refresh_minutes > 2)) {
+              await invoke('save_refresh_interval_config', { autoRefreshMinutes: 2 });
+              config.auto_refresh_minutes = 2;
             }
+          } catch (error) {
+            console.error('[AutoRefresh] 读取唤醒配置或更新刷新间隔失败:', error);
           }
 
+          await hydrateDurableUiSettings().catch(error => {
+            console.warn('[AutoRefresh] 读取刷新偏好失败:', error);
+          });
           if (destroyedRef.current) {
             console.log('[StartupPerf][AutoRefresh] setupAutoRefresh aborted before scheduler setup: destroyed flag set');
             return;
           }
 
+          const traePlatforms: TraeRefreshPlatform[] = [];
+          if (config.trae_auto_refresh_minutes > 0) traePlatforms.push('trae');
+          if (config.trae_solo_auto_refresh_minutes > 0) traePlatforms.push('trae_solo');
+          if (config.trae_cn_auto_refresh_minutes > 0) traePlatforms.push('trae_cn');
+          if (config.trae_solo_cn_auto_refresh_minutes > 0) traePlatforms.push('trae_solo_cn');
+          const traeCurrentAccounts = await traeService.getTraeCurrentAccounts(traePlatforms).catch(error => {
+            console.warn('[AutoRefresh] 读取 TRAE 当前账号失败:', error);
+            return null;
+          });
+          if (destroyedRef.current) return;
+
           stopScheduler();
 
           const currentRefreshMinutesMap = loadCurrentAccountRefreshMinutesMap();
           const currentAccountEmails = getCurrentAccountEmails();
+          const resolveTraeCurrentMinutes = (platform: TraeRefreshPlatform): number =>
+            traeCurrentAccounts?.[platform] === undefined
+              ? 0
+              : resolveCurrentMinutes(platform, traeCurrentAccounts[platform]?.email ?? null, currentRefreshMinutesMap);
+          const runTraeCurrentRefresh = async (platform: TraeRefreshPlatform) => {
+            const account = (await traeService.getTraeCurrentAccounts([platform]))[platform];
+            if (account && resolveCurrentMinutes(platform, account.email, currentRefreshMinutesMap) > 0) {
+              await refreshTraeToken(account.id);
+            }
+          };
+          const eligibleCodexQuotaAccount = createCodexAutomaticQuotaRefreshPredicate(config.codex_auto_refresh_plan_types);
           const runProviderCurrentRefresh = async (
             fetchCurrentProviderAccountId: () => Promise<string | null>,
             refreshProviderToken: (accountId: string) => Promise<void>,
@@ -413,45 +399,61 @@ export function useAutoRefresh() {
             await refreshProviderToken(accountId);
           };
 
+          // Codex 分组额度策略：继承平台 / 自定义间隔 / 不刷新（最高优先级）
+          const codexGroups = await getCodexAccountGroups().catch(() => []);
+          const codexCurrentAccount = useCodexAccountStore.getState().currentAccount;
+          let codexCurrentMinutes = resolveCurrentMinutes(
+            'codex',
+            currentAccountEmails.codex,
+            currentRefreshMinutesMap,
+          );
+          if (codexCurrentAccount?.id) {
+            const group = codexGroups.find((item) =>
+              item.accountIds.includes(codexCurrentAccount.id),
+            );
+            const policy = resolveCodexGroupQuotaAutoRefreshMinutes(group);
+            if (policy === -1) {
+              codexCurrentMinutes = -1;
+            } else if (typeof policy === 'number' && policy > 0) {
+              codexCurrentMinutes = policy;
+            }
+          }
+          const codexCustomRefreshByMinutes =
+            await getCodexCustomQuotaRefreshAccountIdsByMinutes().catch(
+              () => new Map<number, string[]>(),
+            );
+
           const descriptors: PlatformRefreshDescriptor[] = [
-            {
-              key: 'antigravity',
-              label: 'Antigravity IDE',
-              intervalMinutes: config.auto_refresh_minutes,
-              currentMinutes: resolveCurrentMinutes('antigravity', currentAccountEmails.antigravity, currentRefreshMinutesMap),
-              fullRefreshingRef: antigravityRefreshingRef,
-              currentRefreshingRef: antigravityCurrentRefreshingRef,
-              runFullRefresh: async () => {
-                await refreshAllQuotas();
-              },
-              runCurrentRefresh: async () => {
-                if (!useAccountStore.getState().currentAccount?.id) {
-                  await fetchCurrentAccount();
-                }
-                if (!useAccountStore.getState().currentAccount?.id) {
-                  return;
-                }
-                await invoke('refresh_current_quota');
-                await fetchAccounts();
-                await fetchCurrentAccount();
-              },
-            },
             {
               key: 'codex',
               label: 'Codex',
               intervalMinutes: config.codex_auto_refresh_minutes,
-              currentMinutes: resolveCurrentMinutes('codex', currentAccountEmails.codex, currentRefreshMinutesMap),
+              currentMinutes: codexCurrentMinutes,
               fullRefreshingRef: codexRefreshingRef,
               currentRefreshingRef: codexCurrentRefreshingRef,
               runFullRefresh: async () => {
                 try {
-                  await refreshAllCodexQuotas();
+                  // 平台间隔只刷「继承平台 + 未分组」；自定义间隔分组由独立任务负责
+                  const accounts = useCodexAccountStore.getState().accounts;
+                  const refreshableIds = accounts
+                    .filter(eligibleCodexQuotaAccount)
+                    .map((account) => account.id);
+                  const inheritIds =
+                    await getCodexInheritPlatformQuotaRefreshAccountIds(refreshableIds);
+                  if (inheritIds.length > 0) {
+                    await codexService.refreshCodexQuotasBatch(inheritIds, {
+                      respectGroupQuotaRefresh: true,
+                      background: true,
+                    });
+                  }
                 } finally {
                   await refreshCodexApiKeyUsageForAccounts(
                     useCodexAccountStore.getState().accounts,
                   ).catch((error) => {
                     console.error('[AutoRefresh] Codex API Key usage refresh failed:', error);
                   });
+                  await fetchCodexAccounts();
+                  await fetchCurrentCodexAccount();
                 }
               },
               runCurrentRefresh: async () => {
@@ -614,6 +616,23 @@ export function useAutoRefresh() {
               },
             },
             {
+              key: 'minimaxcode',
+              label: 'MiniMax Code',
+              intervalMinutes: config.minimax_code_auto_refresh_minutes,
+              currentMinutes: resolveCurrentMinutes('minimaxcode', currentAccountEmails.minimaxcode, currentRefreshMinutesMap),
+              fullRefreshingRef: minimaxcodeRefreshingRef,
+              currentRefreshingRef: minimaxcodeCurrentRefreshingRef,
+              runFullRefresh: async () => {
+                await refreshAllMinimaxCodeTokens();
+              },
+              runCurrentRefresh: async () => {
+                await runProviderCurrentRefresh(
+                  fetchCurrentMinimaxCodeAccountId,
+                  refreshMinimaxCodeToken,
+                );
+              },
+            },
+            {
               key: 'qoder',
               label: 'Qoder',
               intervalMinutes: config.qoder_auto_refresh_minutes,
@@ -645,73 +664,53 @@ export function useAutoRefresh() {
               key: 'trae',
               label: 'Trae',
               intervalMinutes: config.trae_auto_refresh_minutes,
-              currentMinutes: resolveCurrentMinutes('trae', currentAccountEmails.trae, currentRefreshMinutesMap),
+              currentMinutes: resolveTraeCurrentMinutes('trae'),
               fullRefreshingRef: traeRefreshingRef,
               currentRefreshingRef: traeCurrentRefreshingRef,
               runFullRefresh: async () => {
                 await traeService.refreshAllTraeTokens('trae');
                 await fetchTraeAccounts();
               },
-              runCurrentRefresh: async () => {
-                await runProviderCurrentRefresh(
-                  () => traeService.getTraeCurrentAccountId('trae'),
-                  refreshTraeToken,
-                );
-              },
+              runCurrentRefresh: () => runTraeCurrentRefresh('trae'),
             },
             {
               key: 'trae_solo',
-              label: 'TRAE SOLO',
+              label: 'TraeWork',
               intervalMinutes: config.trae_solo_auto_refresh_minutes,
-              currentMinutes: resolveCurrentMinutes('trae_solo', currentAccountEmails.trae_solo, currentRefreshMinutesMap),
+              currentMinutes: resolveTraeCurrentMinutes('trae_solo'),
               fullRefreshingRef: traeSoloRefreshingRef,
               currentRefreshingRef: traeSoloCurrentRefreshingRef,
               runFullRefresh: async () => {
                 await traeService.refreshAllTraeTokens('trae_solo');
                 await fetchTraeAccounts();
               },
-              runCurrentRefresh: async () => {
-                await runProviderCurrentRefresh(
-                  () => traeService.getTraeCurrentAccountId('trae_solo'),
-                  refreshTraeToken,
-                );
-              },
+              runCurrentRefresh: () => runTraeCurrentRefresh('trae_solo'),
             },
             {
               key: 'trae_cn',
               label: 'Trae CN',
               intervalMinutes: config.trae_cn_auto_refresh_minutes,
-              currentMinutes: resolveCurrentMinutes('trae_cn', currentAccountEmails.trae_cn, currentRefreshMinutesMap),
+              currentMinutes: resolveTraeCurrentMinutes('trae_cn'),
               fullRefreshingRef: traeCnRefreshingRef,
               currentRefreshingRef: traeCnCurrentRefreshingRef,
               runFullRefresh: async () => {
                 await traeService.refreshAllTraeTokens('trae_cn');
                 await fetchTraeAccounts();
               },
-              runCurrentRefresh: async () => {
-                await runProviderCurrentRefresh(
-                  () => traeService.getTraeCurrentAccountId('trae_cn'),
-                  refreshTraeToken,
-                );
-              },
+              runCurrentRefresh: () => runTraeCurrentRefresh('trae_cn'),
             },
             {
               key: 'trae_solo_cn',
-              label: 'TRAE SOLO CN',
+              label: 'TraeWork CN',
               intervalMinutes: config.trae_solo_cn_auto_refresh_minutes,
-              currentMinutes: resolveCurrentMinutes('trae_solo_cn', currentAccountEmails.trae_solo_cn, currentRefreshMinutesMap),
+              currentMinutes: resolveTraeCurrentMinutes('trae_solo_cn'),
               fullRefreshingRef: traeSoloCnRefreshingRef,
               currentRefreshingRef: traeSoloCnCurrentRefreshingRef,
               runFullRefresh: async () => {
                 await traeService.refreshAllTraeTokens('trae_solo_cn');
                 await fetchTraeAccounts();
               },
-              runCurrentRefresh: async () => {
-                await runProviderCurrentRefresh(
-                  () => traeService.getTraeCurrentAccountId('trae_solo_cn'),
-                  refreshTraeToken,
-                );
-              },
+              runCurrentRefresh: () => runTraeCurrentRefresh('trae_solo_cn'),
             },
             {
               key: 'zed',
@@ -737,6 +736,8 @@ export function useAutoRefresh() {
                 key: `full:${descriptor.key}`,
                 label: `${descriptor.label} 全量刷新`,
                 intervalMs: minutesToMs(descriptor.intervalMinutes),
+                // 平台被禁用时跳过一切活动（隐藏只影响显示）
+                shouldSkip: () => isPlatformDisabled(descriptor.key),
                 run: () =>
                   executeWithGuard(
                     descriptor.fullRefreshingRef,
@@ -755,7 +756,8 @@ export function useAutoRefresh() {
                 key: `current:${descriptor.key}`,
                 label: `${descriptor.label} 当前账号刷新`,
                 intervalMs: minutesToMs(descriptor.currentMinutes),
-                shouldSkip: () => descriptor.fullRefreshingRef.current,
+                shouldSkip: () =>
+                  descriptor.fullRefreshingRef.current || isPlatformDisabled(descriptor.key),
                 run: () =>
                   executeWithGuard(
                     descriptor.currentRefreshingRef,
@@ -767,6 +769,51 @@ export function useAutoRefresh() {
             } else {
               console.log(`[AutoRefresh] ${descriptor.label} 当前账号刷新已禁用${descriptor.currentMinutes === -1 ? '（账号级覆盖禁用）' : '（配额自动刷新未开启）'}`);
             }
+          }
+
+          // Codex 分组自定义间隔：独立调度（最高优先级，不依赖平台间隔是否开启）
+          for (const [minutes, accountIds] of codexCustomRefreshByMinutes.entries()) {
+            if (minutes <= 0 || accountIds.length === 0) {
+              continue;
+            }
+            const uniqueIds = [...new Set(accountIds.filter(Boolean))];
+            if (uniqueIds.length === 0) {
+              continue;
+            }
+            console.log(
+              `[AutoRefresh] Codex 分组自定义刷新: 每 ${minutes} 分钟, accounts=${uniqueIds.length}`,
+            );
+            tasks.push({
+              key: `full:codex-group:${minutes}`,
+              label: `Codex 分组自定义刷新 (${minutes}m)`,
+              intervalMs: minutesToMs(minutes),
+              // 平台被禁用时跳过一切活动（隐藏只影响显示）
+              shouldSkip: () => isPlatformDisabled('codex'),
+              run: () =>
+                executeWithGuard(
+                  codexRefreshingRef,
+                  async () => {
+                    try {
+                      // 自定义间隔遵守同一套餐筛选；手动刷新与当前账号任务不受影响
+                      const accountById = new Map(useCodexAccountStore.getState().accounts.map((account) => [account.id, account]));
+                      const eligibleIds = uniqueIds.filter((id) => {
+                        const account = accountById.get(id);
+                        return account && eligibleCodexQuotaAccount(account);
+                      });
+                      if (eligibleIds.length === 0) return;
+                      await codexService.refreshCodexQuotasBatch(eligibleIds, {
+                        respectGroupQuotaRefresh: false,
+                        background: true,
+                      });
+                    } finally {
+                      await fetchCodexAccounts();
+                      await fetchCurrentCodexAccount();
+                    }
+                  },
+                  `[AutoRefresh] 触发 Codex 分组自定义刷新 (${minutes}m)...`,
+                  `[AutoRefresh] Codex 分组自定义刷新失败 (${minutes}m):`,
+                ),
+            });
           }
 
           if (tasks.length > 0) {
@@ -799,7 +846,6 @@ export function useAutoRefresh() {
   }, [
     executeWithGuard,
     fetchCodexAccounts,
-    fetchCurrentAccount,
     fetchCurrentClaudeAccountId,
     fetchCurrentCodebuddyAccountId,
     fetchCurrentCodebuddyCnAccountId,
@@ -813,21 +859,20 @@ export function useAutoRefresh() {
     fetchTraeAccounts,
     fetchCurrentWindsurfAccountId,
     fetchCurrentWorkbuddyAccountId,
+    fetchCurrentMinimaxCodeAccountId,
     fetchCurrentZedAccountId,
-    fetchAccounts,
     refreshAllCodebuddyCnTokens,
     refreshAllCodebuddyTokens,
-    refreshAllCodexQuotas,
     refreshAllClaudeQuotas,
     refreshAllCursorTokens,
     refreshAllGrokTokens,
     refreshAllGhcpTokens,
     refreshAllKiroTokens,
-    refreshAllQuotas,
     refreshAllQoderTokens,
     refreshAllZcodeTokens,
     refreshAllWindsurfTokens,
     refreshAllWorkbuddyTokens,
+    refreshAllMinimaxCodeTokens,
     refreshAllZedTokens,
     refreshCodebuddyCnToken,
     refreshCodebuddyToken,
@@ -841,9 +886,29 @@ export function useAutoRefresh() {
     refreshTraeToken,
     refreshWindsurfToken,
     refreshWorkbuddyToken,
+    refreshMinimaxCodeToken,
     refreshZedToken,
     stopScheduler,
   ]);
+
+  useEffect(() => {
+    let disposed = false;
+    const unsubscribe = subscribeTauriEvent<AccountSyncEventPayload>(ACCOUNTS_CHANGED_EVENT, async ({ payload }) => {
+      if (disposed || payload?.platformId !== 'antigravity' || payload.reason !== 'automatic-quota-refresh') {
+        return;
+      }
+      const store = useAccountStore.getState();
+      await store.fetchAccounts();
+      if (disposed) return;
+      const selected = getAntigravityRuntimeTarget();
+      await store.fetchCurrentAccount(selected === 'antigravity' ? 'antigravity_ide' : 'antigravity');
+      if (!disposed) await store.fetchCurrentAccount(getAntigravityRuntimeTarget());
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     destroyedRef.current = false;
@@ -867,6 +932,8 @@ export function useAutoRefresh() {
     };
 
     window.addEventListener('config-updated', handleConfigUpdate);
+    window.addEventListener(CURRENT_ACCOUNT_REFRESH_PREFERENCES_CHANGED_EVENT, handleConfigUpdate);
+    window.addEventListener(WAKEUP_TASKS_UPDATED, handleConfigUpdate);
     void listen(CURRENT_ACCOUNT_CHANGED_EVENT, handleConfigUpdate).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -885,6 +952,8 @@ export function useAutoRefresh() {
       stopScheduler();
       unlistenCurrentAccount?.();
       window.removeEventListener('config-updated', handleConfigUpdate);
+      window.removeEventListener(CURRENT_ACCOUNT_REFRESH_PREFERENCES_CHANGED_EVENT, handleConfigUpdate);
+      window.removeEventListener(WAKEUP_TASKS_UPDATED, handleConfigUpdate);
     };
   }, [setupAutoRefresh, stopScheduler]);
 }

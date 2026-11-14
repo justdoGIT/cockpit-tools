@@ -43,14 +43,11 @@ fn worker_sender() -> Option<&'static SyncSender<RewriteJob>> {
             match thread::Builder::new()
                 .name("deferred-account-rewrite".into())
                 .spawn(move || {
-                    logger::log_info(
-                        "[DeferredAccountRewrite] 后台账号详情迁移写回 worker 已启动",
-                    );
+                    logger::log_info("[DeferredAccountRewrite] 后台账号详情迁移写回 worker 已启动");
                     while let Ok(job) = rx.recv() {
                         let key = job.key;
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            job.action,
-                        ));
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(job.action));
                         remove_pending_key(&key);
                         if let Err(panic) = result {
                             logger::log_warn(&format!(
@@ -60,8 +57,7 @@ fn worker_sender() -> Option<&'static SyncSender<RewriteJob>> {
                         }
                         thread::sleep(Duration::from_millis(5));
                     }
-                })
-            {
+                }) {
                 Ok(_) => Some(tx),
                 Err(error) => {
                     logger::log_error(&format!(
@@ -137,11 +133,15 @@ pub fn schedule_account_rewrite_if_unchanged<F>(
                 "[DeferredAccountRewrite] 开始写回: platform={}, account_id={}",
                 platform, account_id
             ));
-            match crate::modules::atomic_write::write_string_atomic_if_hash_matches(
-                &source_path,
-                expected_hash,
-                action,
-            ) {
+            let rewritten = action().and_then(|content| {
+                let _lock = crate::modules::account_file_crypto::lock_account_file(&source_path)?;
+                crate::modules::atomic_write::write_string_atomic_if_hash_matches(
+                    &source_path,
+                    expected_hash,
+                    || Ok(content),
+                )
+            });
+            match rewritten {
                 Ok(true) => {}
                 Ok(false) => logger::log_info(&format!(
                     "[DeferredAccountRewrite] 源文件已变化或删除，跳过旧快照写回: platform={}, account_id={}, path={}",

@@ -1,4 +1,6 @@
+use crate::models::codex::CodexAccount;
 use crate::modules::{account, codex_account, codex_local_access, logger, process};
+use super::wakeup_history_store::{self, HistoryRow, HistoryStore};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -9,28 +11,42 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-const TASKS_FILE: &str = "codex_wakeup_tasks.json";
-const HISTORY_FILE: &str = "codex_wakeup_history.json";
+pub(crate) const TASKS_FILE: &str = "codex_wakeup_tasks.json";
+pub(crate) const HISTORY_FILE: &str = "codex_wakeup_history.json";
 const RUNTIME_CONFIG_FILE: &str = "codex_wakeup_runtime_config.json";
 const MANAGED_HOMES_DIR: &str = "codex_wakeup_homes";
 const MAX_HISTORY_ITEMS: usize = 300;
 const MAX_LOGGED_SEARCH_DIRS: usize = 8;
 const REQUIRED_RUNTIME_PATH_CODEX_CLI: &str = "codex_cli_path";
 const REQUIRED_RUNTIME_PATH_NODE: &str = "node_path";
+const CLI_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 pub const DEFAULT_PROMPT: &str = "hi";
 pub const PROGRESS_EVENT: &str = "codex://wakeup-progress";
 const REASONING_EFFORT_LOW: &str = "low";
 const REASONING_EFFORT_MEDIUM: &str = "medium";
 const REASONING_EFFORT_HIGH: &str = "high";
 const REASONING_EFFORT_XHIGH: &str = "xhigh";
+const REASONING_EFFORT_MAX: &str = "max";
 const CODEX_WAKEUP_TEST_CANCELLED_MESSAGE: &str = "Codex 唤醒测试已取消";
 const CODEX_WAKEUP_CANCEL_POLL_MS: u64 = 120;
 const GPT_5_6_MODEL_PRESETS_MIGRATION_ID: &str = "add-gpt-5-6-model-presets";
+// 保留旧标记，避免升级或旧快照再次触发已退役模型的添加。
 const GPT_5_5_MODEL_PRESET_MIGRATION_ID: &str = "add-gpt-5-5-model-preset";
+const RETIRE_GPT_5_5_WAKEUP_MODEL_MIGRATION_ID: &str = "retire-gpt-5-5-wakeup-model";
+const GPT_6_1_SOL_MODEL_PRESET_MIGRATION_ID: &str = "add-gpt-6-1-sol-model-preset";
+const GPT_6_1_TERRA_MODEL_PRESET_MIGRATION_ID: &str = "add-gpt-6-1-terra-model-preset";
+const GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID: &str = "add-gpt-6-astra-model-preset";
+const GPT_6_SOL_LUNA_MODEL_PRESETS_MIGRATION_ID: &str = "add-gpt-6-sol-luna-model-presets";
+const PREFIX_BUILTIN_MODEL_PRESET_NAMES_MIGRATION_ID: &str = "prefix-builtin-model-preset-names";
 const PRUNE_LEGACY_MODEL_PRESETS_MIGRATION_ID: &str =
     "prune-legacy-codex-model-presets-before-gpt-5-4";
+const PRUNE_PRE_5_5_MODEL_PRESETS_MIGRATION_ID: &str = "prune-pre-5-5-model-presets";
+/// 唤醒默认模型：所有新建/未指定模型的唤醒都落在 GPT-5.6 Luna。
+pub const DEFAULT_WAKEUP_MODEL: &str = "gpt-5.6-luna";
+pub const DEFAULT_WAKEUP_MODEL_NAME: &str = "GPT-5.6 Luna";
 const LEGACY_CODEX_MODEL_PRESET_IDS: &[&str] = &[
     "preset-gpt-5-3-codex",
     "preset-gpt-5-2-codex",
@@ -49,8 +65,15 @@ const LEGACY_CODEX_MODEL_PRESET_MODELS: &[&str] = &[
     "gpt-5.1-codex-mini",
 ];
 
+#[path = "codex_wakeup_run_store.rs"]
+mod run_store;
+#[path = "codex_wakeup_task_state.rs"]
+mod task_state;
+pub use task_state::{
+    authorize_task_dispatch, claim_task_run, mark_task_run_failed, try_task_run_lease,
+};
+
 static TASKS_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
-static HISTORY_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 static TEST_CANCEL_SCOPES: std::sync::LazyLock<Mutex<HashMap<String, Arc<AtomicBool>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -122,7 +145,7 @@ pub struct CodexWakeupRuntimeConfig {
     pub node_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexWakeupSchedule {
     pub kind: String,
@@ -137,7 +160,17 @@ pub struct CodexWakeupSchedule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_reset_window: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_reset_delay_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_delay_minutes: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct QuotaResetPlan {
+    pub account_id: String,
+    pub primary: bool,
+    pub reset_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +191,8 @@ pub struct CodexWakeupTask {
     pub name: String,
     pub enabled: bool,
     pub account_ids: Vec<String>,
+    #[serde(default)]
+    pub use_api_service_pool: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,6 +218,8 @@ pub struct CodexWakeupTask {
     pub last_duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_run_at: Option<i64>,
+    #[serde(skip)]
+    pub(super) quota_reset_plan: Option<QuotaResetPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,7 +306,6 @@ pub struct CodexWakeupBatchResult {
 pub struct CodexWakeupOverview {
     pub runtime: CodexCliStatus,
     pub state: CodexWakeupState,
-    pub history: Vec<CodexWakeupHistoryItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +331,8 @@ pub struct CodexWakeupProgressPayload {
     pub running: bool,
     pub phase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<CodexWakeupHistoryItem>,
@@ -305,6 +343,7 @@ struct ResolvedBinary {
     path: PathBuf,
     source: String,
     node_path: Option<PathBuf>,
+    version: String,
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +406,10 @@ impl Default for CodexWakeupState {
             model_preset_migrations: vec![
                 GPT_5_6_MODEL_PRESETS_MIGRATION_ID.to_string(),
                 GPT_5_5_MODEL_PRESET_MIGRATION_ID.to_string(),
+                RETIRE_GPT_5_5_WAKEUP_MODEL_MIGRATION_ID.to_string(),
+                GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID.to_string(),
+                GPT_6_SOL_LUNA_MODEL_PRESETS_MIGRATION_ID.to_string(),
+                PREFIX_BUILTIN_MODEL_PRESET_NAMES_MIGRATION_ID.to_string(),
                 PRUNE_LEGACY_MODEL_PRESETS_MIGRATION_ID.to_string(),
             ],
         }
@@ -391,7 +434,9 @@ fn is_scope_cancelled(cancel_flag: Option<&Arc<AtomicBool>>) -> bool {
         .unwrap_or(false)
 }
 
-fn resolve_cancel_flag(cancel_scope_id: Option<&str>) -> Result<Option<Arc<AtomicBool>>, String> {
+pub(super) fn resolve_cancel_flag(
+    cancel_scope_id: Option<&str>,
+) -> Result<Option<Arc<AtomicBool>>, String> {
     let Some(scope_id) = cancel_scope_id
         .map(str::trim)
         .filter(|item| !item.is_empty())
@@ -419,12 +464,15 @@ pub fn cancel_wakeup_scope(cancel_scope_id: &str) -> Result<(), String> {
         let mut guard = TEST_CANCEL_SCOPES
             .lock()
             .map_err(|_| "Codex 唤醒取消作用域锁已损坏".to_string())?;
-        guard.remove(scope_id)
+        guard
+            .entry(scope_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone()
     };
 
-    if let Some(flag) = flag {
-        flag.store(true, Ordering::SeqCst);
-    }
+    // Keep the flag until release: cancelling before run_batch resolves its
+    // scope must not silently create a new, uncancelled run.
+    flag.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -447,12 +495,13 @@ fn supported_reasoning_efforts() -> &'static [&'static str] {
         REASONING_EFFORT_MEDIUM,
         REASONING_EFFORT_HIGH,
         REASONING_EFFORT_XHIGH,
+        REASONING_EFFORT_MAX,
     ]
 }
 
 fn normalize_reasoning_effort(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
-    if supported_reasoning_efforts().contains(&normalized.as_str()) {
+    if supported_reasoning_efforts().contains(&normalized.as_str()) || normalized == "ultra" {
         Some(normalized)
     } else {
         None
@@ -460,14 +509,15 @@ fn normalize_reasoning_effort(value: &str) -> Option<String> {
 }
 
 pub fn wakeup_runtime_status() -> CodexCliStatus {
+    // 唤醒固定走宿主直连官方接口：不需要本机 Codex CLI，也不经过 API 服务进程。
     CodexCliStatus {
         available: true,
         binary_path: None,
         configured_codex_cli_path: None,
         configured_node_path: None,
         version: None,
-        source: Some("official_chat".to_string()),
-        message: Some("官方直连对话".to_string()),
+        source: Some("api_direct".to_string()),
+        message: Some("API 直连".to_string()),
         required_runtime_paths: Vec::new(),
         checked_at: now_ms(),
         install_hints: Vec::new(),
@@ -480,8 +530,23 @@ fn default_reasoning_efforts_for_model(model: &str) -> Vec<String> {
             REASONING_EFFORT_MEDIUM.to_string(),
             REASONING_EFFORT_HIGH.to_string(),
         ]
-    } else {
+    } else if model.trim().eq_ignore_ascii_case("gpt-6.1-sol")
+        || model.trim().eq_ignore_ascii_case("gpt-6.1-terra")
+    {
+        vec!["low", "medium", "high", "xhigh", "max", "ultra"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else if model.trim().starts_with("gpt-6-")
+        || model.trim().eq_ignore_ascii_case("gpt-6-astra")
+        || model.trim().starts_with("gpt-5.6-")
+    {
         supported_reasoning_efforts()
+            .iter()
+            .map(|item| item.to_string())
+            .collect()
+    } else {
+        supported_reasoning_efforts()[..4]
             .iter()
             .map(|item| item.to_string())
             .collect()
@@ -490,12 +555,14 @@ fn default_reasoning_efforts_for_model(model: &str) -> Vec<String> {
 
 fn default_model_presets() -> Vec<CodexWakeupModelPreset> {
     let items = [
+        ("preset-gpt-6-1-sol", "GPT-6.1 Sol", "gpt-6.1-sol"),
+        ("preset-gpt-6-astra", "GPT-6 Astra", "gpt-6-astra"),
+        ("preset-gpt-6-1-terra", "GPT-6.1 Terra", "gpt-6.1-terra"),
+        ("preset-gpt-6-sol", "GPT-6 Sol", "gpt-6-sol"),
+        ("preset-gpt-6-luna", "GPT-6 Luna", "gpt-6-luna"),
         ("preset-gpt-5-6-sol", "GPT-5.6 Sol", "gpt-5.6-sol"),
         ("preset-gpt-5-6-terra", "GPT-5.6 Terra", "gpt-5.6-terra"),
         ("preset-gpt-5-6-luna", "GPT-5.6 Luna", "gpt-5.6-luna"),
-        ("preset-gpt-5-5", "GPT-5.5", "gpt-5.5"),
-        ("preset-gpt-5-4", "GPT-5.4", "gpt-5.4"),
-        ("preset-gpt-5-4-mini", "GPT-5.4-Mini", "gpt-5.4-mini"),
     ];
 
     items
@@ -561,52 +628,144 @@ fn ensure_gpt_5_6_model_presets(state: &mut CodexWakeupState) -> bool {
     true
 }
 
-fn gpt_5_5_model_preset() -> CodexWakeupModelPreset {
-    let model = "gpt-5.5";
-    let allowed_reasoning_efforts = default_reasoning_efforts_for_model(model);
-    let default_reasoning_effort = if allowed_reasoning_efforts
-        .iter()
-        .any(|item| item == REASONING_EFFORT_MEDIUM)
-    {
-        REASONING_EFFORT_MEDIUM.to_string()
-    } else {
-        allowed_reasoning_efforts
-            .first()
-            .cloned()
-            .unwrap_or_else(|| REASONING_EFFORT_MEDIUM.to_string())
-    };
-    CodexWakeupModelPreset {
-        id: "preset-gpt-5-5".to_string(),
-        name: "GPT-5.5".to_string(),
-        model: model.to_string(),
-        allowed_reasoning_efforts,
-        default_reasoning_effort,
-    }
-}
-
-fn ensure_gpt_5_5_model_preset(state: &mut CodexWakeupState) -> bool {
-    if state
+fn ensure_gpt_6_astra_model_preset(state: &mut CodexWakeupState) -> bool {
+    let mut changed = false;
+    if !state
         .model_preset_migrations
         .iter()
-        .any(|item| item == GPT_5_5_MODEL_PRESET_MIGRATION_ID)
+        .any(|item| item == GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID)
     {
-        return false;
+        state
+            .model_preset_migrations
+            .push(GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID.to_string());
+        changed = true;
     }
 
-    state
-        .model_preset_migrations
-        .push(GPT_5_5_MODEL_PRESET_MIGRATION_ID.to_string());
-
-    if state
+    if let Some(index) = state
         .model_presets
         .iter()
-        .any(|preset| preset.model.trim().eq_ignore_ascii_case("gpt-5.5"))
+        .position(|preset| preset.model.trim().eq_ignore_ascii_case("gpt-6-astra"))
     {
-        return true;
+        let target = usize::from(
+            state
+                .model_presets
+                .iter()
+                .any(|preset| preset.model == "gpt-6.1-sol"),
+        );
+        if index != target {
+            let astra = state.model_presets.remove(index);
+            state.model_presets.insert(target, astra);
+            changed = true;
+        }
+    } else if let Some(preset) = default_model_presets()
+        .into_iter()
+        .find(|preset| preset.model.eq_ignore_ascii_case("gpt-6-astra"))
+    {
+        let target = usize::from(
+            state
+                .model_presets
+                .iter()
+                .any(|preset| preset.model == "gpt-6.1-sol"),
+        );
+        state.model_presets.insert(target, preset);
+        changed = true;
     }
 
-    state.model_presets.insert(0, gpt_5_5_model_preset());
-    true
+    changed
+}
+
+/// 把 `gpt-6-sol` / `gpt-6-luna` 补进唤醒预设，并保持 astra → sol → luna 的官方顺序。
+fn ensure_gpt_6_sol_luna_model_presets(state: &mut CodexWakeupState) -> bool {
+    let mut changed = false;
+    if !state
+        .model_preset_migrations
+        .iter()
+        .any(|item| item == GPT_6_SOL_LUNA_MODEL_PRESETS_MIGRATION_ID)
+    {
+        state
+            .model_preset_migrations
+            .push(GPT_6_SOL_LUNA_MODEL_PRESETS_MIGRATION_ID.to_string());
+        changed = true;
+    }
+
+    let defaults = default_model_presets();
+    let mut insert_at = state.model_presets.iter()
+        .position(|preset| preset.model.trim().eq_ignore_ascii_case("gpt-6.1-terra"))
+        .or_else(|| state.model_presets.iter()
+            .position(|preset| preset.model.trim().eq_ignore_ascii_case("gpt-6-astra")))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    for model in ["gpt-6-sol", "gpt-6-luna"] {
+        if let Some(index) = state
+            .model_presets
+            .iter()
+            .position(|preset| preset.model.trim().eq_ignore_ascii_case(model))
+        {
+            if index > insert_at {
+                let preset = state.model_presets.remove(index);
+                state.model_presets.insert(insert_at, preset);
+                changed = true;
+            }
+        } else if let Some(preset) = defaults
+            .iter()
+            .find(|preset| preset.model.eq_ignore_ascii_case(model))
+            .cloned()
+        {
+            state.model_presets.insert(insert_at, preset);
+            changed = true;
+        }
+        insert_at += 1;
+    }
+
+    changed
+}
+
+/// 内建预设的历史短名 → 带官方 `GPT-` 前缀的名字。
+///
+/// 只有「模型 ID 与短名同时匹配」的内建预设才会改名，用户自己改过的名字不受影响。
+const BUILTIN_MODEL_PRESET_NAME_MIGRATIONS: &[(&str, &str, &str)] = &[
+    ("gpt-6-astra", "6 Astra", "GPT-6 Astra"),
+    ("gpt-6-sol", "6 Sol", "GPT-6 Sol"),
+    ("gpt-6-luna", "6 Luna", "GPT-6 Luna"),
+    ("gpt-5.6-sol", "5.6 Sol", "GPT-5.6 Sol"),
+    ("gpt-5.6-terra", "5.6 Terra", "GPT-5.6 Terra"),
+    ("gpt-5.6-luna", "5.6 Luna", "GPT-5.6 Luna"),
+];
+
+/// 把早先版本的短名预设（`6 Astra`、`5.6 Sol` 等）统一成 `GPT-` 前缀名。
+fn prefix_builtin_model_preset_names(state: &mut CodexWakeupState) -> bool {
+    let mut changed = false;
+    if !state
+        .model_preset_migrations
+        .iter()
+        .any(|item| item == PREFIX_BUILTIN_MODEL_PRESET_NAMES_MIGRATION_ID)
+    {
+        state
+            .model_preset_migrations
+            .push(PREFIX_BUILTIN_MODEL_PRESET_NAMES_MIGRATION_ID.to_string());
+        changed = true;
+    }
+
+    for preset in &mut state.model_presets {
+        let model = preset.model.trim();
+        let current = preset.name.trim();
+        let Some((_, _, canonical)) =
+            BUILTIN_MODEL_PRESET_NAME_MIGRATIONS
+                .iter()
+                .find(|(builtin_model, legacy_name, _)| {
+                    builtin_model.eq_ignore_ascii_case(model)
+                        && legacy_name.eq_ignore_ascii_case(current)
+                })
+        else {
+            continue;
+        };
+        if preset.name != *canonical {
+            preset.name = (*canonical).to_string();
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 fn is_legacy_codex_model_preset(preset: &CodexWakeupModelPreset) -> bool {
@@ -638,11 +797,180 @@ fn prune_legacy_model_presets(state: &mut CodexWakeupState) -> bool {
     true
 }
 
+/// 解析 `gpt-<major>.<minor>` 形式的主次版本号，用于判断模型是否早于 5.5。
+fn wakeup_model_version(model: &str) -> Option<(u32, u32)> {
+    let normalized = model.trim().to_ascii_lowercase();
+    let rest = normalized.strip_prefix("gpt-")?;
+    let head = rest
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .next()?;
+    let mut parts = head.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts
+        .next()
+        .and_then(|item| item.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor))
+}
+
+/// 通用判定：`gpt-<major>.<minor>` 早于 5.5 的模型（含 `gpt-5-codex` 这类不带次版本号的写法）。
+/// 模型目录与唤醒预设共用同一口径，避免两处过滤规则各自漂移。
+pub(crate) fn is_codex_model_before_5_5(model: &str) -> bool {
+    wakeup_model_version(model).is_some_and(|version| version < (5, 5))
+}
+
+/// 5.5 之前的模型（含 `gpt-5-codex` 这类不带次版本号的写法）不再作为唤醒目标。
+fn is_wakeup_model_before_5_5(model: &str) -> bool {
+    is_codex_model_before_5_5(model)
+}
+
+fn prune_pre_5_5_model_presets(state: &mut CodexWakeupState) -> bool {
+    if state
+        .model_preset_migrations
+        .iter()
+        .any(|item| item == PRUNE_PRE_5_5_MODEL_PRESETS_MIGRATION_ID)
+    {
+        return false;
+    }
+
+    state
+        .model_preset_migrations
+        .push(PRUNE_PRE_5_5_MODEL_PRESETS_MIGRATION_ID.to_string());
+    let before = state.model_presets.len();
+    state
+        .model_presets
+        .retain(|preset| !is_wakeup_model_before_5_5(&preset.model));
+    before != state.model_presets.len()
+}
+
+/// 引用了 5.5 之前模型的任务统一改到默认的 GPT-5.6 Luna，避免任务继续指向已下架模型。
+fn retarget_pre_5_5_wakeup_tasks(state: &mut CodexWakeupState) -> bool {
+    let mut changed = false;
+    for task in &mut state.tasks {
+        let Some(model) = task.model.as_deref() else {
+            continue;
+        };
+        if !is_wakeup_model_before_5_5(model) {
+            continue;
+        }
+        task.model = Some(DEFAULT_WAKEUP_MODEL.to_string());
+        task.model_display_name = Some(DEFAULT_WAKEUP_MODEL_NAME.to_string());
+        task.model_reasoning_effort = None;
+        changed = true;
+    }
+    changed
+}
+
+fn is_retired_gpt_5_5_wakeup_model(model: &str) -> bool {
+    wakeup_model_version(model) == Some((5, 5))
+}
+
+fn retarget_retired_wakeup_model(
+    model: &mut Option<String>,
+    display_name: &mut Option<String>,
+) -> bool {
+    if !model
+        .as_deref()
+        .is_some_and(is_retired_gpt_5_5_wakeup_model)
+    {
+        return false;
+    }
+    *model = Some(DEFAULT_WAKEUP_MODEL.to_string());
+    *display_name = Some(DEFAULT_WAKEUP_MODEL_NAME.to_string());
+    true
+}
+
+/// 每次读取/保存都清理旧快照中的退役目标；旧添加标记继续保留，迁移可重复执行。
+fn retire_gpt_5_5_wakeup_model(state: &mut CodexWakeupState) -> bool {
+    let mut changed = false;
+    for marker in [
+        GPT_5_5_MODEL_PRESET_MIGRATION_ID,
+        RETIRE_GPT_5_5_WAKEUP_MODEL_MIGRATION_ID,
+    ] {
+        if !state
+            .model_preset_migrations
+            .iter()
+            .any(|item| item == marker)
+        {
+            state.model_preset_migrations.push(marker.to_string());
+            changed = true;
+        }
+    }
+    let before = state.model_presets.len();
+    state
+        .model_presets
+        .retain(|preset| !is_retired_gpt_5_5_wakeup_model(&preset.model));
+    changed |= before != state.model_presets.len();
+    for task in &mut state.tasks {
+        changed |= retarget_retired_wakeup_model(&mut task.model, &mut task.model_display_name);
+    }
+    changed
+}
+
+fn ensure_gpt_6_1_sol_model_preset(state: &mut CodexWakeupState) -> bool {
+    if state
+        .model_preset_migrations
+        .iter()
+        .any(|id| id == GPT_6_1_SOL_MODEL_PRESET_MIGRATION_ID)
+    {
+        return false;
+    }
+    state
+        .model_preset_migrations
+        .push(GPT_6_1_SOL_MODEL_PRESET_MIGRATION_ID.to_string());
+    let defaults = default_model_presets();
+    let unchanged = defaults
+        .iter()
+        .filter(|preset| preset.model != "gpt-6.1-sol" && preset.model != "gpt-6.1-terra")
+        .all(|preset| {
+            state
+                .model_presets
+                .iter()
+                .any(|existing| existing.model == preset.model)
+        });
+    if unchanged
+        && !state
+            .model_presets
+            .iter()
+            .any(|preset| preset.model == "gpt-6.1-sol")
+    {
+        state.model_presets.insert(0, defaults[0].clone());
+    }
+    true
+}
+
+fn ensure_gpt_6_1_terra_model_preset(state: &mut CodexWakeupState) -> bool {
+    if state.model_preset_migrations.iter()
+        .any(|id| id == GPT_6_1_TERRA_MODEL_PRESET_MIGRATION_ID)
+    {
+        return false;
+    }
+    state.model_preset_migrations.push(GPT_6_1_TERRA_MODEL_PRESET_MIGRATION_ID.into());
+    if !state.model_presets.iter()
+        .any(|preset| preset.model.trim().eq_ignore_ascii_case("gpt-6.1-terra"))
+    {
+        let insert_at = state.model_presets.iter()
+            .position(|preset| preset.model.trim().eq_ignore_ascii_case("gpt-6-astra"))
+            .map(|index| index + 1).unwrap_or(0);
+        let terra = default_model_presets().into_iter()
+            .find(|preset| preset.model == "gpt-6.1-terra").expect("Terra preset");
+        state.model_presets.insert(insert_at, terra);
+    }
+    true
+}
+
 fn apply_model_preset_migrations(state: &mut CodexWakeupState) -> bool {
     let mut changed = false;
     changed |= prune_legacy_model_presets(state);
+    changed |= prune_pre_5_5_model_presets(state);
+    changed |= retarget_pre_5_5_wakeup_tasks(state);
     changed |= ensure_gpt_5_6_model_presets(state);
-    changed |= ensure_gpt_5_5_model_preset(state);
+    changed |= retire_gpt_5_5_wakeup_model(state);
+    changed |= ensure_gpt_6_astra_model_preset(state);
+    changed |= ensure_gpt_6_sol_luna_model_presets(state);
+    changed |= ensure_gpt_6_1_sol_model_preset(state);
+    changed |= ensure_gpt_6_1_terra_model_preset(state);
+    changed |= prefix_builtin_model_preset_names(state);
     state.model_preset_migrations.sort();
     state.model_preset_migrations.dedup();
     changed
@@ -656,8 +984,16 @@ fn tasks_path() -> Result<PathBuf, String> {
     Ok(data_dir()?.join(TASKS_FILE))
 }
 
-fn history_path() -> Result<PathBuf, String> {
-    Ok(data_dir()?.join(HISTORY_FILE))
+fn run_store() -> Result<run_store::RunStore, String> {
+    Ok(run_store::RunStore::new(tasks_path()?))
+}
+
+fn history_store() -> Result<HistoryStore, String> {
+    Ok(history_store_at(data_dir()?.join(HISTORY_FILE)))
+}
+
+pub(crate) fn history_store_at(path: PathBuf) -> HistoryStore {
+    wakeup_history_store::wakeup(path, "codex", MAX_HISTORY_ITEMS)
 }
 
 fn runtime_config_path() -> Result<PathBuf, String> {
@@ -1113,7 +1449,7 @@ fn parse_node_launch_requirement(path: &Path) -> NodeLaunchRequirement {
     NodeLaunchRequirement::NotNeeded
 }
 
-fn resolve_binary_from_path() -> Option<PathBuf> {
+fn resolve_binary_paths_from_path() -> Vec<PathBuf> {
     let dirs = collect_runtime_search_dirs();
 
     logger::log_info(&format!(
@@ -1122,7 +1458,16 @@ fn resolve_binary_from_path() -> Option<PathBuf> {
         summarize_path_dirs_for_log(&dirs)
     ));
 
-    resolve_binary_in_dirs(&dirs, binary_candidates())
+    let mut paths = Vec::new();
+    for dir in dirs {
+        for candidate in binary_candidates() {
+            let path = dir.join(candidate);
+            if path.is_file() && !paths.iter().any(|existing| existing == &path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
 }
 
 fn resolve_node_from_binary_path(binary_path: &Path) -> Option<PathBuf> {
@@ -1242,7 +1587,60 @@ fn build_resolved_binary(
         path,
         source,
         node_path,
+        version: String::new(),
     })
+}
+
+fn probe_binary_version(binary: &ResolvedBinary) -> Result<String, String> {
+    let mut command = build_binary_command(binary);
+    command.arg("--version");
+    let output = crate::modules::process_timeout::output_with_timeout(
+        &mut command,
+        CLI_VERSION_PROBE_TIMEOUT,
+    )
+    .map_err(|error| {
+        format!(
+            "Codex CLI 无法启动: path={}, error={}",
+            binary.path.display(),
+            error
+        )
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let detail = if !stderr.is_empty() { &stderr } else { &stdout };
+        return Err(format!(
+            "Codex CLI 版本探测失败: path={}, status={}, detail={}",
+            binary.path.display(),
+            output.status,
+            truncate_log_text(detail, 240)
+        ));
+    }
+    let version = if !stdout.is_empty() { stdout } else { stderr };
+    if version.is_empty() {
+        return Err(format!(
+            "Codex CLI 版本探测未返回内容: {}",
+            binary.path.display()
+        ));
+    }
+    Ok(version)
+}
+
+fn build_usable_resolved_binary(
+    path: PathBuf,
+    source: String,
+    configured_node_path: Option<&Path>,
+) -> Result<ResolvedBinary, CliResolveError> {
+    let mut binary = build_resolved_binary(path, source, configured_node_path)?;
+    binary.version = probe_binary_version(&binary)
+        .map_err(|error| CliResolveError::new(error, &[REQUIRED_RUNTIME_PATH_CODEX_CLI]))?;
+    Ok(binary)
+}
+
+fn push_runtime_candidate_error(errors: &mut Vec<String>, source: &str, error: &str) {
+    let message = format!("{}: {}", source, truncate_log_text(error, 280));
+    logger::log_warn(&format!("[CodexWakeup][CLI] 跳过不可用候选: {}", message));
+    errors.push(message);
 }
 
 fn resolve_binary_with_runtime_config(
@@ -1266,24 +1664,36 @@ fn resolve_binary_with_runtime_config(
         collect_runtime_search_dirs().len()
     ));
 
+    let mut candidate_errors = Vec::new();
+    let mut checked_paths = HashSet::new();
+
     if let Some(configured_cli_path) = configured_cli_path {
         let configured_path = PathBuf::from(&configured_cli_path);
-        let resolved =
-            resolve_configured_binary_path(&configured_path, binary_candidates(), "Codex CLI")
-                .map_err(|err| {
-                    logger::log_warn(&format!("[CodexWakeup][CLI] {}", err));
-                    CliResolveError::new(err, &[REQUIRED_RUNTIME_PATH_CODEX_CLI])
-                })?;
-        logger::log_info(&format!(
-            "[CodexWakeup][CLI] 命中自定义 Codex CLI 路径: input={}, resolved={}",
-            configured_path.display(),
-            resolved.display()
-        ));
-        return build_resolved_binary(
-            resolved,
-            "runtime_config".to_string(),
-            configured_node_path.as_deref(),
-        );
+        match resolve_configured_binary_path(&configured_path, binary_candidates(), "Codex CLI") {
+            Ok(resolved) => {
+                checked_paths.insert(resolved.clone());
+                logger::log_info(&format!(
+                    "[CodexWakeup][CLI] 命中自定义 Codex CLI 路径: input={}, resolved={}",
+                    configured_path.display(),
+                    resolved.display()
+                ));
+                match build_usable_resolved_binary(
+                    resolved,
+                    "runtime_config".to_string(),
+                    configured_node_path.as_deref(),
+                ) {
+                    Ok(binary) => return Ok(binary),
+                    Err(error) => push_runtime_candidate_error(
+                        &mut candidate_errors,
+                        "runtime_config",
+                        &error.message,
+                    ),
+                }
+            }
+            Err(error) => {
+                push_runtime_candidate_error(&mut candidate_errors, "runtime_config", &error)
+            }
+        }
     }
 
     if let Ok(raw) = std::env::var("CODEX_CLI_PATH") {
@@ -1291,34 +1701,82 @@ fn resolve_binary_with_runtime_config(
         if !trimmed.is_empty() {
             let path = PathBuf::from(trimmed);
             if path.is_file() {
+                checked_paths.insert(path.clone());
                 logger::log_info(&format!(
                     "[CodexWakeup][CLI] 命中 CODEX_CLI_PATH: {}",
                     path.display()
                 ));
-                return build_resolved_binary(
+                match build_usable_resolved_binary(
                     path,
                     "CODEX_CLI_PATH".to_string(),
                     configured_node_path.as_deref(),
+                ) {
+                    Ok(binary) => return Ok(binary),
+                    Err(error) => push_runtime_candidate_error(
+                        &mut candidate_errors,
+                        "CODEX_CLI_PATH",
+                        &error.message,
+                    ),
+                }
+            } else {
+                push_runtime_candidate_error(
+                    &mut candidate_errors,
+                    "CODEX_CLI_PATH",
+                    &format!("指向的文件不存在: {}", trimmed),
                 );
             }
-            let err = format!("CODEX_CLI_PATH 指向的文件不存在: {}", trimmed);
-            logger::log_warn(&format!("[CodexWakeup][CLI] {}", err));
-            return Err(CliResolveError::new(
-                err,
-                &[REQUIRED_RUNTIME_PATH_CODEX_CLI],
-            ));
         }
     }
 
-    if let Some(path) = resolve_binary_from_path() {
+    for path in resolve_binary_paths_from_path() {
+        if !checked_paths.insert(path.clone()) {
+            continue;
+        }
         logger::log_info(&format!(
-            "[CodexWakeup][CLI] 已从 PATH 解析到 codex: {}",
+            "[CodexWakeup][CLI] 从 PATH 检查 codex 候选: {}",
             path.display()
         ));
-        return build_resolved_binary(path, "PATH".to_string(), configured_node_path.as_deref());
+        match build_usable_resolved_binary(
+            path,
+            "PATH".to_string(),
+            configured_node_path.as_deref(),
+        ) {
+            Ok(binary) => return Ok(binary),
+            Err(error) => {
+                push_runtime_candidate_error(&mut candidate_errors, "PATH", &error.message)
+            }
+        }
     }
 
-    let err = "未检测到 Codex CLI，请先安装 `codex` 命令。".to_string();
+    if let Ok(path) = crate::modules::codex_official_app_server::official_app_server_executable() {
+        if checked_paths.insert(path.clone()) {
+            logger::log_info(&format!(
+                "[CodexWakeup][CLI] 检查官方客户端内置 Codex: {}",
+                path.display()
+            ));
+            match build_usable_resolved_binary(
+                path,
+                "official_app".to_string(),
+                configured_node_path.as_deref(),
+            ) {
+                Ok(binary) => return Ok(binary),
+                Err(error) => push_runtime_candidate_error(
+                    &mut candidate_errors,
+                    "official_app",
+                    &error.message,
+                ),
+            }
+        }
+    }
+
+    let err = if candidate_errors.is_empty() {
+        "未检测到 Codex CLI，请先安装 `codex` 命令。".to_string()
+    } else {
+        format!(
+            "未检测到可运行的 Codex CLI，已跳过不可用候选：{}",
+            candidate_errors.join(" | ")
+        )
+    };
     logger::log_warn(&format!("[CodexWakeup][CLI] {}", err));
     Err(CliResolveError::new(
         err,
@@ -1337,49 +1795,11 @@ fn resolve_binary() -> Result<ResolvedBinary, CliResolveError> {
 }
 
 fn fetch_binary_version(binary: &ResolvedBinary) -> Option<String> {
-    logger::log_info(&format!(
-        "[CodexWakeup][CLI] 开始探测版本: codex_path={}, node_path={}",
-        binary.path.display(),
-        format_optional_path_for_log(binary.node_path.as_deref())
-    ));
-    let mut command = build_binary_command(&binary);
-    command.arg("--version");
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(err) => {
-            logger::log_warn(&format!("[CodexWakeup][CLI] 启动版本探测进程失败: {}", err));
-            return None;
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        logger::log_warn(&format!(
-            "[CodexWakeup][CLI] 版本探测失败: status={}, stdout={}, stderr={}",
-            output.status,
-            truncate_log_text(&stdout, 200),
-            truncate_log_text(&stderr, 200)
-        ));
-        return None;
+    if binary.version.trim().is_empty() {
+        None
+    } else {
+        Some(binary.version.clone())
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !stdout.is_empty() {
-        logger::log_info(&format!(
-            "[CodexWakeup][CLI] 版本探测成功: {}",
-            truncate_log_text(&stdout, 200)
-        ));
-        return Some(stdout);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !stderr.is_empty() {
-        logger::log_info(&format!(
-            "[CodexWakeup][CLI] 版本探测成功(stderr): {}",
-            truncate_log_text(&stderr, 200)
-        ));
-        return Some(stderr);
-    }
-    logger::log_info("[CodexWakeup][CLI] 版本探测完成，但未返回输出");
-    None
 }
 
 fn build_binary_command(binary: &ResolvedBinary) -> Command {
@@ -1463,6 +1883,12 @@ pub fn resolve_cli_runtime() -> Result<CodexCliResolvedRuntime, String> {
         node_path: binary.node_path.map(|path| path.display().to_string()),
         source: binary.source,
     })
+}
+
+#[cfg(any(unix, windows))]
+pub(crate) fn build_resolved_cli_command() -> Result<Command, String> {
+    let binary = resolve_binary().map_err(|error| error.message)?;
+    Ok(build_binary_command(&binary))
 }
 
 pub fn run_cli_conversation_in_home_detailed(
@@ -1598,6 +2024,9 @@ fn normalize_schedule(raw: &CodexWakeupSchedule) -> CodexWakeupSchedule {
         } else {
             None
         },
+        quota_reset_delay_minutes: raw.quota_reset_delay_minutes.filter(|&minutes| {
+            normalized_kind == "quota_reset" && minutes > 0
+        }),
         startup_delay_minutes: if normalized_kind == "startup" {
             Some(startup_delay_minutes.unwrap_or(0))
         } else {
@@ -1606,11 +2035,18 @@ fn normalize_schedule(raw: &CodexWakeupSchedule) -> CodexWakeupSchedule {
     }
 }
 
-fn existing_codex_account_id_set() -> HashSet<String> {
-    codex_account::list_accounts()
-        .into_iter()
-        .map(|account| account.id)
-        .collect()
+pub(crate) fn is_pool_wakeup_account(account: &CodexAccount) -> bool {
+    !account.is_api_key_auth() && !account.is_web_session_auth()
+}
+
+pub(crate) fn resolve_pool_wakeup_account_ids() -> Result<Vec<String>, String> {
+    let mut eligible = Vec::new();
+    for id in codex_local_access::configured_active_pool_member_ids()? {
+        if codex_account::load_account_checked(&id)?.as_ref().is_some_and(is_pool_wakeup_account) {
+            eligible.push(id);
+        }
+    }
+    Ok(eligible)
 }
 
 /// Keep only non-empty account ids that still exist in the Codex account store.
@@ -1640,7 +2076,7 @@ fn prune_missing_accounts_from_state(
             changed = true;
             task.updated_at = now_ts();
         }
-        if task.account_ids.is_empty() {
+        if task.account_ids.is_empty() && !task.use_api_service_pool {
             changed = true;
             continue;
         }
@@ -1650,9 +2086,17 @@ fn prune_missing_accounts_from_state(
     changed
 }
 
+fn prune_missing_indexed_accounts(state: &mut CodexWakeupState) -> Result<bool, String> {
+    if state.tasks.iter().all(|task| task.use_api_service_pool) {
+        return Ok(false);
+    }
+    let existing = codex_account::list_indexed_account_ids()?;
+    Ok(prune_missing_accounts_from_state(state, &existing))
+}
+
 /// Remove deleted account ids from persisted Codex wakeup tasks.
 /// Called when Codex accounts are deleted so task snapshots stay in sync.
-pub fn remove_deleted_accounts_from_tasks(account_ids: &[String]) -> Result<(), String> {
+pub async fn remove_deleted_accounts_from_tasks(account_ids: &[String]) -> Result<(), String> {
     let remove_ids: HashSet<String> = account_ids
         .iter()
         .map(|item| item.trim().to_string())
@@ -1661,24 +2105,14 @@ pub fn remove_deleted_accounts_from_tasks(account_ids: &[String]) -> Result<(), 
     if remove_ids.is_empty() {
         return Ok(());
     }
+    run_state_task(move || remove_task_account_refs(&remove_ids)).await
+}
 
+fn remove_task_account_refs(remove_ids: &HashSet<String>) -> Result<(), String> {
     let _lock = TASKS_LOCK.lock().map_err(|_| "获取 Codex 唤醒任务锁失败")?;
-    let path = tasks_path()?;
-    if !path.exists() {
-        return Ok(());
-    }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("读取 Codex 唤醒任务失败: {}", e))?;
-    if content.trim().is_empty() {
-        return Ok(());
-    }
-    let mut state: CodexWakeupState = match serde_json::from_str(&content) {
-        Ok(state) => state,
-        Err(error) => {
-            quarantine_corrupted_wakeup_file(&path, "任务配置", &error);
-            return Ok(());
-        }
-    };
+    let _file_lock = task_state::lock_task_state()?;
+    let store = run_store()?;
+    let mut state = store.load()?;
 
     let mut changed = false;
     let mut kept = Vec::with_capacity(state.tasks.len());
@@ -1690,7 +2124,7 @@ pub fn remove_deleted_accounts_from_tasks(account_ids: &[String]) -> Result<(), 
             changed = true;
             task.updated_at = now_ts();
         }
-        if task.account_ids.is_empty() {
+        if task.account_ids.is_empty() && !task.use_api_service_pool {
             changed = true;
             continue;
         }
@@ -1703,11 +2137,10 @@ pub fn remove_deleted_accounts_from_tasks(account_ids: &[String]) -> Result<(), 
     state.tasks = kept;
     // Normalize + refresh schedules before writing, without re-entering load_state locks.
     state.tasks = state.tasks.iter().map(normalize_task).collect();
-    state.tasks.retain(|task| !task.account_ids.is_empty());
-    let existing = existing_codex_account_id_set();
-    let _ = prune_missing_accounts_from_state(&mut state, &existing);
-    refresh_next_run_at(&mut state);
-    save_json_atomic(&path, &state)?;
+    state.tasks.retain(|task| task.use_api_service_pool || !task.account_ids.is_empty());
+    prune_missing_indexed_accounts(&mut state)?;
+    store.save_rules(&state, &[])?;
+    crate::modules::codex_wakeup_scheduler::cancel_disabled_tasks(&state);
     logger::log_info(&format!(
         "[CodexWakeup] 已从唤醒任务中移除已删除账号引用: removed={}, remaining_tasks={}",
         remove_ids.len(),
@@ -1726,6 +2159,9 @@ fn normalize_task(raw: &CodexWakeupTask) -> CodexWakeupTask {
         .collect();
     account_ids.sort();
     account_ids.dedup();
+    if raw.use_api_service_pool {
+        account_ids.clear();
+    }
 
     let name = raw.name.trim();
     let prompt = raw
@@ -1758,6 +2194,7 @@ fn normalize_task(raw: &CodexWakeupTask) -> CodexWakeupTask {
         },
         enabled: raw.enabled,
         account_ids,
+        use_api_service_pool: raw.use_api_service_pool,
         prompt,
         model,
         model_display_name,
@@ -1780,6 +2217,7 @@ fn normalize_task(raw: &CodexWakeupTask) -> CodexWakeupTask {
         last_failure_count: raw.last_failure_count,
         last_duration_ms: raw.last_duration_ms,
         next_run_at: raw.next_run_at,
+        quota_reset_plan: raw.quota_reset_plan.clone(),
         execution_mode: raw
             .execution_mode
             .as_ref()
@@ -1835,23 +2273,10 @@ pub fn save_runtime_config(
     Ok(normalized)
 }
 
-fn load_state_inner() -> Result<CodexWakeupState, String> {
-    let path = tasks_path()?;
-    if !path.exists() {
-        return Ok(CodexWakeupState::default());
-    }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("读取 Codex 唤醒任务失败: {}", e))?;
-    if content.trim().is_empty() {
-        return Ok(CodexWakeupState::default());
-    }
-    let mut state: CodexWakeupState = match serde_json::from_str(&content) {
-        Ok(state) => state,
-        Err(error) => {
-            quarantine_corrupted_wakeup_file(&path, "任务配置", &error);
-            return Ok(CodexWakeupState::default());
-        }
-    };
+// Caller owns TASKS_LOCK and the cross-process state lock.
+fn read_state_file() -> Result<CodexWakeupState, String> {
+    let store = run_store()?;
+    let mut state = store.load()?;
     state.tasks = state.tasks.iter().map(normalize_task).collect();
     let mut preset_ids = HashSet::new();
     state.model_presets = state
@@ -1869,37 +2294,53 @@ fn load_state_inner() -> Result<CodexWakeupState, String> {
     state.model_preset_migrations.sort();
     state.model_preset_migrations.dedup();
     let migration_changed = apply_model_preset_migrations(&mut state);
-    let existing_accounts = existing_codex_account_id_set();
-    let account_prune_changed = prune_missing_accounts_from_state(&mut state, &existing_accounts);
-    refresh_next_run_at(&mut state);
+    let account_prune_changed = prune_missing_indexed_accounts(&mut state)?;
+    task_state::recover_interrupted_runs(&mut state, &store)?;
     if migration_changed || account_prune_changed {
-        let _lock = TASKS_LOCK.lock().map_err(|_| "获取 Codex 唤醒任务锁失败")?;
-        save_json_atomic(&path, &state)?;
+        store.save_rules(&state, &[])?;
     }
     Ok(state)
 }
 
+fn load_state_inner() -> Result<CodexWakeupState, String> {
+    let _lock = TASKS_LOCK.lock().map_err(|_| "获取 Codex 唤醒任务锁失败")?;
+    let _file_lock = task_state::lock_task_state()?;
+    read_state_file()
+}
+
+pub(crate) async fn run_state_task<T: Send + 'static>(
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("Codex 唤醒状态任务失败: {error}"))?
+}
+
 pub fn load_state() -> Result<CodexWakeupState, String> {
-    load_state_inner()
+    let mut state = load_state_inner()?;
+    refresh_next_run_at(&mut state);
+    Ok(state)
 }
 
 pub fn load_state_for_scheduler() -> Result<CodexWakeupState, String> {
     load_state_inner()
 }
 
+pub(super) use task_state::save_quota_reset_plans;
+
 pub fn load_overview() -> Result<CodexWakeupOverview, String> {
     let runtime = wakeup_runtime_status();
     let state = load_state()?;
-    let history = load_history()?;
     Ok(CodexWakeupOverview {
         runtime,
         state,
-        history,
     })
 }
 
 pub fn save_state(next_state: &CodexWakeupState) -> Result<CodexWakeupState, String> {
     let _lock = TASKS_LOCK.lock().map_err(|_| "获取 Codex 唤醒任务锁失败")?;
+    let _file_lock = task_state::lock_task_state()?;
+    let current_state = read_state_file()?;
     let mut seen = HashSet::new();
     let mut preset_seen = HashSet::new();
     let mut state = CodexWakeupState {
@@ -1909,7 +2350,9 @@ pub fn save_state(next_state: &CodexWakeupState) -> Result<CodexWakeupState, Str
             .iter()
             .map(normalize_task)
             .filter(|task| {
-                !task.id.is_empty() && !task.account_ids.is_empty() && seen.insert(task.id.clone())
+                !task.id.is_empty()
+                    && (task.use_api_service_pool || !task.account_ids.is_empty())
+                    && seen.insert(task.id.clone())
             })
             .collect(),
         model_presets: next_state
@@ -1928,58 +2371,47 @@ pub fn save_state(next_state: &CodexWakeupState) -> Result<CodexWakeupState, Str
     state.model_preset_migrations.sort();
     state.model_preset_migrations.dedup();
     apply_model_preset_migrations(&mut state);
-    let existing_accounts = existing_codex_account_id_set();
-    let _ = prune_missing_accounts_from_state(&mut state, &existing_accounts);
+    prune_missing_indexed_accounts(&mut state)?;
 
+    // UI snapshots own configuration, never the scheduler's newer run results.
+    task_state::preserve_run_metadata(&mut state, &current_state);
+
+    let existing: HashSet<_> = current_state.tasks.iter().map(|task| task.id.as_str()).collect();
+    let new_tasks: Vec<_> = state
+        .tasks
+        .iter()
+        .filter(|task| !existing.contains(task.id.as_str()))
+        .collect();
+    run_store()?.save_rules(&state, &new_tasks)?;
+    crate::modules::codex_wakeup_scheduler::cancel_disabled_tasks(&state);
+    drop(_file_lock);
+    drop(_lock);
     refresh_next_run_at(&mut state);
-
-    save_json_atomic(&tasks_path()?, &state)?;
     Ok(state)
 }
 
-pub fn load_history() -> Result<Vec<CodexWakeupHistoryItem>, String> {
-    let path = history_path()?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("读取 Codex 唤醒历史失败: {}", e))?;
-    if content.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    match serde_json::from_str(&content) {
-        Ok(history) => Ok(history),
-        Err(error) => {
-            quarantine_corrupted_wakeup_file(&path, "历史记录", &error);
-            Ok(Vec::new())
-        }
-    }
+impl HistoryRow for CodexWakeupHistoryItem {
+    fn id(&self) -> &str { &self.id }
+    fn timestamp(&self) -> i64 { self.timestamp }
+}
+
+pub fn schedule_history_migration() -> Result<(), String> {
+    history_store()?.schedule::<CodexWakeupHistoryItem>();
+    Ok(())
+}
+
+pub fn load_history(
+    retry: bool,
+) -> Result<wakeup_history_store::HistoryRead<CodexWakeupHistoryItem>, String> {
+    wakeup_history_store::read_available(history_store()?, retry)
 }
 
 pub fn add_history_items(new_items: Vec<CodexWakeupHistoryItem>) -> Result<(), String> {
-    if new_items.is_empty() {
-        return Ok(());
-    }
-    let _lock = HISTORY_LOCK
-        .lock()
-        .map_err(|_| "获取 Codex 唤醒历史锁失败")?;
-    let mut existing = load_history().unwrap_or_default();
-    let existing_ids: HashSet<String> = existing.iter().map(|item| item.id.clone()).collect();
-    let mut merged: Vec<CodexWakeupHistoryItem> = new_items
-        .into_iter()
-        .filter(|item| !existing_ids.contains(&item.id))
-        .collect();
-    merged.append(&mut existing);
-    merged.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    merged.truncate(MAX_HISTORY_ITEMS);
-    save_json_atomic(&history_path()?, &merged)
+    history_store()?.add(&new_items)
 }
 
 pub fn clear_history() -> Result<(), String> {
-    let _lock = HISTORY_LOCK
-        .lock()
-        .map_err(|_| "获取 Codex 唤醒历史锁失败")?;
-    save_json_atomic(&history_path()?, &Vec::<CodexWakeupHistoryItem>::new())
+    history_store()?.clear()
 }
 
 #[cfg(target_os = "windows")]
@@ -2292,6 +2724,7 @@ fn emit_progress(
     phase: &str,
     current_account_id: Option<&str>,
     item: Option<CodexWakeupHistoryItem>,
+    account_ids: Option<&[String]>,
 ) {
     let Some(app) = app else {
         return;
@@ -2308,6 +2741,7 @@ fn emit_progress(
         failure_count,
         running,
         phase: phase.to_string(),
+        account_ids: account_ids.map(<[String]>::to_vec),
         current_account_id: current_account_id.map(|value| value.to_string()),
         item,
     };
@@ -2373,7 +2807,30 @@ fn create_cancelled_record(
     )
 }
 
+/// 唤醒执行入口：固定走 API 直连（宿主带上账号凭据直接请求官方接口），
+/// 既不要求本机 Codex CLI，也不经过本地 API 服务进程。
 async fn run_single_account(
+    run_id: &str,
+    context: &TaskRunContext,
+    account_id: &str,
+    prompt: &str,
+    execution_config: &CodexWakeupExecutionConfig,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+) -> CodexWakeupHistoryItem {
+    run_api_single_account(
+        run_id,
+        context,
+        account_id,
+        prompt,
+        execution_config,
+        cancel_flag,
+    )
+    .await
+}
+
+/// API 直连唤醒：宿主带上所选账号凭据直接请求官方上游，不需要本机 Codex CLI，
+/// 也不经过本地 API 服务进程。
+async fn run_api_single_account(
     run_id: &str,
     context: &TaskRunContext,
     account_id: &str,
@@ -2412,8 +2869,7 @@ async fn run_single_account(
         }
     };
     let existing_context_text = resolve_account_context_text(&existing);
-
-    if existing.is_api_key_auth() {
+    if existing.is_api_key_auth() || existing.is_web_session_auth() {
         return create_failure_record(
             run_id,
             &context.trigger_type,
@@ -2424,17 +2880,20 @@ async fn run_single_account(
             existing_context_text,
             prompt_value,
             execution_config,
-            "Codex 官方直连唤醒仅支持 OAuth 账号。".to_string(),
+            "Codex API 直连唤醒仅支持 OAuth / Agent Identity 账号。".to_string(),
             None,
         );
     }
 
     let started_at = std::time::Instant::now();
-    match codex_local_access::run_official_wakeup_chat(
-        account_id,
-        execution_config.model.as_deref(),
-        execution_config.model_reasoning_effort.as_deref(),
-        prompt,
+    match task_state::await_with_cancel(
+        cancel_flag,
+        codex_local_access::run_official_wakeup_chat(
+            account_id,
+            execution_config.model.as_deref(),
+            execution_config.model_reasoning_effort.as_deref(),
+            prompt,
+        ),
     )
     .await
     {
@@ -2495,6 +2954,185 @@ async fn run_single_account(
     }
 }
 
+/// CLI 唤醒：在受管 `CODEX_HOME` 中写入所选账号后执行 `codex exec`。
+async fn run_cli_single_account(
+    binary: &ResolvedBinary,
+    run_id: &str,
+    context: &TaskRunContext,
+    account_id: &str,
+    prompt: &str,
+    execution_config: &CodexWakeupExecutionConfig,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+) -> CodexWakeupHistoryItem {
+    let prompt_value = Some(prompt.to_string());
+    let cli_path = Some(binary.path.display().to_string());
+    if is_scope_cancelled(cancel_flag) {
+        return create_cancelled_record(
+            run_id,
+            context,
+            account_id,
+            prompt_value,
+            execution_config,
+            cli_path,
+        );
+    }
+
+    let existing = match codex_account::load_account(account_id) {
+        Some(account) => account,
+        None => {
+            return create_failure_record(
+                run_id,
+                &context.trigger_type,
+                context.task_id.as_deref(),
+                context.task_name.as_deref(),
+                account_id,
+                account_id.to_string(),
+                None,
+                prompt_value,
+                execution_config,
+                "账号不存在".to_string(),
+                cli_path,
+            )
+        }
+    };
+    let existing_context_text = resolve_account_context_text(&existing);
+
+    if existing.is_api_key_auth()
+        || existing.is_agent_identity_auth()
+        || existing.is_web_session_auth()
+    {
+        return create_failure_record(
+            run_id,
+            &context.trigger_type,
+            context.task_id.as_deref(),
+            context.task_name.as_deref(),
+            account_id,
+            existing.email,
+            existing_context_text,
+            prompt_value,
+            execution_config,
+            "Codex CLI 唤醒仅支持 OAuth 账号。".to_string(),
+            cli_path,
+        );
+    }
+
+    let managed_home = match managed_home_path(account_id) {
+        Ok(path) => path,
+        Err(err) => {
+            return create_failure_record(
+                run_id,
+                &context.trigger_type,
+                context.task_id.as_deref(),
+                context.task_name.as_deref(),
+                account_id,
+                existing.email,
+                existing_context_text,
+                prompt_value,
+                execution_config,
+                err,
+                cli_path,
+            )
+        }
+    };
+    if let Err(err) = fs::create_dir_all(&managed_home) {
+        return create_failure_record(
+            run_id,
+            &context.trigger_type,
+            context.task_id.as_deref(),
+            context.task_name.as_deref(),
+            account_id,
+            existing.email,
+            existing_context_text,
+            prompt_value,
+            execution_config,
+            format!("创建受管 CODEX_HOME 失败: {}", err),
+            cli_path,
+        );
+    }
+
+    let (account, command_result, sync_error) =
+        match codex_account::execute_with_managed_account_projection(
+            account_id,
+            &managed_home,
+            "Codex 唤醒执行",
+            |_| run_codex_exec_sync(binary, &managed_home, prompt, execution_config, cancel_flag),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                return create_failure_record(
+                    run_id,
+                    &context.trigger_type,
+                    context.task_id.as_deref(),
+                    context.task_name.as_deref(),
+                    account_id,
+                    existing.email,
+                    existing_context_text,
+                    prompt_value,
+                    execution_config,
+                    err,
+                    cli_path,
+                )
+            }
+        };
+    if let Some(err) = sync_error {
+        logger::log_warn(&format!(
+            "Codex 唤醒执行后同步受管目录 Token 失败: account_id={}, managed_home={}, error={}",
+            account_id,
+            managed_home.display(),
+            err
+        ));
+    }
+
+    match command_result {
+        Ok(output) => {
+            let account_context_text = resolve_account_context_text(&account);
+            let account_email = account.email;
+            CodexWakeupHistoryItem {
+                id: uuid::Uuid::new_v4().to_string(),
+                run_id: run_id.to_string(),
+                timestamp: now_ms(),
+                trigger_type: context.trigger_type.clone(),
+                task_id: context.task_id.clone(),
+                task_name: context.task_name.clone(),
+                account_id: account_id.to_string(),
+                account_email,
+                account_context_text,
+                success: true,
+                prompt: prompt_value,
+                model: execution_config.model.clone(),
+                model_display_name: execution_config.model_display_name.clone(),
+                model_reasoning_effort: execution_config.model_reasoning_effort.clone(),
+                reply: Some(output.reply),
+                error: None,
+                quota_refresh_error: None,
+                duration_ms: Some(output.duration_ms),
+                cli_path,
+                quota_before: None,
+                quota_after: None,
+            }
+        }
+        Err(err) => {
+            let account_context_text = resolve_account_context_text(&account);
+            let account_email = account.email;
+            create_failure_record(
+                run_id,
+                &context.trigger_type,
+                context.task_id.as_deref(),
+                context.task_name.as_deref(),
+                account_id,
+                account_email,
+                account_context_text,
+                prompt_value,
+                execution_config,
+                err,
+                cli_path,
+            )
+        }
+    }
+}
+
 pub async fn run_batch(
     app: Option<&AppHandle>,
     account_ids: Vec<String>,
@@ -2504,7 +3142,12 @@ pub async fn run_batch(
     run_id: Option<String>,
     cancel_scope_id: Option<&str>,
 ) -> Result<CodexWakeupBatchResult, String> {
-    let existing_accounts = existing_codex_account_id_set();
+    let mut execution_config = execution_config;
+    retarget_retired_wakeup_model(
+        &mut execution_config.model,
+        &mut execution_config.model_display_name,
+    );
+    let existing_accounts = run_state_task(codex_account::list_indexed_account_ids).await?;
     let cleaned_ids: Vec<String> = account_ids
         .into_iter()
         .map(|item| item.trim().to_string())
@@ -2536,6 +3179,7 @@ pub async fn run_batch(
         "batch_started",
         None,
         None,
+        Some(&cleaned_ids),
     );
     let mut records = Vec::with_capacity(cleaned_ids.len());
     let mut success_count = 0usize;
@@ -2564,6 +3208,7 @@ pub async fn run_batch(
                 "account_completed",
                 Some(&account_id),
                 Some(record.clone()),
+                None,
             );
             records.push(record);
             continue;
@@ -2580,6 +3225,7 @@ pub async fn run_batch(
             true,
             "account_started",
             Some(&account_id),
+            None,
             None,
         );
         let record = run_single_account(
@@ -2608,11 +3254,15 @@ pub async fn run_batch(
             "account_completed",
             Some(&account_id),
             Some(record.clone()),
+            None,
         );
         records.push(record);
     }
 
-    add_history_items(records.clone())?;
+    let history = records.clone();
+    tauri::async_runtime::spawn_blocking(move || add_history_items(history))
+        .await
+        .map_err(|error| format!("保存 Codex 唤醒历史任务失败: {error}"))??;
     emit_progress(
         app,
         &run_id,
@@ -2623,6 +3273,7 @@ pub async fn run_batch(
         failure_count,
         false,
         "batch_completed",
+        None,
         None,
         None,
     );
@@ -2636,42 +3287,26 @@ pub async fn run_batch(
     })
 }
 
-fn summarize_task_result(
-    records: &[CodexWakeupHistoryItem],
-) -> (Option<String>, Option<u64>, Option<i64>) {
-    let latest_ts = records.iter().map(|item| item.timestamp).max();
-    let total_duration = records
-        .iter()
-        .filter_map(|item| item.duration_ms)
-        .sum::<u64>();
-
-    (
-        None,
-        if records.is_empty() {
-            None
-        } else {
-            Some(total_duration)
-        },
-        latest_ts,
-    )
-}
-
 pub fn update_task_after_run(
-    task_id: &str,
+    claimed: &CodexWakeupTask,
     records: &[CodexWakeupHistoryItem],
 ) -> Result<(), String> {
-    let mut state = load_state()?;
-    let Some(task) = state.tasks.iter_mut().find(|item| item.id == task_id) else {
+    let _lock = TASKS_LOCK.lock().map_err(|_| "获取 Codex 唤醒任务锁失败")?;
+    let _file_lock = task_state::lock_task_state()?;
+    let mut state = read_state_file()?;
+    let Some(task) = task_state::claimed_task_mut(&mut state, claimed) else {
         return Ok(());
     };
 
     let all_success = !records.is_empty() && records.iter().all(|item| item.success);
     let success_count = records.iter().filter(|item| item.success).count() as u32;
     let failure_count = records.len().saturating_sub(success_count as usize) as u32;
-    let (summary_message, total_duration, _) = summarize_task_result(records);
     task.last_run_at = Some(now_ts());
     task.last_status = Some(if all_success { "success" } else { "error" }.to_string());
-    task.last_message = summary_message;
+    task.last_message = records
+        .iter()
+        .filter(|record| !record.success)
+        .find_map(|record| record.error.clone());
     task.last_success_count = if records.is_empty() {
         None
     } else {
@@ -2682,11 +3317,10 @@ pub fn update_task_after_run(
     } else {
         Some(failure_count)
     };
-    task.last_duration_ms = total_duration;
+    task.last_duration_ms = (!records.is_empty())
+        .then(|| records.iter().filter_map(|record| record.duration_ms).sum());
     task.updated_at = now_ts();
-    task.next_run_at = crate::modules::codex_wakeup_scheduler::calculate_next_run_at(task);
-    save_state(&state)?;
-    Ok(())
+    run_store()?.save_run(task)
 }
 
 pub fn get_task(task_id: &str) -> Result<Option<CodexWakeupTask>, String> {
@@ -2699,15 +3333,25 @@ pub fn get_task(task_id: &str) -> Result<Option<CodexWakeupTask>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_version_manager_cli_dirs, apply_model_preset_migrations, default_model_presets,
-        prune_missing_accounts_from_state, retain_existing_account_ids, CodexWakeupModelPreset,
-        CodexWakeupSchedule, CodexWakeupState, CodexWakeupTask, GPT_5_5_MODEL_PRESET_MIGRATION_ID,
-        GPT_5_6_MODEL_PRESETS_MIGRATION_ID, PRUNE_LEGACY_MODEL_PRESETS_MIGRATION_ID,
-        REASONING_EFFORT_MEDIUM,
+        append_version_manager_cli_dirs, apply_model_preset_migrations,
+        build_usable_resolved_binary, default_model_presets, is_wakeup_model_before_5_5,
+        prune_missing_accounts_from_state, retain_existing_account_ids, wakeup_runtime_status,
+        CodexWakeupModelPreset, CodexWakeupSchedule, CodexWakeupState, CodexWakeupTask,
+        GPT_5_5_MODEL_PRESET_MIGRATION_ID, GPT_5_6_MODEL_PRESETS_MIGRATION_ID,
+        GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID, GPT_6_SOL_LUNA_MODEL_PRESETS_MIGRATION_ID,
+        PREFIX_BUILTIN_MODEL_PRESET_NAMES_MIGRATION_ID, PRUNE_LEGACY_MODEL_PRESETS_MIGRATION_ID,
+        PRUNE_PRE_5_5_MODEL_PRESETS_MIGRATION_ID, REASONING_EFFORT_MEDIUM,
     };
     use std::collections::HashSet;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn wakeup_runtime_status_reports_cli_instead_of_official_chat() {
+        let status = wakeup_runtime_status();
+        assert_ne!(status.source.as_deref(), Some("official_chat"));
+        assert_ne!(status.message.as_deref(), Some("官方直连对话"));
+    }
 
     fn model_preset(id: &str, name: &str, model: &str) -> CodexWakeupModelPreset {
         CodexWakeupModelPreset {
@@ -2725,6 +3369,7 @@ mod tests {
             name: id.to_string(),
             enabled: true,
             account_ids: account_ids.iter().map(|item| item.to_string()).collect(),
+            use_api_service_pool: false,
             prompt: None,
             model: None,
             model_display_name: None,
@@ -2736,6 +3381,7 @@ mod tests {
                 weekly_time: None,
                 interval_hours: None,
                 quota_reset_window: None,
+                quota_reset_delay_minutes: None,
                 startup_delay_minutes: None,
             },
             created_at: 1,
@@ -2747,6 +3393,7 @@ mod tests {
             last_failure_count: None,
             last_duration_ms: None,
             next_run_at: None,
+            quota_reset_plan: None,
             execution_mode: None,
             confirm_timeout_minutes: None,
         }
@@ -2771,11 +3418,14 @@ mod tests {
 
     #[test]
     fn prune_missing_accounts_removes_stale_ids_and_empty_tasks() {
+        let mut pool = sample_task("task-pool", &[]);
+        pool.use_api_service_pool = true;
         let mut state = CodexWakeupState {
             enabled: true,
             tasks: vec![
                 sample_task("task-keep", &["acc-1", "acc-gone"]),
                 sample_task("task-empty", &["acc-gone"]),
+                pool,
             ],
             model_presets: Vec::new(),
             model_preset_migrations: Vec::new(),
@@ -2783,9 +3433,69 @@ mod tests {
         let existing = HashSet::from(["acc-1".to_string()]);
 
         assert!(prune_missing_accounts_from_state(&mut state, &existing));
-        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.tasks.len(), 2);
         assert_eq!(state.tasks[0].id, "task-keep");
         assert_eq!(state.tasks[0].account_ids, vec!["acc-1".to_string()]);
+        let saved = serde_json::to_value(&state.tasks[1]).unwrap();
+        assert_eq!(saved["useApiServicePool"], true);
+        assert_eq!(saved["accountIds"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn gpt_6_1_sol_wakeup_upgrade_is_idempotent_and_respects_removal() {
+        let mut state = CodexWakeupState {
+            enabled: false,
+            tasks: vec![],
+            model_presets: default_model_presets(),
+            model_preset_migrations: vec![],
+        };
+        state
+            .model_presets
+            .retain(|preset| preset.model != "gpt-6.1-sol");
+        assert!(apply_model_preset_migrations(&mut state));
+        assert_eq!(state.model_presets[0].model, "gpt-6.1-sol");
+        assert!(state.model_presets[0]
+            .allowed_reasoning_efforts
+            .contains(&"ultra".into()));
+        assert!(!apply_model_preset_migrations(&mut state));
+        state
+            .model_presets
+            .retain(|preset| preset.model != "gpt-6.1-sol");
+        assert!(!apply_model_preset_migrations(&mut state));
+        assert!(!state
+            .model_presets
+            .iter()
+            .any(|preset| preset.model == "gpt-6.1-sol"));
+        assert_eq!(super::DEFAULT_WAKEUP_MODEL, "gpt-5.6-luna");
+    }
+
+    #[test]
+    fn gpt_6_1_terra_wakeup_upgrade_is_idempotent_and_respects_custom_presets() {
+        let mut state = CodexWakeupState {
+            enabled: false, tasks: vec![], model_presets: default_model_presets(),
+            model_preset_migrations: vec![],
+        };
+        state.model_presets.retain(|preset| preset.model != "gpt-6.1-terra");
+        assert!(apply_model_preset_migrations(&mut state));
+        let terra = &state.model_presets[2];
+        assert_eq!(terra.model, "gpt-6.1-terra");
+        assert_eq!(terra.allowed_reasoning_efforts, vec!["low", "medium", "high", "xhigh", "max", "ultra"]);
+        assert_eq!(terra.default_reasoning_effort, "medium");
+        assert!(!apply_model_preset_migrations(&mut state));
+        let serialized = serde_json::to_vec(&state).unwrap();
+        let mut restored: CodexWakeupState = serde_json::from_slice(&serialized).unwrap();
+        restored.model_presets.retain(|preset| preset.model != "gpt-6.1-terra");
+        assert!(!apply_model_preset_migrations(&mut restored));
+        assert!(!restored.model_presets.iter().any(|preset| preset.model == "gpt-6.1-terra"));
+        let terra = state.model_presets.iter_mut().find(|preset| preset.model == "gpt-6.1-terra").unwrap();
+        terra.name = "My Terra".into();
+        terra.allowed_reasoning_efforts = vec!["high".into()];
+        state.model_preset_migrations.retain(|id| id != super::GPT_6_1_TERRA_MODEL_PRESET_MIGRATION_ID);
+        assert!(apply_model_preset_migrations(&mut state));
+        let terra = state.model_presets.iter().filter(|preset| preset.model == "gpt-6.1-terra").collect::<Vec<_>>();
+        assert_eq!(terra.len(), 1);
+        assert_eq!(terra[0].name, "My Terra");
+        assert_eq!(terra[0].allowed_reasoning_efforts, vec!["high"]);
     }
 
     #[test]
@@ -2798,18 +3508,47 @@ mod tests {
         assert_eq!(
             models,
             vec![
+                "gpt-6.1-sol",
+                "gpt-6-astra",
+                "gpt-6.1-terra",
+                "gpt-6-sol",
+                "gpt-6-luna",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "gpt-5.5",
-                "gpt-5.4",
-                "gpt-5.4-mini"
+                "gpt-5.6-luna"
             ]
         );
+        let astra = default_model_presets()
+            .into_iter()
+            .find(|preset| preset.model == "gpt-6-astra")
+            .expect("Astra preset");
+        assert_eq!(
+            astra.allowed_reasoning_efforts,
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+        for model in ["gpt-6-sol", "gpt-6-luna"] {
+            let preset = default_model_presets()
+                .into_iter()
+                .find(|preset| preset.model == model)
+                .unwrap_or_else(|| panic!("{model} preset"));
+            assert_eq!(
+                preset.allowed_reasoning_efforts,
+                vec!["low", "medium", "high", "xhigh", "max"]
+            );
+        }
     }
 
     #[test]
     fn model_preset_migration_prunes_legacy_codex_defaults() {
+        assert!(is_wakeup_model_before_5_5("gpt-5.4"));
+        assert!(is_wakeup_model_before_5_5("gpt-5.4-mini"));
+        assert!(is_wakeup_model_before_5_5("gpt-5-codex"));
+        assert!(!is_wakeup_model_before_5_5("gpt-5.5"));
+        assert!(!is_wakeup_model_before_5_5("gpt-5.6-luna"));
+        assert!(!is_wakeup_model_before_5_5("gpt-6-astra"));
+        assert!(!is_wakeup_model_before_5_5("gpt-6-sol"));
+        assert!(!is_wakeup_model_before_5_5("gpt-6-luna"));
+
         let mut state = CodexWakeupState {
             enabled: false,
             tasks: Vec::new(),
@@ -2832,11 +3571,14 @@ mod tests {
         assert_eq!(
             models,
             vec![
+                "gpt-6.1-sol",
+                "gpt-6-astra",
+                "gpt-6.1-terra",
+                "gpt-6-sol",
+                "gpt-6-luna",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "gpt-5.5",
-                "gpt-5.4"
+                "gpt-5.6-luna"
             ]
         );
         assert!(state
@@ -2847,6 +3589,43 @@ mod tests {
             .model_preset_migrations
             .iter()
             .any(|item| item == GPT_5_6_MODEL_PRESETS_MIGRATION_ID));
+        assert!(state
+            .model_preset_migrations
+            .iter()
+            .any(|item| item == GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID));
+        assert!(state
+            .model_preset_migrations
+            .iter()
+            .any(|item| item == GPT_6_SOL_LUNA_MODEL_PRESETS_MIGRATION_ID));
+        assert!(state
+            .model_preset_migrations
+            .iter()
+            .any(|item| item == PRUNE_PRE_5_5_MODEL_PRESETS_MIGRATION_ID));
+    }
+
+    #[test]
+    fn wakeup_tasks_pointing_below_5_5_fall_back_to_default_model() {
+        let mut legacy_task = sample_task("legacy", &["account-a"]);
+        legacy_task.model = Some("gpt-5.4-mini".to_string());
+        legacy_task.model_display_name = Some("GPT-5.4-Mini".to_string());
+        legacy_task.model_reasoning_effort = Some(REASONING_EFFORT_MEDIUM.to_string());
+        let mut kept_task = sample_task("kept", &["account-a"]);
+        kept_task.model = Some("custom-model".to_string());
+        let mut state = CodexWakeupState {
+            enabled: false,
+            tasks: vec![legacy_task, kept_task],
+            model_presets: Vec::new(),
+            model_preset_migrations: Vec::new(),
+        };
+
+        assert!(apply_model_preset_migrations(&mut state));
+        assert_eq!(state.tasks[0].model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(
+            state.tasks[0].model_display_name.as_deref(),
+            Some("GPT-5.6 Luna")
+        );
+        assert_eq!(state.tasks[0].model_reasoning_effort, None);
+        assert_eq!(state.tasks[1].model.as_deref(), Some("custom-model"));
     }
 
     #[test]
@@ -2874,12 +3653,91 @@ mod tests {
         assert_eq!(
             models,
             vec![
+                "gpt-6.1-sol",
+                "gpt-6-astra",
+                "gpt-6.1-terra",
+                "gpt-6-sol",
+                "gpt-6-luna",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
                 "gpt-5.6-sol",
                 "custom-model"
             ]
         );
+        assert_eq!(
+            state
+                .model_presets
+                .iter()
+                .find(|preset| preset.id == "custom-sol")
+                .unwrap()
+                .name,
+            "Custom Sol"
+        );
+        assert!(!apply_model_preset_migrations(&mut state));
+    }
+
+    #[test]
+    fn model_preset_migration_moves_existing_astra_to_first() {
+        let mut state = CodexWakeupState {
+            enabled: false,
+            tasks: Vec::new(),
+            model_presets: vec![
+                model_preset("preset-sol", "GPT-5.6 Sol", "gpt-5.6-sol"),
+                model_preset("preset-astra", "6 Astra", "gpt-6-astra"),
+            ],
+            model_preset_migrations: vec![GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID.to_string()],
+        };
+
+        assert!(apply_model_preset_migrations(&mut state));
+        assert_eq!(state.model_presets[0].model, "gpt-6.1-sol");
+        assert_eq!(state.model_presets[1].model, "gpt-6-astra");
+        assert_eq!(state.model_presets[2].model, "gpt-6.1-terra");
+        assert_eq!(state.model_presets[3].model, "gpt-6-sol");
+        assert_eq!(state.model_presets[4].model, "gpt-6-luna");
+        // 旧短名（6 Astra）在迁移中补上 GPT- 前缀。
+        assert_eq!(state.model_presets[1].name, "GPT-6 Astra");
+        assert!(state
+            .model_presets
+            .iter()
+            .any(|preset| preset.model == "gpt-5.6-sol"));
+        assert!(!apply_model_preset_migrations(&mut state));
+    }
+
+    #[test]
+    fn model_preset_migration_prefixes_builtin_names_only() {
+        let mut state = CodexWakeupState {
+            enabled: false,
+            tasks: Vec::new(),
+            model_presets: vec![
+                model_preset("preset-astra", "6 Astra", "gpt-6-astra"),
+                model_preset("preset-5-6-sol", "5.6 Sol", "gpt-5.6-sol"),
+                model_preset("preset-5-6-terra", "My Terra", "gpt-5.6-terra"),
+                model_preset("preset-custom", "6 Luna", "custom-model"),
+            ],
+            model_preset_migrations: vec![
+                GPT_6_ASTRA_MODEL_PRESET_MIGRATION_ID.to_string(),
+                GPT_6_SOL_LUNA_MODEL_PRESETS_MIGRATION_ID.to_string(),
+            ],
+        };
+
+        assert!(apply_model_preset_migrations(&mut state));
+        let name_for = |model: &str| {
+            state
+                .model_presets
+                .iter()
+                .find(|preset| preset.model == model)
+                .map(|preset| preset.name.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(name_for("gpt-6-astra"), "GPT-6 Astra");
+        assert_eq!(name_for("gpt-5.6-sol"), "GPT-5.6 Sol");
+        // 用户自定义的展示名保持原样。
+        assert_eq!(name_for("gpt-5.6-terra"), "My Terra");
+        assert_eq!(name_for("custom-model"), "6 Luna");
+        assert!(state
+            .model_preset_migrations
+            .iter()
+            .any(|item| item == PREFIX_BUILTIN_MODEL_PRESET_NAMES_MIGRATION_ID));
         assert!(!apply_model_preset_migrations(&mut state));
     }
 
@@ -2909,4 +3767,54 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&root);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_candidate_probe_rejects_existing_but_unusable_launcher() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "codex-wakeup-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create probe root");
+
+        let broken = root.join("broken-codex");
+        fs::write(
+            &broken,
+            "#!/bin/sh\necho missing-native-binary >&2\nexit 1\n",
+        )
+        .expect("write broken launcher");
+        fs::set_permissions(&broken, fs::Permissions::from_mode(0o755))
+            .expect("make broken launcher executable");
+
+        let error = build_usable_resolved_binary(broken, "test".to_string(), None)
+            .expect_err("an existing launcher that cannot run must be rejected");
+        assert!(
+            error.message.contains("missing-native-binary"),
+            "unexpected launcher probe failure: {}",
+            error.message
+        );
+
+        let working = root.join("working-codex");
+        fs::write(&working, "#!/bin/sh\necho codex-cli-test 1.0\n")
+            .expect("write working launcher");
+        fs::set_permissions(&working, fs::Permissions::from_mode(0o755))
+            .expect("make working launcher executable");
+
+        let resolved = build_usable_resolved_binary(working, "test".to_string(), None)
+            .expect("a runnable launcher should be accepted");
+        assert_eq!(resolved.version, "codex-cli-test 1.0");
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
+
+#[cfg(test)]
+#[path = "codex_wakeup_model_migration_tests.rs"]
+mod model_migration_tests;

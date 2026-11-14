@@ -1,20 +1,27 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "windows")]
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::collections::HashSet;
 
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::models::codex::CodexAppSpeed;
-use crate::models::{DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile, InstanceStore};
+use crate::models::{
+    CodexInstanceModelRouting, DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile,
+    InstanceStore,
+};
 use crate::modules;
 use crate::modules::instance::InstanceDefaults;
 use crate::modules::instance_store;
 
 static CODEX_INSTANCE_STORE_LOCK: std::sync::LazyLock<Mutex<()>> =
     std::sync::LazyLock::new(|| Mutex::new(()));
+static CODEX_INSTANCE_SAVE_NOTIFY_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+#[path = "codex_instance_switch_tests.rs"]
+mod switch_tests;
 
 const CODEX_INSTANCES_FILE: &str = "codex_instances.json";
 pub const CODEX_API_SERVICE_BIND_ACCOUNT_ID: &str = "__api_service__";
@@ -24,11 +31,13 @@ const CODEX_SHARED_RULES_DIR_NAME: &str = "rules";
 const CODEX_SHARED_AGENTS_FILE_NAME: &str = "AGENTS.md";
 const CODEX_SHARED_VENDOR_IMPORTS_SKILLS_DIR: &str = "vendor_imports/skills";
 #[cfg(target_os = "windows")]
+const CODEX_SHARED_COPY_MARKER_FILE_NAME: &str = ".cockpit-tools-shared-copy";
+#[cfg(target_os = "windows")]
 const CODEX_WINDOWS_APP_DATA_DIR_NAME: &str = "codex-app-data";
 #[cfg(target_os = "macos")]
 const CODEX_MACOS_APP_DATA_DIR_NAME: &str = "codex-app-data";
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(target_os = "linux")]
+const CODEX_LINUX_APP_DATA_DIR_NAME: &str = "codex-app-data";
 #[cfg(target_os = "windows")]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
 
@@ -56,6 +65,62 @@ pub fn provider_gateway_bind_account_id(account_id: &str) -> Option<String> {
     ))
 }
 
+/// 预检桌面客户端出口；API 服务与 API Key 卡片使用独立的客户端配置。
+pub async fn preflight_egress_proxy_for_bind_account(bind_account_id: Option<&str>) -> Result<(), String> {
+    let Some(bound) = bind_account_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if is_api_service_bind_account_id(bound) {
+        super::codex_client_proxy::resolve(bound).await?;
+        return Ok(());
+    }
+    let normalized = parse_provider_gateway_bind_account_id(bound).unwrap_or_else(|| bound.to_owned());
+    let account = super::codex_proxy_runtime::load(&normalized).await?;
+    if account.is_api_key_auth() {
+        super::codex_client_proxy::resolve(&normalized).await?;
+        return Ok(());
+    }
+    let account_id = parse_provider_gateway_bind_account_id(bound).unwrap_or_else(|| bound.to_owned());
+    crate::modules::codex_proxy_engine_preflight::for_account(
+        &account_id,
+        crate::modules::codex_proxy_engine_preflight::Usage::Desktop,
+    ).await?;
+    // Prepare the local listener before stopping a working desktop or writing
+    // credentials. This opens no upstream connection and does not test a model.
+    crate::modules::codex_proxy_desktop_router::ensure(&account_id).await?;
+    Ok(())
+}
+
+/// 解析桌面客户端出口；API 服务与 API Key 卡片不消费账号上游出口。
+///
+/// 受管客户端启动时统一走 `codex_proxy_desktop_router::ensure`：账号符合资格且已有
+/// 生效出口（账号绑定或统一代理）时才注入固定入口。已接入入口的客户端换节点或解绑
+/// 只影响新连接；尚未接入的客户端首次绑定后需重启。未绑定账号的新启动沿用原有出口。
+/// 已配置出口的入口创建失败时返回错误，禁止静默沿用其他代理或系统出口。
+/// 显式“不使用代理”返回 Direct，由启动层覆盖代理默认值，不创建本地入口。
+pub async fn resolve_egress_proxy_for_bind_account(
+    bind_account_id: Option<&str>,
+) -> Result<crate::modules::process::CodexLaunchProxy, String> {
+    use crate::modules::process::CodexLaunchProxy;
+    let Some(bind_account_id) = bind_account_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(CodexLaunchProxy::Inherit);
+    };
+    if is_api_service_bind_account_id(bind_account_id) {
+        return super::codex_client_proxy::resolve(bind_account_id).await;
+    }
+    let account_id =
+        parse_provider_gateway_bind_account_id(bind_account_id).unwrap_or_else(|| bind_account_id.to_string());
+    let account = crate::modules::codex_proxy_runtime::load(&account_id).await?;
+    if account.is_api_key_auth() { return super::codex_client_proxy::resolve(&account_id).await; }
+    if crate::modules::codex_account_proxy::eligible(&account) && account.egress_proxy_disabled {
+        return Ok(CodexLaunchProxy::Direct);
+    }
+    Ok(match crate::modules::codex_proxy_desktop_router::ensure(&account_id).await? {
+        Some(port) => CodexLaunchProxy::Managed(port),
+        None => CodexLaunchProxy::Inherit,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateInstanceParams {
     pub name: String,
@@ -63,6 +128,7 @@ pub struct CreateInstanceParams {
     pub working_dir: Option<String>,
     pub extra_args: String,
     pub bind_account_id: Option<String>,
+    pub model_routing: Option<CodexInstanceModelRouting>,
     pub copy_source_instance_id: Option<String>,
     pub init_mode: Option<String>,
     pub launch_mode: Option<InstanceLaunchMode>,
@@ -76,6 +142,7 @@ pub struct UpdateInstanceParams {
     pub working_dir: Option<String>,
     pub extra_args: Option<String>,
     pub bind_account_id: Option<Option<String>>,
+    pub model_routing: Option<Option<CodexInstanceModelRouting>>,
     pub launch_mode: Option<InstanceLaunchMode>,
     pub app_speed: Option<CodexAppSpeed>,
 }
@@ -86,15 +153,25 @@ fn instances_path() -> Result<PathBuf, String> {
 }
 
 pub fn load_instance_store() -> Result<InstanceStore, String> {
+    let _creation_guard = crate::modules::instance_storage_cleanup::protect_instance_creation()?;
     let path = instances_path()?;
     let mut store = instance_store::load_instance_store(&path, CODEX_INSTANCES_FILE)?;
     if normalize_managed_instance_dirs(&mut store)? {
-        save_instance_store(&store)?;
+        save_instance_store_raw(&store)?;
     }
     Ok(store)
 }
 
 pub fn save_instance_store(store: &InstanceStore) -> Result<(), String> {
+    let _guard = CODEX_INSTANCE_SAVE_NOTIFY_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    save_instance_store_raw(store)?;
+    crate::commands::codex_instance_gateway_watchdog::instance_store_saved(store);
+    Ok(())
+}
+
+fn save_instance_store_raw(store: &InstanceStore) -> Result<(), String> {
     let path = instances_path()?;
     instance_store::save_instance_store(&path, CODEX_INSTANCES_FILE, store)
 }
@@ -104,8 +181,39 @@ pub fn load_default_settings() -> Result<DefaultInstanceSettings, String> {
     Ok(store.default_settings)
 }
 
+/// A prepared profile must not launch through a different account's proxy.
+pub(crate) fn verify_prepared_launch_binding(
+    expected: Option<&str>,
+    actual: Option<&str>,
+) -> Result<(), String> {
+    if expected.is_some() && expected != actual {
+        return Err("CODEX_SWITCH_BINDING_FAILED".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn bind_default_account_for_switch(account_id: &str) -> Result<(), String> {
+    let updated = update_default_settings(
+        Some(Some(account_id.to_owned())), None, None, Some(false), None, None,
+    ).map_err(|error| {
+        modules::logger::log_warn(&format!("更新 Codex 默认实例绑定失败，停止启动: {error}"));
+        "CODEX_SWITCH_BINDING_FAILED".to_owned()
+    })?;
+    verify_prepared_launch_binding(Some(account_id), updated.bind_account_id.as_deref())?;
+    let persisted = load_default_settings().map_err(|_| "CODEX_SWITCH_BINDING_FAILED")?;
+    verify_prepared_launch_binding(Some(account_id), persisted.bind_account_id.as_deref())
+}
+
+/// Persist and verify the API Service binding before returning the expected launch identity.
+/// The caller's pre-activation account snapshot is no longer valid after this switch.
+pub(crate) fn bind_default_api_service_for_launch() -> Result<&'static str, String> {
+    bind_default_account_for_switch(CODEX_API_SERVICE_BIND_ACCOUNT_ID)?;
+    Ok(CODEX_API_SERVICE_BIND_ACCOUNT_ID)
+}
+
 pub fn update_default_settings(
     bind_account_id: Option<Option<String>>,
+    model_routing: Option<Option<CodexInstanceModelRouting>>,
     extra_args: Option<String>,
     follow_local_account: Option<bool>,
     launch_mode: Option<InstanceLaunchMode>,
@@ -125,6 +233,10 @@ pub fn update_default_settings(
     if let Some(bind) = bind_account_id {
         settings.bind_account_id = bind;
         settings.follow_local_account = false;
+    }
+
+    if let Some(routing) = model_routing {
+        settings.model_routing = routing;
     }
 
     if follow_local_account == Some(false) && settings.bind_account_id.is_none() {
@@ -167,6 +279,61 @@ pub fn get_default_instances_root_dir() -> Result<PathBuf, String> {
     Ok(modules::account::get_data_dir()?
         .join("instances")
         .join("codex"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn managed_home_comparison_path(path: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    return PathBuf::from(path.to_string_lossy().to_lowercase());
+    #[cfg(target_os = "macos")]
+    return path.to_path_buf();
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn is_inherited_managed_codex_home(home: &Path) -> bool {
+    let comparison_home = managed_home_comparison_path(home);
+    let canonical_home = fs::canonicalize(home)
+        .ok()
+        .as_deref()
+        .map(managed_home_comparison_path);
+    let within_managed_root = [
+        get_default_instances_root_dir().ok(),
+        legacy_hardcoded_instances_root_dir().ok().flatten(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|root| {
+        comparison_home.starts_with(managed_home_comparison_path(&root))
+            || canonical_home.as_ref().is_some_and(|home| {
+                fs::canonicalize(&root)
+                    .is_ok_and(|root| home.starts_with(managed_home_comparison_path(&root)))
+            })
+    });
+    if within_managed_root {
+        return true;
+    }
+    let Some(app_data) = std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH") else {
+        return false;
+    };
+    // Managed profiles can also be created outside the default instances root.
+    #[cfg(target_os = "windows")]
+    let managed_app_data = get_windows_app_user_data_dir(home);
+    #[cfg(target_os = "macos")]
+    let managed_app_data = get_macos_app_user_data_dir(home);
+    managed_app_data.is_ok_and(|expected| {
+        managed_home_comparison_path(Path::new(&app_data)) == managed_home_comparison_path(&expected)
+    })
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+#[test]
+fn inherited_managed_codex_home_matches_managed_profiles_only() {
+    let root = get_default_instances_root_dir().unwrap();
+    let legacy_root = legacy_hardcoded_instances_root_dir().unwrap().unwrap();
+    assert!(is_inherited_managed_codex_home(&root.join("managed-profile")));
+    assert!(is_inherited_managed_codex_home(&legacy_root.join("managed-profile")));
+    assert!(!is_inherited_managed_codex_home(&root.with_file_name("codex-custom")));
+    assert!(!is_inherited_managed_codex_home(&dirs::home_dir().unwrap().join(".codex")));
 }
 
 fn legacy_hardcoded_instances_root_dir() -> Result<Option<PathBuf>, String> {
@@ -281,6 +448,29 @@ pub fn get_macos_app_user_data_dir(codex_home: &Path) -> Result<PathBuf, String>
     Ok(root.join(digest))
 }
 
+#[cfg(target_os = "linux")]
+fn normalize_linux_codex_home_for_hash(path: &Path) -> String {
+    let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolved.to_string_lossy().to_string()
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_linux_app_user_data_dir(codex_home: &Path) -> Result<PathBuf, String> {
+    let root = get_default_instances_root_dir()?
+        .parent()
+        .ok_or("无法获取 Codex 实例根目录")?
+        .join(CODEX_LINUX_APP_DATA_DIR_NAME);
+    let normalized = normalize_linux_codex_home_for_hash(codex_home);
+    let digest = format!("{:x}", md5::compute(normalized.as_bytes()));
+    Ok(root.join(digest))
+}
+
+#[cfg(target_os = "linux")]
+pub fn delete_linux_app_user_data_dir(codex_home: &Path) -> Result<(), String> {
+    let app_user_data_dir = get_linux_app_user_data_dir(codex_home)?;
+    modules::instance::delete_instance_directory(&app_user_data_dir)
+}
+
 #[cfg(unix)]
 fn create_directory_symlink(source: &Path, target: &Path) -> Result<(), String> {
     std::os::unix::fs::symlink(source, target).map_err(|e| format!("创建目录共享链接失败: {}", e))
@@ -288,87 +478,91 @@ fn create_directory_symlink(source: &Path, target: &Path) -> Result<(), String> 
 
 #[cfg(windows)]
 fn create_directory_symlink(source: &Path, target: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
+    create_directory_shared_link_or_copy(
+        source,
+        target,
+        |source, target| junction::create(source, target).map_err(|e| e.to_string()),
+        |source, target| instance_store::copy_dir_recursive(source, target),
+    )
+}
 
-    fn escape_powershell_single_quoted(value: &str) -> String {
-        value.replace('\'', "''")
-    }
-
-    fn quote_cmd_arg(value: &Path) -> String {
-        format!("\"{}\"", value.to_string_lossy().replace('"', "\"\""))
-    }
-
-    fn output_detail(stdout: &[u8], stderr: &[u8]) -> String {
-        let stdout = String::from_utf8_lossy(stdout);
-        let stderr = String::from_utf8_lossy(stderr);
-        [stdout.trim(), stderr.trim()]
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>()
-            .join("; ")
-    }
-
-    let source_text = source.to_string_lossy();
-    let target_text = target.to_string_lossy();
-    let script = format!(
-        "$ErrorActionPreference='Stop';\n\
-         [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);\n\
-         $target='{}';\n\
-         $source='{}';\n\
-         New-Item -ItemType Junction -Path $target -Target $source -ErrorAction Stop | Out-Null",
-        escape_powershell_single_quoted(&target_text),
-        escape_powershell_single_quoted(&source_text)
-    );
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("创建目录共享联接失败: {}", e))?;
-
-    if output.status.success() {
+#[cfg(windows)]
+fn create_directory_shared_link_or_copy<J, C>(
+    source: &Path,
+    target: &Path,
+    create_junction: J,
+    copy_directory: C,
+) -> Result<(), String>
+where
+    J: FnOnce(&Path, &Path) -> Result<(), String>,
+    C: FnOnce(&Path, &Path) -> Result<(), String>,
+{
+    if let Err(junction_error) = create_junction(source, target) {
+        modules::logger::log_warn(&format!(
+            "Windows directory junction failed, copying shared directory instead: source={}, target={}, error={}",
+            display_abs_path(source),
+            display_abs_path(target),
+            junction_error
+        ));
+        prepare_directory_copy_fallback_target(target)?;
+        copy_directory(source, target).map_err(|copy_error| {
+            format!(
+                "创建目录共享存储失败: junction_error={}, copy_error={}, source={}, target={}",
+                junction_error,
+                copy_error,
+                display_abs_path(source),
+                display_abs_path(target)
+            )
+        })?;
+        mark_directory_copy_fallback(target).map_err(|marker_error| {
+            format!(
+                "共享目录已复制但写入 fallback 标记失败: junction_error={}, marker_error={}, source={}, target={}",
+                junction_error,
+                marker_error,
+                display_abs_path(source),
+                display_abs_path(target)
+            )
+        })?;
         return Ok(());
     }
-    let powershell_status = output.status;
-    let powershell_detail = output_detail(&output.stdout, &output.stderr);
+    Ok(())
+}
 
-    let mklink_command = format!(
-        "mklink /J {} {}",
-        quote_cmd_arg(target),
-        quote_cmd_arg(source)
-    );
-    let output = Command::new("cmd")
-        .args(["/D", "/C", &mklink_command])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("创建目录共享联接失败: {}", e))?;
-
-    if output.status.success() {
+#[cfg(windows)]
+fn prepare_directory_copy_fallback_target(target: &Path) -> Result<(), String> {
+    let Ok(metadata) = fs::symlink_metadata(target) else {
         return Ok(());
+    };
+    if is_shared_directory_link(&metadata) {
+        return remove_symlink(target);
     }
-
-    let mklink_detail = output_detail(&output.stdout, &output.stderr);
+    if metadata.is_dir() && is_directory_empty(target)? {
+        return fs::remove_dir(target).map_err(|e| {
+            format!(
+                "清理目录联接创建后残留的空目录失败 ({}): {}",
+                display_abs_path(target),
+                e
+            )
+        });
+    }
     Err(format!(
-        "创建目录共享联接失败: powershell_status={}, powershell_detail={}, mklink_status={}, mklink_detail={}, source={}, target={}",
-        powershell_status,
-        powershell_detail,
-        output.status,
-        mklink_detail,
-        display_abs_path(source),
+        "目录联接创建失败后目标路径已存在且非空，拒绝覆盖: {}",
         display_abs_path(target)
     ))
+}
+
+#[cfg(target_os = "windows")]
+fn mark_directory_copy_fallback(target: &Path) -> Result<(), String> {
+    fs::write(
+        target.join(CODEX_SHARED_COPY_MARKER_FILE_NAME),
+        "cockpit-tools-shared-copy-v1\n",
+    )
+    .map_err(|e| format!("写入目录复制 fallback 标记失败: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+fn is_directory_copy_fallback(target: &Path) -> bool {
+    target.join(CODEX_SHARED_COPY_MARKER_FILE_NAME).is_file()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -512,6 +706,57 @@ fn resolve_link_target(link_path: &Path, target: PathBuf) -> PathBuf {
     }
 }
 
+fn ensure_instance_skill_directory(
+    profile_dir: &Path,
+    default_codex_home: &Path,
+    relative_path: &Path,
+) -> Result<(), String> {
+    let instance_dir = profile_dir.join(relative_path);
+    let global_dir = default_codex_home.join(relative_path);
+    let needs_link = match fs::symlink_metadata(&instance_dir) {
+        Ok(metadata) if is_shared_directory_link(&metadata) => {
+            let target = fs::read_link(&instance_dir).map_err(|error| {
+                format!(
+                    "读取实例 Skills 目录链接失败 ({}): {error}",
+                    display_abs_path(&instance_dir)
+                )
+            })?;
+            if !paths_point_to_same_location(&resolve_link_target(&instance_dir, target), &global_dir)
+            {
+                return Ok(());
+            }
+            false
+        }
+        // A real directory is the instance's own choice, even if empty or identical to the default.
+        Ok(metadata) if metadata.is_dir() => return Ok(()),
+        Ok(_) => {
+            return Err(format!(
+                "实例 Skills 路径不是目录 ({})",
+                display_abs_path(&instance_dir)
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            return Err(format!(
+                "读取实例 Skills 目录失败 ({}): {error}",
+                display_abs_path(&instance_dir)
+            ));
+        }
+    };
+    fs::create_dir_all(&global_dir).map_err(|error| {
+        format!("创建全局 Skills 目录失败 ({}): {error}", display_abs_path(&global_dir))
+    })?;
+    if !needs_link {
+        return Ok(());
+    }
+    if let Some(parent) = instance_dir.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("创建实例 Skills 目录父路径失败 ({}): {error}", display_abs_path(parent))
+        })?;
+    }
+    create_directory_symlink(&global_dir, &instance_dir)
+}
+
 fn sync_shared_directory(
     profile_dir: &Path,
     default_codex_home: &Path,
@@ -563,6 +808,15 @@ fn sync_shared_directory(
         }
         remove_symlink(&instance_dir)?;
         return create_directory_symlink(&global_dir, &instance_dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    if is_directory_copy_fallback(&instance_dir) {
+        modules::logger::log_warn(&format!(
+            "Windows shared directory is using a generated copy fallback; keeping it without destructive resync: path={}",
+            display_abs_path(&instance_dir)
+        ));
+        return Ok(());
     }
 
     if !metadata.is_dir() {
@@ -622,22 +876,14 @@ fn sync_shared_directory(
         return create_directory_symlink(&global_dir, &instance_dir);
     }
 
-    fs::remove_dir_all(&instance_dir).map_err(|e| {
-        format!(
-            "强制重建实例共享目录链接前清理实例目录失败 ({}): {}",
-            display_abs_path(&instance_dir),
-            e
-        )
-    })?;
-    create_directory_symlink(&global_dir, &instance_dir).map_err(|e| {
-        format!(
-            "强制重建实例共享目录链接失败 ({} -> {}, {}): {}",
-            display_abs_path(&global_dir),
-            display_abs_path(&instance_dir),
-            relative_display,
-            e
-        )
-    })
+    // Both directories contain different user data. Keep the instance's local
+    // skills/rules intact instead of replacing them with the default profile.
+    modules::logger::log_info(&format!(
+        "[Codex Instance] Preserving distinct instance directory: path={}, shared={}",
+        display_abs_path(&instance_dir),
+        relative_display,
+    ));
+    Ok(())
 }
 
 fn sync_shared_file(
@@ -768,22 +1014,17 @@ fn sync_shared_file(
         return create_file_symlink(&global_file, &instance_file);
     }
 
-    fs::remove_file(&instance_file).map_err(|e| {
-        format!(
-            "强制重建实例共享文件链接前清理实例文件失败 ({}): {}",
-            display_abs_path(&instance_file),
-            e
-        )
-    })?;
-    create_file_symlink(&global_file, &instance_file).map_err(|e| {
-        format!(
-            "强制重建实例共享文件链接失败 ({} -> {}, {}): {}",
-            display_abs_path(&global_file),
-            display_abs_path(&instance_file),
-            relative_display,
-            e
-        )
-    })
+    modules::logger::log_info(&format!(
+        "[Codex Instance] Preserving distinct instance file: path={}, shared={}",
+        display_abs_path(&instance_file),
+        relative_display,
+    ));
+    Ok(())
+}
+
+#[cfg(test)]
+mod shared_preservation_tests {
+    include!("codex_instance_shared_preservation_tests.rs");
 }
 
 pub fn ensure_instance_shared_skills(profile_dir: &Path) -> Result<(), String> {
@@ -793,7 +1034,7 @@ pub fn ensure_instance_shared_skills(profile_dir: &Path) -> Result<(), String> {
     }
     fs::create_dir_all(profile_dir).map_err(|e| format!("创建实例目录失败: {}", e))?;
 
-    sync_shared_directory(
+    ensure_instance_skill_directory(
         profile_dir,
         &default_codex_home,
         Path::new(CODEX_SHARED_SKILLS_DIR_NAME),
@@ -803,11 +1044,27 @@ pub fn ensure_instance_shared_skills(profile_dir: &Path) -> Result<(), String> {
         &default_codex_home,
         Path::new(CODEX_SHARED_RULES_DIR_NAME),
     )?;
-    sync_shared_directory(
-        profile_dir,
-        &default_codex_home,
-        Path::new(CODEX_SHARED_VENDOR_IMPORTS_SKILLS_DIR),
-    )?;
+    let vendor_skills = Path::new(CODEX_SHARED_VENDOR_IMPORTS_SKILLS_DIR);
+    let global_vendor_skills = default_codex_home.join(vendor_skills);
+    // An occupied optional path must survive copying, including a regular file in the source.
+    let vendor_skills_unavailable = match fs::symlink_metadata(&global_vendor_skills) {
+        Ok(metadata) if is_shared_directory_link(&metadata) => {
+            match fs::metadata(&global_vendor_skills) {
+                Ok(target) => target.is_file(),
+                Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+            }
+        }
+        Ok(metadata) => metadata.is_file(),
+        Err(_) => false,
+    };
+    if vendor_skills_unavailable {
+        modules::logger::log_warn(&format!(
+            "[Codex Instance] Skipping vendor skills sharing: {}",
+            display_abs_path(&global_vendor_skills)
+        ));
+    } else {
+        ensure_instance_skill_directory(profile_dir, &default_codex_home, vendor_skills)?;
+    }
     sync_shared_file(
         profile_dir,
         &default_codex_home,
@@ -817,112 +1074,7 @@ pub fn ensure_instance_shared_skills(profile_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, String> {
-    let _lock = CODEX_INSTANCE_STORE_LOCK
-        .lock()
-        .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
-
-    let name = instance_store::normalize_name(&params.name)?;
-    let user_data_dir = params.user_data_dir.trim().to_string();
-    if user_data_dir.is_empty() {
-        return Err("实例目录不能为空".to_string());
-    }
-
-    instance_store::ensure_unique(&store, &name, &user_data_dir, None)?;
-
-    let user_dir_path = PathBuf::from(&user_data_dir);
-    let init_mode = params
-        .init_mode
-        .as_deref()
-        .unwrap_or("copy")
-        .to_ascii_lowercase();
-    let create_empty = init_mode == "empty";
-    let use_existing_dir = init_mode == "existingdir" || init_mode == "existing_dir";
-
-    if use_existing_dir {
-        if !user_dir_path.exists() {
-            let resolved = instance_store::display_path(&user_dir_path);
-            return Err(format!("所选目录不存在: {}", resolved));
-        }
-        if !user_dir_path.is_dir() {
-            return Err("所选路径不是目录".to_string());
-        }
-    } else if create_empty {
-        if user_dir_path.exists() {
-            let mut has_entries = false;
-            if let Ok(mut iter) = fs::read_dir(&user_dir_path) {
-                if iter.next().is_some() {
-                    has_entries = true;
-                }
-            }
-            if has_entries {
-                let resolved_path = instance_store::display_path(&user_dir_path);
-                return Err(format!("空白实例需要目标目录为空: {}", resolved_path));
-            }
-        }
-        fs::create_dir_all(&user_dir_path).map_err(|e| format!("创建实例目录失败: {}", e))?;
-    } else {
-        let source_dir = match params.copy_source_instance_id.as_deref() {
-            Some("__default__") | None => get_default_codex_home()?,
-            Some(source_id) => {
-                let source_instance = store
-                    .instances
-                    .iter()
-                    .find(|item| item.id == source_id)
-                    .ok_or("复制来源实例不存在")?;
-                PathBuf::from(&source_instance.user_data_dir)
-            }
-        };
-
-        if user_dir_path.exists() {
-            let mut has_entries = false;
-            if let Ok(mut iter) = fs::read_dir(&user_dir_path) {
-                if iter.next().is_some() {
-                    has_entries = true;
-                }
-            }
-            if has_entries {
-                let resolved_path = instance_store::display_path(&user_dir_path);
-                modules::logger::log_info(&format!(
-                    "[Codex Instance] 复制来源实例需要空目录，但目标已存在: {}",
-                    resolved_path
-                ));
-                return Err(format!("复制来源实例需要目标目录为空: {}", resolved_path));
-            }
-        }
-
-        if !source_dir.exists() {
-            return Err("未找到复制来源目录，请先确保来源实例已初始化".to_string());
-        }
-
-        instance_store::copy_dir_recursive(&source_dir, &user_dir_path)?;
-    }
-
-    ensure_instance_shared_skills(&user_dir_path)?;
-
-    let instance = InstanceProfile {
-        id: Uuid::new_v4().to_string(),
-        name,
-        user_data_dir,
-        working_dir: params.working_dir,
-        extra_args: params.extra_args.trim().to_string(),
-        bind_account_id: if create_empty {
-            None
-        } else {
-            params.bind_account_id
-        },
-        launch_mode: params.launch_mode.unwrap_or_default(),
-        app_speed: params.app_speed.unwrap_or_default(),
-        created_at: Utc::now().timestamp_millis(),
-        last_launched_at: None,
-        last_pid: None,
-    };
-
-    store.instances.push(instance.clone());
-    save_instance_store(&store)?;
-    Ok(instance)
-}
+include!("codex_instance_creation.rs");
 
 pub fn update_instance(params: UpdateInstanceParams) -> Result<InstanceProfile, String> {
     let _lock = CODEX_INSTANCE_STORE_LOCK
@@ -963,6 +1115,9 @@ pub fn update_instance(params: UpdateInstanceParams) -> Result<InstanceProfile, 
     }
     if let Some(bind) = params.bind_account_id.clone() {
         instance.bind_account_id = bind;
+    }
+    if let Some(routing) = params.model_routing.clone() {
+        instance.model_routing = routing;
     }
     if let Some(mode) = params.launch_mode {
         instance.launch_mode = mode;
@@ -1011,25 +1166,42 @@ pub fn update_bound_instances_app_speed(
 }
 
 pub fn delete_instance(instance_id: &str) -> Result<(), String> {
-    let _lock = CODEX_INSTANCE_STORE_LOCK
-        .lock()
-        .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
-    let index = store
-        .instances
-        .iter()
-        .position(|instance| instance.id == instance_id)
-        .ok_or("实例不存在")?;
-    let user_data_dir = store.instances[index].user_data_dir.clone();
+    delete_instance_with(instance_id, modules::instance::delete_instance_directory)
+}
+
+fn delete_instance_with(
+    instance_id: &str,
+    delete_directory: impl Fn(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let _creation_guard = crate::modules::instance_storage_cleanup::protect_instance_creation()?;
+    let user_data_dir = {
+        let _lock = CODEX_INSTANCE_STORE_LOCK.lock().map_err(|_| "无法获取实例锁")?;
+        load_instance_store()?
+            .instances
+            .into_iter()
+            .find(|instance| instance.id == instance_id)
+            .ok_or("实例不存在")?
+            .user_data_dir
+    };
 
     if !user_data_dir.trim().is_empty() {
         let dir_path = PathBuf::from(&user_data_dir);
-        modules::instance::delete_instance_directory(&dir_path)?;
+        // Resolve the canonical home before moving it to the trash: desktop data
+        // is keyed by the original resolved path, including symlinked homes.
         #[cfg(target_os = "windows")]
-        delete_windows_app_user_data_dir(&dir_path)?;
+        let app_user_data_dir = get_windows_app_user_data_dir(&dir_path)?;
+        #[cfg(target_os = "macos")]
+        let app_user_data_dir = get_macos_app_user_data_dir(&dir_path)?;
+        #[cfg(target_os = "linux")]
+        let app_user_data_dir = get_linux_app_user_data_dir(&dir_path)?;
+        delete_directory(&dir_path)?;
+        #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+        delete_directory(&app_user_data_dir)?;
     }
 
-    store.instances.remove(index);
+    let _lock = CODEX_INSTANCE_STORE_LOCK.lock().map_err(|_| "无法获取实例锁")?;
+    let mut store = load_instance_store()?;
+    store.instances.retain(|instance| instance.id != instance_id);
     save_instance_store(&store)?;
     Ok(())
 }
@@ -1090,6 +1262,158 @@ pub fn update_instance_pid(instance_id: &str, pid: Option<u32>) -> Result<Instan
     Ok(updated)
 }
 
+/// 默认实例 ID（与前端和其他模块保持一致）。
+pub(crate) const CODEX_DEFAULT_INSTANCE_ID: &str = "__default__";
+
+/// 关闭指定实例（或默认实例）的混合模型路由，保留渠道配置。
+///
+/// 混合路由只在实例绑定「可直接登录的 OAuth 订阅账号」时才有意义。绑定账号换成普通
+/// API Key / API 服务账号，或用户手动停止实例网关时调用它：路由必须自动让位，不能拦住
+/// 普通的账号切换、实例启动和其他功能。
+pub fn disable_model_routing(instance_id: &str) -> Result<bool, String> {
+    let instance_id = instance_id.trim();
+    if instance_id.is_empty() {
+        return Ok(false);
+    }
+    if instance_id == CODEX_DEFAULT_INSTANCE_ID {
+        let current = load_default_settings()?;
+        let Some(routing) = current.model_routing.clone().filter(|routing| routing.enabled) else {
+            return Ok(false);
+        };
+        update_default_settings(
+            None,
+            Some(Some(CodexInstanceModelRouting {
+                enabled: false,
+                ..routing
+            })),
+            None,
+            None,
+            None,
+            None,
+        )?;
+        return Ok(true);
+    }
+    let store = load_instance_store()?;
+    let Some(routing) = store
+        .instances
+        .iter()
+        .find(|item| item.id == instance_id)
+        .and_then(|item| item.model_routing.clone())
+        .filter(|routing| routing.enabled)
+    else {
+        return Ok(false);
+    };
+    update_instance(UpdateInstanceParams {
+        instance_id: instance_id.to_string(),
+        name: None,
+        working_dir: None,
+        extra_args: None,
+        bind_account_id: None,
+        model_routing: Some(Some(CodexInstanceModelRouting {
+            enabled: false,
+            ..routing
+        })),
+        launch_mode: None,
+        app_speed: None,
+    })?;
+    Ok(true)
+}
+
+/// 读取指定实例（或默认实例）当前启用中的混合模型路由配置。
+pub fn load_enabled_model_routing(
+    instance_id: &str,
+) -> Result<CodexInstanceModelRouting, String> {
+    let instance_id = instance_id.trim();
+    if instance_id == CODEX_DEFAULT_INSTANCE_ID {
+        return load_default_settings()?
+            .model_routing
+            .filter(|routing| routing.enabled)
+            .ok_or_else(|| "该实例未启用混合模型路由".to_string());
+    }
+    load_instance_store()?
+        .instances
+        .into_iter()
+        .find(|item| item.id == instance_id)
+        .and_then(|item| item.model_routing)
+        .filter(|routing| routing.enabled)
+        .ok_or_else(|| "该实例未启用混合模型路由".to_string())
+}
+
+/// 指定实例（或默认实例）的 profile 目录。
+pub fn profile_dir_for_instance(instance_id: &str) -> Result<PathBuf, String> {
+    let instance_id = instance_id.trim();
+    if instance_id == CODEX_DEFAULT_INSTANCE_ID {
+        return get_default_codex_home();
+    }
+    load_instance_store()?
+        .instances
+        .into_iter()
+        .find(|item| item.id == instance_id)
+        .map(|item| PathBuf::from(item.user_data_dir))
+        .ok_or_else(|| "实例不存在".to_string())
+}
+
+/// 路由（含底座账号）是否引用了给定账号集合。
+fn routing_references_accounts(
+    routing: &CodexInstanceModelRouting,
+    bind_account_id: Option<&str>,
+    deleted: &HashSet<&str>,
+) -> bool {
+    if let Some(bind_account_id) = bind_account_id.map(str::trim).filter(|value| !value.is_empty()) {
+        let resolved = parse_provider_gateway_bind_account_id(bind_account_id)
+            .unwrap_or_else(|| bind_account_id.to_string());
+        if deleted.contains(resolved.trim()) {
+            return true;
+        }
+    }
+    routing
+        .routes
+        .iter()
+        .any(|route| deleted.contains(route.provider_account_id.trim()))
+}
+
+/// 账号被删除后，自动关闭引用了这些账号的混合模型路由（渠道配置保留），
+/// 返回被关闭路由的实例 ID 列表。
+///
+/// 底座账号或路由里的 API 账号消失后，继续保留启用状态只会让后台监控反复尝试恢复
+/// 注定失败的网关，并弹出与本意无关的报错。
+pub fn disable_model_routing_for_deleted_accounts(
+    deleted_account_ids: &[String],
+) -> Result<Vec<String>, String> {
+    let deleted: HashSet<&str> = deleted_account_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if deleted.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut affected = Vec::new();
+    let settings = load_default_settings()?;
+    if settings.model_routing.as_ref().is_some_and(|routing| {
+        routing.enabled
+            && routing_references_accounts(
+                routing,
+                settings.bind_account_id.as_deref(),
+                &deleted,
+            )
+    }) {
+        disable_model_routing(CODEX_DEFAULT_INSTANCE_ID)?;
+        affected.push(CODEX_DEFAULT_INSTANCE_ID.to_string());
+    }
+    for instance in load_instance_store()?.instances {
+        let Some(routing) = instance.model_routing.as_ref().filter(|r| r.enabled) else {
+            continue;
+        };
+        if routing_references_accounts(routing, instance.bind_account_id.as_deref(), &deleted) {
+            disable_model_routing(&instance.id)?;
+            affected.push(instance.id.clone());
+        }
+    }
+    Ok(affected)
+}
+
 pub fn update_default_pid(pid: Option<u32>) -> Result<DefaultInstanceSettings, String> {
     let _lock = CODEX_INSTANCE_STORE_LOCK
         .lock()
@@ -1114,41 +1438,56 @@ pub fn clear_all_pids() -> Result<(), String> {
     Ok(())
 }
 
-pub fn replace_bind_account_references(
-    old_account_id: &str,
-    new_account_id: &str,
-) -> Result<(), String> {
-    let old_id = old_account_id.trim();
-    let new_id = new_account_id.trim();
-    if old_id.is_empty() || new_id.is_empty() || old_id == new_id {
-        return Ok(());
-    }
+fn replace_instance_account_reference(value: &mut Option<String>, old_id: &str, new_id: &str) -> bool {
+    let Some(current) = value.as_deref() else { return false; };
+    let replacement = if current.trim() == old_id {
+        Some(new_id.to_string())
+    } else if parse_provider_gateway_bind_account_id(current).as_deref() == Some(old_id) {
+        provider_gateway_bind_account_id(new_id)
+    } else { None };
+    if let Some(replacement) = replacement { *value = Some(replacement); true } else { false }
+}
 
-    let _lock = CODEX_INSTANCE_STORE_LOCK
-        .lock()
-        .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+fn replace_instance_routing_references(routing: &mut Option<CodexInstanceModelRouting>, old_id: &str, new_id: &str) -> bool {
     let mut changed = false;
-
-    if store.default_settings.bind_account_id.as_deref() == Some(old_id) {
-        store.default_settings.bind_account_id = Some(new_id.to_string());
-        store.default_settings.follow_local_account = false;
-        changed = true;
-    }
-
-    for instance in &mut store.instances {
-        if instance.bind_account_id.as_deref() == Some(old_id) {
-            instance.bind_account_id = Some(new_id.to_string());
-            changed = true;
+    if let Some(routing) = routing {
+        for route in &mut routing.routes {
+            if route.provider_account_id.trim() == old_id {
+                route.provider_account_id = new_id.to_string();
+                changed = true;
+            }
         }
     }
+    changed
+}
 
-    if changed {
+fn replace_instance_store_account_references(store: &mut InstanceStore, old_id: &str, new_id: &str) -> bool {
+    let settings = &mut store.default_settings;
+    let mut changed = replace_instance_account_reference(&mut settings.bind_account_id, old_id, new_id);
+    if changed { settings.follow_local_account = false; }
+    changed |= replace_instance_routing_references(&mut settings.model_routing, old_id, new_id);
+    for instance in &mut store.instances {
+        changed |= replace_instance_account_reference(&mut instance.bind_account_id, old_id, new_id);
+        changed |= replace_instance_routing_references(&mut instance.model_routing, old_id, new_id);
+    }
+    changed
+}
+
+pub fn replace_bind_account_references(old_account_id: &str, new_account_id: &str) -> Result<(), String> {
+    let old_id = old_account_id.trim();
+    let new_id = new_account_id.trim();
+    if old_id.is_empty() || new_id.is_empty() || old_id == new_id { return Ok(()); }
+    let _lock = CODEX_INSTANCE_STORE_LOCK.lock().map_err(|_| "无法获取实例锁")?;
+    let mut store = load_instance_store()?;
+    if replace_instance_store_account_references(&mut store, old_id, new_id) {
         save_instance_store(&store)?;
     }
-
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "codex_instance_account_reference_tests.rs"]
+mod account_reference_tests;
 
 pub async fn inject_account_to_profile(profile_dir: &Path, account_id: &str) -> Result<(), String> {
     modules::codex_account::prepare_account_for_injection_from_auth_dir(
@@ -1158,3 +1497,60 @@ pub async fn inject_account_to_profile(profile_dir: &Path, account_id: &str) -> 
     .await
     .map(|_| ())
 }
+
+/// 用户主动启动实例时使用：每次都重新验证当前凭据，不复用上一次刷新失败结论。
+pub async fn inject_account_to_profile_for_launch(
+    profile_dir: &Path,
+    account_id: &str,
+) -> Result<(), String> {
+    modules::codex_account::prepare_account_for_instance_launch_from_auth_dir(
+        account_id,
+        Some(profile_dir),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// 启动前已完成 access_token 刷新时使用，只投影最新凭据，
+/// 不再重复使用 refresh_token；官方在线检查仅属于主动切号流程。
+pub async fn project_preflighted_account_to_profile_for_launch(
+    profile_dir: &Path,
+    account_id: &str,
+) -> Result<(), String> {
+    modules::codex_account::project_preflighted_account_for_instance_launch(account_id, profile_dir)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(all(test, windows))]
+mod windows_shared_directory_tests {
+    use super::*;
+
+    #[test]
+    fn failed_junction_copies_shared_directory_with_fallback_marker() {
+        let root =
+            std::env::temp_dir().join(format!("codex-junction-copy-fallback-{}", Uuid::new_v4()));
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(source.join("nested")).expect("create source directory");
+        fs::write(source.join("nested").join("probe.txt"), "shared").expect("write source probe");
+
+        create_directory_shared_link_or_copy(
+            &source,
+            &target,
+            |_, _| Err("junction unavailable".to_string()),
+            |source, target| instance_store::copy_dir_recursive(source, target),
+        )
+        .expect("copy fallback");
+        assert!(is_directory_copy_fallback(&target));
+
+        fs::write(target.join("user-added.txt"), "keep").expect("write fallback user file");
+        assert!(is_directory_copy_fallback(&target));
+        assert!(target.join("user-added.txt").exists());
+
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+}
+
+#[cfg(test)]
+include!("codex_instance_profile_copy_tests.rs");

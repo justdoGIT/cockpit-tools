@@ -66,6 +66,13 @@ pub struct WorkbuddyAccount {
 
     pub created_at: i64,
     pub last_used: i64,
+    /// Last successful credential switch; absent for historical/imported accounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_switched_at: Option<i64>,
+
+    // 网页会话（WebView）相关字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_session_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +91,8 @@ pub struct WorkbuddyAccountSummary {
 pub struct WorkbuddyAccountIndex {
     pub version: String,
     pub accounts: Vec<WorkbuddyAccountSummary>,
+    #[serde(skip)]
+    pub(crate) storage_revision: crate::modules::provider_account_index::Revision,
 }
 
 impl WorkbuddyAccountIndex {
@@ -91,6 +100,7 @@ impl WorkbuddyAccountIndex {
         Self {
             version: "1.0".to_string(),
             accounts: Vec::new(),
+            storage_revision: Default::default(),
         }
     }
 }

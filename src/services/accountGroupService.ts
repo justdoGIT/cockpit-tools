@@ -1,6 +1,6 @@
 /**
  * 账号分组服务
- * 数据通过 Tauri 命令持久化到磁盘 (~/.antigravity_cockpit/account_groups.json)
+ * 分组与成员通过 Tauri 命令持久化到本地数据库
  * 内存中维护一份缓存避免频繁 IO
  */
 
@@ -22,6 +22,39 @@ export interface AccountGroup {
 
 // ─── 内存缓存 ───────────────────────────────────────
 let cachedGroups: AccountGroup[] | null = null;
+let cachedRevision: number | undefined;
+let legacyChecked = false;
+
+export interface AccountGroupSnapshot {
+  data: string;
+  revision: number;
+}
+
+export function isGroupRevisionConflict(error: unknown): boolean {
+  return String(error).endsWith('ACCOUNT_GROUPS_CHANGED');
+}
+
+// Serialize read-modify-write operations so concurrent UI actions cannot
+// overwrite a newer group membership snapshot with a stale one.
+let groupsOperation: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  const run = async () => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isGroupRevisionConflict(error)) throw error;
+      cachedGroups = null;
+      return operation();
+    }
+  };
+  const next = groupsOperation.then(run, run);
+  groupsOperation = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
 
 function cloneGroups(groups: AccountGroup[]): AccountGroup[] {
   return groups.map((group) => ({
@@ -30,47 +63,88 @@ function cloneGroups(groups: AccountGroup[]): AccountGroup[] {
   }));
 }
 
+export function parseAccountGroups(raw: string): AccountGroup[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`[AccountGroups] Invalid JSON: ${String(error)}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('[AccountGroups] Stored data must be a JSON array');
+  }
+
+  const groups = parsed.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`[AccountGroups] Invalid group at index ${index}`);
+    }
+
+    const group = value as Record<string, unknown>;
+    if (typeof group.id !== 'string' || !group.id.trim()) {
+      throw new Error(`[AccountGroups] Group ${index} has an invalid id`);
+    }
+    if (typeof group.name !== 'string') {
+      throw new Error(`[AccountGroups] Group ${index} has an invalid name`);
+    }
+    if (!Array.isArray(group.accountIds) || group.accountIds.some((id) => typeof id !== 'string')) {
+      throw new Error(`[AccountGroups] Group ${index} has invalid account ids`);
+    }
+
+    return {
+      ...group,
+      id: group.id,
+      name: group.name,
+      accountIds: [...group.accountIds],
+      // Keep older files without createdAt readable without treating them as
+      // an empty data set.
+      createdAt: typeof group.createdAt === 'number' ? group.createdAt : 0,
+    } as AccountGroup;
+  });
+
+  return cloneGroups(groups);
+}
+
 async function loadGroupsFromDisk(): Promise<AccountGroup[]> {
   try {
-    const raw: string = await invoke('load_account_groups');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? cloneGroups(parsed) : [];
-  } catch {
-    return [];
+    const { data, revision } = await invoke<AccountGroupSnapshot>('load_account_group_snapshot', {
+      platform: 'antigravity',
+    });
+    const groups = parseAccountGroups(data);
+    cachedRevision = revision;
+    return groups;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('[AccountGroups]')) {
+      throw error;
+    }
+    throw new Error(`[AccountGroups] Failed to load groups: ${String(error)}`);
   }
 }
 
 async function saveGroupsToDisk(groups: AccountGroup[]): Promise<void> {
   try {
-    await invoke('save_account_groups', { data: JSON.stringify(groups, null, 2) });
+    cachedRevision = await invoke<number>('save_account_groups', {
+      data: JSON.stringify(groups, null, 2),
+      expectedRevision: cachedRevision,
+    });
   } catch (e) {
+    if (isGroupRevisionConflict(e)) cachedGroups = null;
     console.error('[AccountGroups] Failed to save to disk:', e);
     throw e;
   }
 }
 
-/** 迁移 localStorage 数据到磁盘（仅首次） */
+/** 旧 WebView 副本只允许填补不存在的原生分组。 */
 async function migrateLegacyData(): Promise<void> {
+  if (legacyChecked) return;
   try {
     const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) return;
-    const legacy = JSON.parse(raw);
-    if (!Array.isArray(legacy) || legacy.length === 0) return;
-
-    // 检查磁盘上是否已有数据
-    const diskData = await loadGroupsFromDisk();
-    if (diskData.length > 0) {
-      // 磁盘已有数据，清理 localStorage
-      localStorage.removeItem(LEGACY_STORAGE_KEY);
-      return;
+    if (raw && parseAccountGroups(raw).length > 0) {
+      await invoke('seed_account_groups', { data: raw });
     }
-
-    // 迁移到磁盘
-    await saveGroupsToDisk(legacy);
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
-    console.log('[AccountGroups] Migrated', legacy.length, 'groups from localStorage to disk');
-  } catch {
-    // ignore migration errors
+    legacyChecked = true;
+  } catch (error) {
+    console.error('[AccountGroups] Failed to read legacy groups:', error);
   }
 }
 
@@ -92,51 +166,62 @@ async function saveGroups(groups: AccountGroup[]): Promise<void> {
 
 // ─── 公开 API（全部改为 async） ───────────────────────
 
-export async function getAccountGroups(): Promise<AccountGroup[]> {
-  return loadGroups();
+export function getAccountGroups(): Promise<AccountGroup[]> {
+  return enqueue(() => loadGroups());
 }
 
-export async function createGroup(name: string): Promise<AccountGroup> {
-  const groups = await loadGroups();
-  const group: AccountGroup = {
-    id: generateId(),
-    name: name.trim(),
-    accountIds: [],
-    createdAt: Date.now(),
-  };
-  groups.push(group);
-  await saveGroups(groups);
-  return group;
+export function createGroup(name: string): Promise<AccountGroup> {
+  return enqueue(async () => {
+    const groups = await loadGroups();
+    const group: AccountGroup = {
+      id: generateId(),
+      name: name.trim(),
+      accountIds: [],
+      createdAt: Date.now(),
+    };
+    groups.push(group);
+    await saveGroups(groups);
+    return group;
+  });
 }
 
-export async function deleteGroup(groupId: string): Promise<void> {
-  const groups = (await loadGroups()).filter((g) => g.id !== groupId);
-  await saveGroups(groups);
+export function deleteGroup(groupId: string): Promise<void> {
+  return enqueue(async () => {
+    const groups = (await loadGroups()).filter((g) => g.id !== groupId);
+    await saveGroups(groups);
+  });
 }
 
-export async function renameGroup(groupId: string, name: string): Promise<AccountGroup | null> {
+export function renameGroup(groupId: string, name: string): Promise<AccountGroup | null> {
+  return enqueue(async () => {
+    const groups = await loadGroups();
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return null;
+    group.name = name.trim();
+    await saveGroups(groups);
+    return group;
+  });
+}
+
+export function addAccountsToGroup(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
+  return enqueue(() => assignAccountsToGroupInternal(groupId, accountIds));
+}
+
+export function setGroupAccounts(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
+  return enqueue(async () => {
+    const groups = await loadGroups();
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return null;
+    group.accountIds = Array.from(new Set(accountIds));
+    await saveGroups(groups);
+    return group;
+  });
+}
+
+async function assignAccountsToGroupInternal(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
   const groups = await loadGroups();
   const group = groups.find((g) => g.id === groupId);
   if (!group) return null;
-  group.name = name.trim();
-  await saveGroups(groups);
-  return group;
-}
-
-export async function addAccountsToGroup(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
-  return assignAccountsToGroup(groupId, accountIds)
-}
-
-export async function assignAccountsToGroup(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
-  const groups = await loadGroups();
-  const group = groups.find((g) => g.id === groupId);
-  if (!group) return null;
-  const targetIds = new Set(accountIds);
-
-  for (const currentGroup of groups) {
-    if (currentGroup.id === groupId) continue;
-    currentGroup.accountIds = currentGroup.accountIds.filter((id) => !targetIds.has(id));
-  }
 
   const existing = new Set(group.accountIds);
   for (const id of accountIds) {
@@ -149,39 +234,90 @@ export async function assignAccountsToGroup(groupId: string, accountIds: string[
   return group;
 }
 
-export async function removeAccountsFromGroup(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
-  const groups = await loadGroups();
-  const group = groups.find((g) => g.id === groupId);
-  if (!group) return null;
-  const toRemove = new Set(accountIds);
-  group.accountIds = group.accountIds.filter((id) => !toRemove.has(id));
-  await saveGroups(groups);
-  return group;
+export function assignAccountsToGroup(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
+  return enqueue(() => assignAccountsToGroupInternal(groupId, accountIds));
 }
 
-/** 清理不存在的账号ID（当账号被删除时调用） */
-export async function cleanupDeletedAccounts(existingAccountIds: Set<string>): Promise<void> {
-  const groups = await loadGroups();
-  let changed = false;
-  for (const group of groups) {
-    const before = group.accountIds.length;
-    group.accountIds = group.accountIds.filter((id) => existingAccountIds.has(id));
-    if (group.accountIds.length !== before) changed = true;
-  }
-  if (changed) await saveGroups(groups);
+export function removeAccountsFromGroup(groupId: string, accountIds: string[]): Promise<AccountGroup | null> {
+  return enqueue(async () => {
+    const groups = await loadGroups();
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return null;
+    const toRemove = new Set(accountIds);
+    group.accountIds = group.accountIds.filter((id) => !toRemove.has(id));
+    await saveGroups(groups);
+    return group;
+  });
+}
+
+/** 只移除明确已删除的账号，禁止用空列表把整组清掉。 */
+export function removeAccountIdsFromAllGroups(accountIds: string[]): Promise<void> {
+  return enqueue(async () => {
+    const toRemove = new Set(accountIds.map((id) => id.trim()).filter(Boolean));
+    if (toRemove.size === 0) return;
+    const groups = await loadGroups();
+    let changed = false;
+    for (const group of groups) {
+      const next = group.accountIds.filter((id) => !toRemove.has(id));
+      if (next.length !== group.accountIds.length) {
+        group.accountIds = next;
+        changed = true;
+      }
+    }
+    if (changed) await saveGroups(groups);
+  });
+}
+
+/** 清理不存在的账号ID（仅在确认当前列表完整时使用） */
+export function cleanupDeletedAccounts(existingAccountIds: Set<string>): Promise<void> {
+  return enqueue(async () => {
+    if (existingAccountIds.size === 0) return;
+    const groups = await loadGroups();
+    let changed = false;
+    for (const group of groups) {
+      const before = group.accountIds.length;
+      group.accountIds = group.accountIds.filter((id) => existingAccountIds.has(id));
+      if (group.accountIds.length !== before) changed = true;
+    }
+    if (changed) await saveGroups(groups);
+  });
 }
 
 /** 将账号从一个分组移动到另一个分组 */
-export async function moveAccountsBetweenGroups(
+export function moveAccountsBetweenGroups(
   fromGroupId: string,
   toGroupId: string,
   accountIds: string[]
 ): Promise<void> {
-  if (fromGroupId === toGroupId) return;
-  await assignAccountsToGroup(toGroupId, accountIds);
+  return enqueue(async () => {
+    if (fromGroupId === toGroupId) return;
+    await assignAccountsToGroupInternal(toGroupId, accountIds);
+  });
+}
+
+/** 手动重排分组顺序并持久化 */
+export function reorderGroups(orderedGroupIds: string[]): Promise<AccountGroup[]> {
+  return enqueue(async () => {
+    const groups = await loadGroups();
+    const groupMap = new Map(groups.map((g) => [g.id, g]));
+    const reordered: AccountGroup[] = [];
+    for (const id of orderedGroupIds) {
+      const g = groupMap.get(id);
+      if (g) {
+        reordered.push(g);
+        groupMap.delete(id);
+      }
+    }
+    for (const remaining of groupMap.values()) {
+      reordered.push(remaining);
+    }
+    await saveGroups(reordered);
+    return cloneGroups(reordered);
+  });
 }
 
 /** 使缓存失效，下次 getAccountGroups 时重新从磁盘读取 */
 export function invalidateCache(): void {
   cachedGroups = null;
 }
+

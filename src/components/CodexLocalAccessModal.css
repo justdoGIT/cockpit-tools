@@ -1,6 +1,7 @@
 .codex-local-access-modal-overlay {
+  --codex-local-access-overlay-padding: clamp(16px, 2.6vw, 32px);
   overflow-y: auto;
-  padding: clamp(16px, 2.6vw, 32px);
+  padding: var(--codex-local-access-overlay-padding);
   background:
     radial-gradient(
       circle at top left,
@@ -19,7 +20,7 @@
   align-items: flex-start;
 }
 
-.codex-local-access-modal {
+.modal.codex-local-access-modal {
   --codex-local-border: color-mix(in srgb, var(--primary) 14%, var(--border));
   --codex-local-border-strong: color-mix(
     in srgb,
@@ -39,8 +40,15 @@
   --codex-local-shadow:
     0 34px 90px rgba(2, 6, 23, 0.24), 0 10px 32px rgba(15, 23, 42, 0.14);
   width: 100%;
-  max-width: min(940px, calc(100vw - 48px));
-  max-height: none;
+  max-width: min(1120px, calc(100vw - 32px));
+  max-height: calc(
+    100vh - var(--codex-local-access-overlay-padding) -
+      var(--codex-local-access-overlay-padding)
+  );
+  max-height: calc(
+    100dvh - var(--codex-local-access-overlay-padding) -
+      var(--codex-local-access-overlay-padding)
+  );
   margin: 0 auto;
   border-radius: 28px;
   border: 1px solid var(--codex-local-border);
@@ -87,13 +95,14 @@
   z-index: 1;
 }
 
-.codex-local-access-modal-members {
-  max-width: min(780px, calc(100vw - 32px));
+.modal.codex-local-access-modal-members {
+  max-width: min(1080px, calc(100vw - 24px));
 }
 
-.codex-local-access-modal .modal-header {
+.modal.codex-local-access-modal > .modal-header {
   position: relative;
   display: block;
+  flex: 0 0 auto;
   padding: 24px 28px 18px;
   border-bottom: 1px solid
     color-mix(in srgb, var(--primary) 8%, var(--border-light));
@@ -331,26 +340,27 @@
   transform: rotate(90deg) translateY(-1px);
 }
 
-.codex-local-access-modal .modal-body {
+.modal.codex-local-access-modal > .modal-body.codex-local-access-modal-body {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  gap: 18px;
   min-height: 0;
-  overflow: visible;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 18px 28px 24px;
   background: transparent;
 }
 
-.codex-local-access-modal-body {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  min-height: 0;
-  max-height: none;
-  overflow: visible;
+/* 弹框高度受限后，正文自身是滚动容器：直接子项必须按内容高度排布。
+   flex 默认 shrink 会在窗口高度不足时把「总量统计」等卡片压扁并裁掉。 */
+.codex-local-access-modal-body > * {
+  flex: 0 0 auto;
 }
 
-.codex-local-access-modal .modal-footer {
+.modal.codex-local-access-modal > .modal-footer {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
@@ -512,10 +522,9 @@
 }
 
 .codex-local-access-stats-range-tab.is-active {
-  color: #1d4ed8;
-  border-color: rgba(37, 99, 235, 0.24);
-  background: rgba(219, 234, 254, 0.9);
-  box-shadow: 0 8px 16px -12px rgba(37, 99, 235, 0.65);
+  color: var(--text-primary);
+  border-color: var(--primary);
+  background: var(--primary-light);
 }
 
 .codex-local-access-inline-error,
@@ -752,6 +761,13 @@
   word-break: break-word;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.codex-local-access-test-chat-bubble img {
+  display: block;
+  max-width: 100%;
+  max-height: 42vh;
+  object-fit: contain;
 }
 
 .codex-local-access-test-chat-error-title {
@@ -1386,58 +1402,6 @@
   padding: 16px 24px 20px;
 }
 
-.codex-local-access-backup-confirm-overlay {
-  z-index: 10020;
-  padding: 20px;
-  background: rgba(15, 23, 42, 0.68);
-}
-
-.codex-local-access-backup-confirm-dialog {
-  width: min(420px, calc(100vw - 40px));
-  max-width: calc(100vw - 40px);
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border));
-  border-radius: 12px;
-  background: var(--bg-surface);
-  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.36);
-}
-
-.codex-local-access-backup-confirm-header {
-  padding: 18px 20px 14px;
-}
-
-.codex-local-access-backup-confirm-header h3 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 17px;
-  font-weight: 800;
-}
-
-.codex-local-access-backup-confirm-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 18px 20px;
-}
-
-.codex-local-access-backup-confirm-body strong {
-  overflow-wrap: anywhere;
-  color: var(--text-primary);
-  font-size: 14px;
-}
-
-.codex-local-access-backup-confirm-body p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.codex-local-access-backup-confirm-footer {
-  gap: 10px;
-  padding: 14px 20px 18px;
-}
-
 .codex-local-access-section {
   display: flex;
   flex-direction: column;
@@ -1484,6 +1448,54 @@
   font-weight: 700;
   line-height: 1.3;
   color: var(--text-primary);
+}
+
+.codex-local-access-modal .codex-local-access-payload-details {
+  position: relative;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.codex-local-access-modal .codex-local-access-payload-details > summary {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  list-style: none;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 6px;
+  color: var(--text-primary);
+  background: transparent;
+  font-family: inherit;
+}
+
+.codex-local-access-modal .codex-local-access-payload-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.codex-local-access-modal .codex-local-access-payload-details > summary:hover {
+  background: var(--bg-hover);
+}
+
+.codex-local-access-modal .codex-local-access-payload-details > summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.codex-local-access-modal .codex-local-access-payload-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.codex-local-access-modal .codex-local-access-payload-details[open] .codex-local-access-payload-chevron {
+  transform: rotate(180deg);
+}
+
+.codex-local-access-modal .codex-local-access-payload-details-body {
+  padding-top: 10px;
 }
 
 .codex-local-access-section-title svg {
@@ -1537,91 +1549,162 @@
   accent-color: var(--primary);
 }
 
-.codex-local-access-member-backup-field {
+.codex-local-access-session-affinity-settings {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.codex-local-access-session-affinity-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.codex-local-access-session-affinity-toggle,
+.codex-local-access-session-affinity-expiry {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  min-height: 28px;
-  margin: 0;
-  padding: 4px 6px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
+  gap: 7px;
+  min-width: 0;
   color: var(--text-secondary);
-  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.codex-local-access-session-affinity-toggle > input[type="checkbox"] {
   appearance: none;
-  -webkit-appearance: none;
-  font: inherit;
-  line-height: 1;
-  touch-action: manipulation;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--border-strong, var(--border));
+  border-radius: 5px;
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
-.codex-local-access-member-backup-field:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 8%, transparent);
-  color: var(--text-primary);
+.codex-local-access-session-affinity-toggle
+  > input[type="checkbox"]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3.5 8.2 6.6 11.2 12.6 4.8' fill='none' stroke='white' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 13px 13px;
 }
 
-.codex-local-access-member-backup-field:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--primary) 50%, transparent);
-  outline-offset: 2px;
+.codex-local-access-session-affinity-toggle
+  > input[type="checkbox"]:focus-visible {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
 }
 
-.codex-local-access-member-backup-field:disabled {
+.codex-local-access-session-affinity-toggle
+  > input[type="checkbox"]:disabled {
   cursor: not-allowed;
-  opacity: 0.65;
+  opacity: 0.55;
 }
 
-.codex-local-access-member-backup-label {
+.codex-local-access-session-affinity-expiry input {
+  width: 82px;
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid var(--codex-local-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-surface) 90%, transparent);
+  color: var(--text-primary);
+  outline: none;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-local-access-session-affinity-expiry input:focus {
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.codex-local-access-session-affinity-expiry input[aria-invalid="true"] {
+  border-color: var(--danger, #ef4444);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+}
+
+.codex-local-access-session-affinity-error {
+  color: var(--danger, #ef4444);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.codex-local-access-member-priority-label {
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 800;
   white-space: nowrap;
-  pointer-events: none;
 }
 
-.codex-local-access-member-backup-switch {
-  position: relative;
-  width: 34px;
+.codex-local-access-member-priority-dropdown {
+  width: 90px;
+}
+
+.codex-local-access-member-priority-dropdown
+  .single-select-dropdown-trigger {
+  min-height: 30px;
+  padding: 0 7px 0 10px;
+  border-radius: 9px;
+  gap: 5px;
+}
+
+.codex-local-access-member-priority-dropdown
+  .single-select-dropdown-value {
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.codex-local-access-member-priority-dropdown
+  .single-select-dropdown-arrow {
+  width: 20px;
   height: 20px;
-  flex: 0 0 auto;
-  pointer-events: none;
 }
 
-.codex-local-access-member-backup-switch-track {
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 24%, var(--bg-card));
-  transition:
-    background 0.16s ease,
-    box-shadow 0.16s ease;
+.codex-local-access-member-priority-menu .single-select-dropdown-item {
+  min-height: 34px;
+  padding: 0 9px;
+  border-radius: 9px;
 }
 
-.codex-local-access-member-backup-switch-track::before {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--bg-card);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
-  transition: transform 0.16s ease;
+.codex-local-access-member-image-policy-dropdown {
+  width: 112px;
+  min-width: 112px;
+  flex: 0 0 112px;
 }
 
-.codex-local-access-member-backup-field.is-on
-  .codex-local-access-member-backup-switch-track {
-  background: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+.codex-local-access-member-image-policy-dropdown
+  .single-select-dropdown-trigger {
+  min-height: 30px;
+  padding: 0 7px 0 9px;
+  border-radius: 9px;
+  gap: 4px;
 }
 
-.codex-local-access-member-backup-field.is-on
-  .codex-local-access-member-backup-switch-track::before {
-  transform: translateX(14px);
+.codex-local-access-member-image-policy-dropdown
+  .single-select-dropdown-value {
+  font-size: 11px;
+  font-weight: 800;
 }
 
-.codex-local-access-custom-routing-backup-badge {
+.codex-local-access-custom-routing-usage-priority-badge {
   display: inline-flex;
   align-items: center;
   min-height: 22px;
@@ -1759,9 +1842,19 @@
 }
 
 .codex-local-access-health-pool-card {
+  font-family: inherit;
+  cursor: pointer;
   border-color: rgba(22, 163, 74, 0.2);
   background: rgba(240, 253, 244, 0.72);
   color: #166534;
+}
+
+.codex-local-access-health-pool-card:hover,
+.codex-local-access-health-pool-card:focus-visible {
+  filter: brightness(0.98);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.48),
+    0 0 0 2px color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .codex-local-access-health-pool-card.has-issue {
@@ -1826,6 +1919,95 @@
   gap: 14px;
 }
 
+.codex-local-access-image-model-error {
+  color: var(--error-color, #dc2626);
+  font-size: 12px;
+}
+
+.codex-local-access-config-hint {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.codex-local-access-config-card-image-forward {
+  gap: 10px;
+}
+
+/* 紧凑版生图模型：与「选择生图账号」同排的一行下拉，不占整张卡片。 */
+.codex-image-model-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.codex-image-model-inline-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.codex-image-model-inline-select {
+  min-width: 150px;
+}
+
+.codex-image-model-inline-input {
+  width: 170px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+
+.codex-image-model-inline-input:focus {
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.codex-image-model-inline-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* 生图转发：勾选开关与已选账号标签，窄宽度下自动换行。 */
+.codex-local-access-image-forward-toggle {
+  align-self: flex-start;
+  color: var(--text-secondary);
+}
+
+.codex-local-access-image-forward-status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.codex-local-access-image-forward-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.codex-local-access-image-forward-tag {
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 启动预览里的独立行：状态标签在上，勾选与「选择 GPT 账号」在下。 */
 .codex-local-access-port-card {
   gap: 14px;
 }
@@ -2375,17 +2557,17 @@
 .codex-local-access-member-mainline {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   width: max-content;
-  min-width: 100%;
+  min-width: 980px;
   flex-wrap: nowrap;
 }
 
 .codex-local-access-member-list .group-account-email {
-  flex: 0 0 12rem;
-  width: 12rem;
-  min-width: 12rem;
-  max-width: 12rem;
+  flex: 0 0 18rem;
+  width: 18rem;
+  min-width: 18rem;
+  max-width: 18rem;
   margin: 0;
   padding: 0;
   border: 0;
@@ -2413,7 +2595,7 @@
 }
 
 .codex-local-access-member-list .codex-local-access-member-plan,
-.codex-local-access-member-list .codex-local-access-member-backup-slot,
+.codex-local-access-member-list .codex-local-access-member-priority-slot,
 .codex-local-access-member-list .codex-local-access-member-metric,
 .codex-local-access-member-list .codex-local-access-member-trailing {
   display: inline-flex;
@@ -2422,9 +2604,15 @@
   white-space: nowrap;
 }
 
-/* Slightly pull backup toward the plan area without affecting checkbox/email. */
-.codex-local-access-member-list .codex-local-access-member-backup-slot {
+.codex-local-access-member-list .codex-local-access-member-priority-slot {
   margin-left: 0;
+  gap: 6px;
+}
+
+.codex-local-access-member-list .codex-local-access-member-plan {
+  gap: 8px;
+  min-width: max-content;
+  flex-shrink: 0;
 }
 
 .codex-local-access-member-list .codex-local-access-member-trailing {
@@ -2480,6 +2668,12 @@
   display: none;
 }
 
+.codex-local-access-member-mainline .tier-badge.chatgpt-plan,
+.codex-local-access-account-stat-main .tier-badge.chatgpt-plan {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .codex-local-access-member-mainline .tier-badge.free,
 .codex-local-access-account-stat-main .tier-badge.free {
   background: var(--plan-free-bg);
@@ -2509,9 +2703,9 @@
 }
 
 .codex-local-access-member-mainline
-  .tier-badge.pro:not(.codex-pro-lite):not(.codex-pro-max),
+  .tier-badge.pro:not(.codex-pro-lite):not(.codex-pro-max):not(.codex-pro-500),
 .codex-local-access-account-stat-main
-  .tier-badge.pro:not(.codex-pro-lite):not(.codex-pro-max) {
+  .tier-badge.pro:not(.codex-pro-lite):not(.codex-pro-max):not(.codex-pro-500) {
   background: var(--plan-pro-bg);
   color: var(--plan-pro-color);
   border: 1px solid var(--plan-pro-border);
@@ -2591,17 +2785,18 @@
 
 @media (max-width: 760px) {
   .codex-local-access-modal-overlay {
-    padding: 12px;
+    --codex-local-access-overlay-padding: 12px;
   }
 
-  .codex-local-access-modal {
+  .modal.codex-local-access-modal {
     max-width: 100%;
     border-radius: 24px;
   }
 
-  .codex-local-access-modal .modal-header,
-  .codex-local-access-modal .modal-body,
-  .codex-local-access-modal .modal-footer {
+  .modal.codex-local-access-modal > .modal-header,
+  .modal.codex-local-access-modal
+    > .modal-body.codex-local-access-modal-body,
+  .modal.codex-local-access-modal > .modal-footer {
     padding-left: 18px;
     padding-right: 18px;
   }
@@ -2697,7 +2892,7 @@
     grid-template-columns: 1fr;
   }
 
-  .codex-local-access-modal .modal-footer {
+  .modal.codex-local-access-modal > .modal-footer {
     flex-wrap: nowrap;
   }
 
@@ -2926,7 +3121,14 @@
   );
 }
 
-[data-theme="dark"] .codex-local-access-free-toggle {
+[data-theme="dark"] .codex-local-access-free-toggle,
+[data-theme="dark"] .codex-local-access-session-affinity-settings {
+  background: rgba(15, 23, 42, 0.62);
+  border-color: rgba(148, 163, 184, 0.2);
+  color: color-mix(in srgb, var(--text-secondary) 88%, var(--text-muted));
+}
+
+[data-theme="dark"] .codex-local-access-image-forward-tag {
   background: rgba(15, 23, 42, 0.62);
   border-color: rgba(148, 163, 184, 0.2);
   color: color-mix(in srgb, var(--text-secondary) 88%, var(--text-muted));
@@ -2985,13 +3187,6 @@
 [data-theme="dark"] .codex-local-access-stats-range-tab:hover:not(:disabled) {
   color: var(--text-primary);
   background: rgba(71, 85, 105, 0.4);
-}
-
-[data-theme="dark"] .codex-local-access-stats-range-tab.is-active {
-  color: #bfdbfe;
-  border-color: rgba(96, 165, 250, 0.28);
-  background: rgba(30, 64, 175, 0.3);
-  box-shadow: 0 10px 18px -14px rgba(59, 130, 246, 0.68);
 }
 
 [data-theme="dark"] .codex-local-access-section-surface,
@@ -3231,3 +3426,42 @@
   background: rgba(15, 23, 42, 0.42);
   border-color: rgba(148, 163, 184, 0.16);
 }
+
+/* 跨平台成员：Grok 平台账号分组（与 Codex 列表同款行样式）。 */
+/* 跨平台成员：Grok 平台账号行与 Codex 行共用同一列表，仅错误提示单独着色。 */
+.codex-local-access-grok-member-error {
+  color: var(--danger, #dc2626);
+}
+
+/* Keep action failures visible while the settings body scrolls. */
+.codex-local-access-error-area {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: min(25vh, 160px);
+  margin: 0 20px 12px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+
+.codex-local-access-error-area .codex-local-access-inline-error {
+  margin-bottom: 0;
+}
+.codex-official-member-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--primary) 5%, var(--bg-surface));
+}
+.codex-official-member-hint p { flex: 1 1 260px; margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+
+/* Split the existing 18rem identity slot; priority/image/plan columns keep their positions. */
+.codex-member-identity-slot { flex: 0 0 18rem; width: 18rem; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.codex-local-access-member-list .codex-member-identity-slot .group-account-email { flex: 1 1 0; min-width: 0; width: auto; max-width: none; }
+.codex-member-access-mode { flex: 0 0 98px; width: 98px; }
+.codex-member-access-mode .single-select-dropdown-trigger { min-height: 30px; padding: 5px 8px; font-size: 12px; }

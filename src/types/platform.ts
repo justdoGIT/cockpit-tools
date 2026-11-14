@@ -4,6 +4,7 @@ export type PlatformId =
   | 'antigravity'
   | 'antigravity_ide'
   | 'codex'
+  | 'codex_api_service'
   | 'claude_manager'
   | 'zed'
   | 'github-copilot'
@@ -19,11 +20,13 @@ export type PlatformId =
   | 'trae_solo'
   | 'trae_cn'
   | 'trae_solo_cn'
-  | 'workbuddy';
+  | 'workbuddy'
+  | 'minimaxcode';
 
 export const ALL_PLATFORM_IDS: PlatformId[] = [
   'claude_manager',
   'codex',
+  'codex_api_service',
   'antigravity',
   'antigravity_ide',
   'zed',
@@ -41,7 +44,15 @@ export const ALL_PLATFORM_IDS: PlatformId[] = [
   'trae_cn',
   'trae_solo_cn',
   'workbuddy',
+  'minimaxcode',
 ];
+
+/** Platforms that do not own account lists (service / feature pages). */
+export const ACCOUNTLESS_PLATFORM_IDS: readonly PlatformId[] = ['codex_api_service'];
+
+export function isAccountPlatform(platformId: PlatformId): boolean {
+  return !ACCOUNTLESS_PLATFORM_IDS.includes(platformId);
+}
 
 export const MENU_HIDDEN_PLATFORM_IDS: PlatformId[] = [];
 
@@ -57,6 +68,7 @@ export const PLATFORM_PAGE_MAP: Record<PlatformId, Page> = {
   antigravity: 'overview',
   antigravity_ide: 'overview',
   codex: 'codex',
+  codex_api_service: 'codex-api-service',
   claude_manager: 'claude',
   zed: 'zed',
   'github-copilot': 'github-copilot',
@@ -73,4 +85,5 @@ export const PLATFORM_PAGE_MAP: Record<PlatformId, Page> = {
   trae_cn: 'trae-cn',
   trae_solo_cn: 'trae-solo-cn',
   workbuddy: 'workbuddy',
+  minimaxcode: 'minimaxcode',
 };

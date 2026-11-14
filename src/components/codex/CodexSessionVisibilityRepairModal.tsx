@@ -4,12 +4,17 @@ import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ModalErrorMessage, useModalErrorState } from "../ModalErrorMessage";
-import { SingleSelectDropdown, type SingleSelectOption } from "../SingleSelectDropdown";
-import { useEscClose } from "../../hooks/useEscClose";
+import {
+  SingleSelectDropdown,
+  type SingleSelectOption,
+} from "../SingleSelectDropdown";
+import { useModalFocusTrap } from "../../hooks/useModalFocusTrap";
+import { useEscCloseTopmost } from "../../hooks/useEscClose";
 import { useCodexInstanceStore } from "../../stores/useCodexInstanceStore";
 import type {
   CodexSessionVisibilityRepairMode,
   CodexSessionVisibilityRepairInstanceList,
+  CodexSessionVisibilityRepairProviderList,
   CodexSessionVisibilityRepairProgress,
   CodexSessionVisibilityRepairSummary,
 } from "../../types/codex";
@@ -24,11 +29,15 @@ const SESSION_VISIBILITY_REPAIR_PROGRESS_EVENT =
 
 interface CodexSessionVisibilityRepairModalProps {
   open: boolean;
+  repairKind?: "visibility" | "history";
+  initialInstanceId?: string;
   description?: ReactNode;
   selectedSessionIds?: string[];
   totalSessionCount?: number;
   onClose: () => void;
-  onRepaired?: (summary: CodexSessionVisibilityRepairSummary) => void | Promise<void>;
+  onRepaired?: (
+    summary: CodexSessionVisibilityRepairSummary,
+  ) => void | Promise<void>;
   onRunningChange?: (running: boolean) => void;
 }
 
@@ -125,7 +134,7 @@ export function CodexSessionVisibilityRepairProgressView({
         case "write_rollout_files":
           return t(
             "codex.sessionManager.repairModal.progress.writeRolloutFiles",
-            "正在跳过旧会话文件写入...",
+            "正在校正 {{instance}} 的会话文件时间...",
             values,
           );
         case "write_sqlite_timestamps":
@@ -146,6 +155,14 @@ export function CodexSessionVisibilityRepairProgressView({
             "正在刷新 {{instance}} 的官方会话状态...",
             values,
           );
+        case "scan_history_index":
+          return t("codex.sessionManager.repairModal.historyScan", values);
+        case "reset_history_index":
+          return t("codex.sessionManager.repairModal.historyReset");
+        case "scan_local_projects":
+          return t("codex.sessionManager.repairModal.progress.scanInstance", values);
+        case "write_local_projects":
+          return t("codex.sessionManager.repairModal.progress.writeInstance", values);
         case "prune_backups":
           return t(
             "codex.sessionManager.repairModal.progress.pruneBackups",
@@ -196,6 +213,8 @@ export function CodexSessionVisibilityRepairProgressView({
 
 export function CodexSessionVisibilityRepairModal({
   open,
+  repairKind = "visibility",
+  initialInstanceId,
   description,
   selectedSessionIds = [],
   totalSessionCount = 0,
@@ -204,28 +223,41 @@ export function CodexSessionVisibilityRepairModal({
   onRunningChange,
 }: CodexSessionVisibilityRepairModalProps) {
   const { t } = useTranslation();
+  const dialog = useRef<HTMLDivElement>(null);
+  useModalFocusTrap(dialog, open);
   const repairSessionVisibilityAcrossInstances = useCodexInstanceStore(
     (state) => state.repairSessionVisibilityAcrossInstances,
   );
   const listSessionVisibilityRepairInstances = useCodexInstanceStore(
     (state) => state.listSessionVisibilityRepairInstances,
   );
+  const listSessionVisibilityRepairProviders = useCodexInstanceStore(
+    (state) => state.listSessionVisibilityRepairProviders,
+  );
   const runIdRef = useRef<string | null>(null);
+  const contextRef = useRef({ open: false, repairKind, initialInstanceId });
   const [status, setStatus] = useState<RepairStatus>("idle");
-  const [selectedMode, setSelectedMode] =
-    useState<CodexSessionVisibilityRepairMode>("quick");
+  const [visibilityMode, setSelectedMode] = useState<"quick" | "deep" | "projects">("quick");
+  const selectedMode: CodexSessionVisibilityRepairMode =
+    repairKind === "history" ? "history" : visibilityMode;
   const [selectedInstanceScope, setSelectedInstanceScope] =
     useState<InstanceRepairScope>("target");
   const [selectedScope, setSelectedScope] = useState<RepairScope>("all");
   const [instanceList, setInstanceList] =
     useState<CodexSessionVisibilityRepairInstanceList | null>(null);
   const [selectedInstanceId, setSelectedInstanceId] = useState("");
+  const [providerList, setProviderList] =
+    useState<CodexSessionVisibilityRepairProviderList | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState("");
   const [loadingInstances, setLoadingInstances] = useState(false);
+  const [loadingProviders, setLoadingProviders] = useState(false);
   const [progress, setProgress] =
     useState<CodexSessionVisibilityRepairProgress | null>(null);
   const [previewSummary, setPreviewSummary] =
     useState<CodexSessionVisibilityRepairSummary | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [encryptedContentWarningVisible, setEncryptedContentWarningVisible] =
+    useState(false);
   const {
     message: error,
     scrollKey: errorScrollKey,
@@ -257,31 +289,77 @@ export function CodexSessionVisibilityRepairModal({
     [repairInstances, t],
   );
   const canUseSelectedScope = uniqueSelectedSessionIds.length > 0;
+  const providerOptions = useMemo<SingleSelectOption[]>(
+    () =>
+      (providerList?.providers ?? []).map((provider) => {
+        const sources = provider.sources
+          .map((source) =>
+            t(
+              `codex.sessionManager.repairModal.providerSource.${source}`,
+              source,
+            ),
+          )
+          .join(" / ");
+        const defaultLabel = provider.isDefault
+          ? ` · ${t("codex.sessionManager.repairModal.defaultProvider", "默认")}`
+          : "";
+        return {
+          value: provider.id,
+          label: `${provider.id}${sources ? ` (${sources})` : ""}${defaultLabel}`,
+        };
+      }),
+    [providerList, t],
+  );
   const effectiveScope = canUseSelectedScope ? selectedScope : "all";
+  const isHistoryRepair = selectedMode === "history";
+  const usesProvider = selectedMode === "quick" || selectedMode === "deep";
   const startDisabled =
     running ||
     loadingInstances ||
+    (usesProvider && loadingProviders) ||
     !selectedInstanceId ||
+    (usesProvider && !selectedProvider) ||
     (effectiveScope === "selected" && uniqueSelectedSessionIds.length === 0);
+  const hasRunningRepairTarget = useMemo(() => {
+    if (selectedInstanceScope === "all") {
+      return repairInstances.some((instance) => instance.running);
+    }
+    return repairInstances.some(
+      (instance) => instance.id === selectedInstanceId && instance.running,
+    );
+  }, [
+    repairInstances,
+    selectedInstanceId,
+    selectedInstanceScope,
+  ]);
+  const repairRequiresStop = (selectedMode === "deep" || selectedMode === "projects") && hasRunningRepairTarget;
+  const repairDisabled = startDisabled || repairRequiresStop;
   const hasPreview = previewSummary !== null;
 
   useEffect(() => {
-    if (!open) {
+    const changed = contextRef.current.open !== open || contextRef.current.repairKind !== repairKind
+      || contextRef.current.initialInstanceId !== initialInstanceId;
+    contextRef.current = { open, repairKind, initialInstanceId };
+    if (changed) {
       setStatus("idle");
       setSelectedMode("quick");
       setSelectedInstanceScope("target");
-      setSelectedScope("all");
+      setSelectedScope(open && repairKind === "history" && uniqueSelectedSessionIds.length > 0 ? "selected" : "all");
       setInstanceList(null);
       setSelectedInstanceId("");
+      setProviderList(null);
+      setSelectedProvider("");
       setLoadingInstances(false);
+      setLoadingProviders(false);
       setProgress(null);
       setPreviewSummary(null);
       setResult(null);
+      setEncryptedContentWarningVisible(false);
       setError(null);
       runIdRef.current = null;
       onRunningChange?.(false);
     }
-  }, [onRunningChange, open, setError]);
+  }, [initialInstanceId, onRunningChange, open, repairKind, setError, uniqueSelectedSessionIds.length]);
 
   useEffect(() => {
     if (!open) return;
@@ -298,13 +376,19 @@ export function CodexSessionVisibilityRepairModal({
         if (cancelled) return;
         setInstanceList(nextInstanceList);
         const instances = nextInstanceList.instances ?? [];
-        const preferred =
-          instances.find((instance) => instance.id === nextInstanceList.defaultInstanceId)?.id ||
+        const preferred = initialInstanceId
+          ? instances.find((instance) => instance.id === initialInstanceId)?.id ?? ""
+          :
+          instances.find(
+            (instance) => instance.id === nextInstanceList.defaultInstanceId,
+          )?.id ||
           nextInstanceList.defaultInstanceId ||
           instances[0]?.id ||
           "";
         setSelectedInstanceId((current) =>
-          current && instances.some((instance) => instance.id === current) ? current : preferred,
+          current && instances.some((instance) => instance.id === current)
+            ? current
+            : preferred,
         );
       })
       .catch((err) => {
@@ -325,7 +409,51 @@ export function CodexSessionVisibilityRepairModal({
     return () => {
       cancelled = true;
     };
-  }, [listSessionVisibilityRepairInstances, open, setError, t]);
+  }, [initialInstanceId, listSessionVisibilityRepairInstances, open, repairKind, setError, t]);
+
+  useEffect(() => {
+    if (!open || !usesProvider) {
+      setLoadingProviders(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingProviders(true);
+    void listSessionVisibilityRepairProviders()
+      .then((nextProviderList) => {
+        if (cancelled) return;
+        setProviderList(nextProviderList);
+        const providers = nextProviderList.providers ?? [];
+        const preferred =
+          providers.find(
+            (provider) => provider.id === nextProviderList.defaultProvider,
+          )?.id ||
+          nextProviderList.defaultProvider ||
+          providers[0]?.id ||
+          "";
+        setSelectedProvider((current) =>
+          current && providers.some((provider) => provider.id === current)
+            ? current
+            : preferred,
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(
+          t("codex.sessionManager.repairModal.providerLoadFailed", {
+            defaultValue: "读取 Provider 候选失败：{{error}}",
+            error: String(err).replace(/^Error:\s*/, ""),
+          }),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingProviders(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [usesProvider, listSessionVisibilityRepairProviders, open, setError, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -354,7 +482,7 @@ export function CodexSessionVisibilityRepairModal({
     };
   }, [open]);
 
-  useEscClose(open && !running, onClose);
+  useEscCloseTopmost(open && !running, onClose, dialog);
 
   const closeModal = useCallback(() => {
     if (running) return;
@@ -363,13 +491,14 @@ export function CodexSessionVisibilityRepairModal({
 
   const clearPreview = useCallback(() => {
     if (running) return;
+    setError(null);
     setPreviewSummary(null);
     if (status === "previewed" || status === "success") {
       setStatus("idle");
       setResult(null);
       setProgress(null);
     }
-  }, [running, status]);
+  }, [running, setError, status]);
 
   const buildRepairOptions = useCallback(
     (dryRun: boolean) => {
@@ -380,28 +509,33 @@ export function CodexSessionVisibilityRepairModal({
       return {
         mode: selectedMode,
         dryRun,
-        targetInstanceId: selectedInstanceId,
+        targetInstanceId: isHistoryRepair ? null : selectedInstanceId,
+        targetProvider: usesProvider ? selectedProvider : null,
         repairInstanceIds,
         sessionIds,
       };
     },
     [
       effectiveScope,
+      isHistoryRepair,
       selectedInstanceScope,
       selectedInstanceId,
       selectedMode,
+      selectedProvider,
       uniqueSelectedSessionIds,
+      usesProvider,
     ],
   );
 
   const handlePreview = useCallback(async () => {
-    if (running) return;
+    if (startDisabled) return;
     const runId = createRepairRunId();
     runIdRef.current = runId;
     setStatus("previewing");
     setProgress(buildInitialProgress(runId, selectedMode));
     setPreviewSummary(null);
     setResult(null);
+    setEncryptedContentWarningVisible(false);
     setError(null);
     onRunningChange?.(true);
     try {
@@ -409,8 +543,32 @@ export function CodexSessionVisibilityRepairModal({
         runId,
         buildRepairOptions(true),
       );
+      if (runIdRef.current !== runId) return;
       setPreviewSummary(summary);
-      setResult(formatCodexSessionVisibilityRepairMessage(summary, t));
+      setError(summary.historyRepairWarning ?? null);
+      if (isHistoryRepair && summary.items?.length) {
+        const refreshedRunning = new Map(
+          summary.items
+            .filter((item) => typeof item.running === "boolean")
+            .map((item) => [item.instanceId, item.running]),
+        );
+        setInstanceList((current) => current && {
+          ...current,
+          instances: current.instances.map((instance) =>
+            refreshedRunning.has(instance.id)
+              ? { ...instance, running: refreshedRunning.get(instance.id)! }
+              : instance,
+          ),
+        });
+      }
+      setEncryptedContentWarningVisible(
+        Boolean(summary.encryptedContentWarning),
+      );
+      setResult(
+        isHistoryRepair
+          ? summary.message
+          : formatCodexSessionVisibilityRepairMessage(summary, t),
+      );
       setStatus("previewed");
       setProgress((current) =>
         current
@@ -422,35 +580,46 @@ export function CodexSessionVisibilityRepairModal({
           : null,
       );
     } catch (err) {
+      if (runIdRef.current !== runId) return;
       setStatus("idle");
       setPreviewSummary(null);
       setError(
-        t("codex.sessionManager.repairModal.previewFailedWithError", {
-          defaultValue: "预览会话修复失败：{{error}}",
-          error: String(err).replace(/^Error:\s*/, ""),
-        }),
+        isHistoryRepair
+          ? String(err).replace(/^Error:\s*/, "")
+          : t("codex.sessionManager.repairModal.previewFailedWithError", {
+              defaultValue: "预览会话修复失败：{{error}}",
+              error: String(err).replace(/^Error:\s*/, ""),
+            }),
       );
     } finally {
-      onRunningChange?.(false);
+      if (runIdRef.current === runId) onRunningChange?.(false);
     }
   }, [
     buildRepairOptions,
+    isHistoryRepair,
     onRunningChange,
     repairSessionVisibilityAcrossInstances,
-    running,
+    startDisabled,
     selectedMode,
     setError,
     t,
   ]);
 
   const handleRepair = useCallback(async () => {
-    if (running) return;
+    if (startDisabled) return;
+    if (repairRequiresStop) {
+      setError(
+        t("codex.sessionManager.repairModal.stopInstanceHint"),
+      );
+      return;
+    }
     const runId = createRepairRunId();
     runIdRef.current = runId;
     setStatus("running");
     setProgress(buildInitialProgress(runId, selectedMode));
     setPreviewSummary(null);
     setResult(null);
+    setEncryptedContentWarningVisible(false);
     setError(null);
     onRunningChange?.(true);
     try {
@@ -458,7 +627,16 @@ export function CodexSessionVisibilityRepairModal({
         runId,
         buildRepairOptions(false),
       );
-      setResult(formatCodexSessionVisibilityRepairMessage(summary, t));
+      if (runIdRef.current !== runId) return;
+      setResult(
+        isHistoryRepair
+          ? summary.message
+          : formatCodexSessionVisibilityRepairMessage(summary, t),
+      );
+      setError(summary.historyRepairWarning ?? null);
+      setEncryptedContentWarningVisible(
+        Boolean(summary.encryptedContentWarning),
+      );
       setStatus("success");
       setProgress((current) =>
         current
@@ -471,22 +649,27 @@ export function CodexSessionVisibilityRepairModal({
       );
       await onRepaired?.(summary);
     } catch (err) {
+      if (runIdRef.current !== runId) return;
       setStatus("idle");
       setError(
-        t("codex.apiSwitchNotice.repairFailedWithError", {
-          defaultValue: "修复可见性失败：{{error}}",
-          error: String(err).replace(/^Error:\s*/, ""),
-        }),
+        isHistoryRepair
+          ? String(err).replace(/^Error:\s*/, "")
+          : t("codex.apiSwitchNotice.repairFailedWithError", {
+              defaultValue: "修复可见性失败：{{error}}",
+              error: String(err).replace(/^Error:\s*/, ""),
+            }),
       );
     } finally {
-      onRunningChange?.(false);
+      if (runIdRef.current === runId) onRunningChange?.(false);
     }
   }, [
     buildRepairOptions,
+    repairRequiresStop,
+    isHistoryRepair,
     onRepaired,
     onRunningChange,
     repairSessionVisibilityAcrossInstances,
-    running,
+    startDisabled,
     selectedMode,
     setError,
     t,
@@ -495,15 +678,17 @@ export function CodexSessionVisibilityRepairModal({
   if (!open) return null;
 
   return (
-    <div
-      className="modal-overlay codex-local-access-hide-confirm-overlay"
-    >
+    <div className="modal-overlay codex-local-access-hide-confirm-overlay">
       <div
+        ref={dialog} tabIndex={-1} role="dialog" aria-modal="true"
+        aria-label={t(isHistoryRepair ? "codex.sessionManager.actions.repairIndex" : "codex.sessionManager.repairModal.title")}
         className="modal codex-local-access-hide-confirm-modal codex-api-switch-notice-modal"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-header">
-          <h2>{t("codex.apiSwitchNotice.title", "Codex 会话不可见")}</h2>
+          <h2>{isHistoryRepair
+            ? t("codex.sessionManager.actions.repairIndex")
+            : t("codex.sessionManager.repairModal.title", "修复历史会话")}</h2>
           <button
             className="modal-close"
             onClick={closeModal}
@@ -516,14 +701,15 @@ export function CodexSessionVisibilityRepairModal({
         <div className="modal-body">
           <ModalErrorMessage message={error} scrollKey={errorScrollKey} />
           <p className="codex-local-access-hide-confirm-desc">
-            {description ??
-              t(
-                "codex.apiSwitchNotice.manualMessage",
-                "修复可见性会校正官方 Codex state DB 中影响侧边栏显示的会话记录，适合账号与 API Key 切换后的会话恢复。",
-              )}
+            {isHistoryRepair
+              ? <>
+                  {t("codex.sessionManager.repairModal.modeHistoryDesc")}{" "}
+                  {t("codex.sessionManager.repairModal.historyDescription")}
+                </>
+              : description ?? t("codex.sessionManager.repairModal.description")}
           </p>
           <div className="codex-visibility-repair-options">
-            <div className="codex-visibility-repair-scope">
+            {!isHistoryRepair && <div className="codex-visibility-repair-scope">
               <span className="codex-visibility-repair-scope__title">
                 {t("codex.sessionManager.repairModal.modeTitle", "修复方式")}
               </span>
@@ -535,19 +721,20 @@ export function CodexSessionVisibilityRepairModal({
                   }`}
                   onClick={() => {
                     setSelectedMode("quick");
+                    setError(null);
                     clearPreview();
                   }}
                   disabled={running}
                   aria-pressed={selectedMode === "quick"}
                 >
                   <strong>
-                    {t("codex.sessionManager.repairModal.modeQuick", "快速修复")}
+                    {t(
+                      "codex.sessionManager.repairModal.modeQuick",
+                      "快速修复",
+                    )}
                   </strong>
                   <small>
-                    {t(
-                      "codex.sessionManager.repairModal.modeQuickDesc",
-                      "只校正官方 state DB 和会话文件首条元数据，适合日常切号后恢复。",
-                    )}
+                    {t("codex.sessionManager.repairModal.modeQuickDesc")}
                   </small>
                 </button>
                 <button
@@ -557,26 +744,78 @@ export function CodexSessionVisibilityRepairModal({
                   }`}
                   onClick={() => {
                     setSelectedMode("deep");
+                    setError(null);
                     clearPreview();
                   }}
                   disabled={running}
                   aria-pressed={selectedMode === "deep"}
                 >
                   <strong>
-                    {t("codex.sessionManager.repairModal.modeDeep", "深度修复")}
+                    {t("codex.sessionManager.repairModal.modeDeep", "完整修复")}
                   </strong>
                   <small>
-                    {t(
-                      "codex.sessionManager.repairModal.modeDeepDesc",
-                      "保留当前完整元数据修复，适合快速修复后仍不可见时测试。",
-                    )}
+                    {t("codex.sessionManager.repairModal.modeDeepDesc")}
                   </small>
                 </button>
+                <button
+                  type="button"
+                  className={`codex-visibility-repair-scope-card${selectedMode === "projects" ? " is-selected" : ""}`}
+                  onClick={() => {
+                    setSelectedMode("projects");
+                    setError(null);
+                    clearPreview();
+                  }}
+                  disabled={running}
+                  aria-pressed={selectedMode === "projects"}
+                >
+                  <strong>{t("codex.sessionManager.repairModal.modeProjects")}</strong>
+                  <small>{t("codex.sessionManager.repairModal.modeProjectsDesc")}</small>
+                </button>
               </div>
-            </div>
+            </div>}
+            {usesProvider && <div className="codex-visibility-repair-field">
+              <span>
+                {t(
+                  "codex.sessionManager.repairModal.targetProvider",
+                  "目标 Provider",
+                )}
+              </span>
+              <SingleSelectDropdown
+                value={selectedProvider}
+                options={providerOptions}
+                onChange={(value) => {
+                  setSelectedProvider(value);
+                  setError(null);
+                  clearPreview();
+                }}
+                disabled={
+                  running || loadingProviders || providerOptions.length === 0
+                }
+                placeholder={
+                  loadingProviders
+                    ? t(
+                        "codex.sessionManager.repairModal.loadingProviders",
+                        "正在读取 Provider...",
+                      )
+                    : t(
+                        "codex.sessionManager.repairModal.noProvider",
+                        "未发现 Provider",
+                      )
+                }
+                ariaLabel={t(
+                  "codex.sessionManager.repairModal.targetProvider",
+                  "目标 Provider",
+                )}
+                className="codex-visibility-repair-instance-select"
+                menuClassName="codex-visibility-repair-instance-menu"
+              />
+            </div>}
             <div className="codex-visibility-repair-field">
               <span>
-                {t("codex.sessionManager.repairModal.targetInstance", "目标实例")}
+                {t(
+                  "codex.sessionManager.repairModal.targetInstance",
+                  "目标实例",
+                )}
               </span>
               <SingleSelectDropdown
                 value={selectedInstanceId}
@@ -586,20 +825,34 @@ export function CodexSessionVisibilityRepairModal({
                   setError(null);
                   clearPreview();
                 }}
-                disabled={running || loadingInstances || instanceOptions.length === 0}
+                disabled={
+                  running || loadingInstances || instanceOptions.length === 0
+                }
                 placeholder={
                   loadingInstances
-                    ? t("codex.sessionManager.repairModal.loadingInstances", "正在读取实例...")
-                    : t("codex.sessionManager.repairModal.noInstance", "未发现实例")
+                    ? t(
+                        "codex.sessionManager.repairModal.loadingInstances",
+                        "正在读取实例...",
+                      )
+                    : t(
+                        "codex.sessionManager.repairModal.noInstance",
+                        "未发现实例",
+                      )
                 }
-                ariaLabel={t("codex.sessionManager.repairModal.targetInstance", "目标实例")}
+                ariaLabel={t(
+                  "codex.sessionManager.repairModal.targetInstance",
+                  "目标实例",
+                )}
                 className="codex-visibility-repair-instance-select"
                 menuClassName="codex-visibility-repair-instance-menu"
               />
             </div>
             <div className="codex-visibility-repair-scope">
               <span className="codex-visibility-repair-scope__title">
-                {t("codex.sessionManager.repairModal.instanceScopeTitle", "实例范围")}
+                {t(
+                  "codex.sessionManager.repairModal.instanceScopeTitle",
+                  "实例范围",
+                )}
               </span>
               <div className="codex-visibility-repair-scope__grid">
                 <button
@@ -615,7 +868,10 @@ export function CodexSessionVisibilityRepairModal({
                   aria-pressed={selectedInstanceScope === "target"}
                 >
                   <strong>
-                    {t("codex.sessionManager.repairModal.instanceScopeTarget", "仅目标实例")}
+                    {t(
+                      "codex.sessionManager.repairModal.instanceScopeTarget",
+                      "仅目标实例",
+                    )}
                   </strong>
                   <small>
                     {t(
@@ -637,7 +893,10 @@ export function CodexSessionVisibilityRepairModal({
                   aria-pressed={selectedInstanceScope === "all"}
                 >
                   <strong>
-                    {t("codex.sessionManager.repairModal.instanceScopeAll", "全部实例")}
+                    {t(
+                      "codex.sessionManager.repairModal.instanceScopeAll",
+                      "全部实例",
+                    )}
                   </strong>
                   <small>
                     {t(
@@ -688,14 +947,20 @@ export function CodexSessionVisibilityRepairModal({
                   aria-pressed={effectiveScope === "selected"}
                 >
                   <strong>
-                    {t("codex.sessionManager.repairModal.scopeSelected", "所选会话")}
+                    {t(
+                      "codex.sessionManager.repairModal.scopeSelected",
+                      "所选会话",
+                    )}
                   </strong>
                   <small>
                     {canUseSelectedScope
-                      ? t("codex.sessionManager.repairModal.scopeSelectedDesc", {
-                          defaultValue: "只修复已勾选的 {{count}} 条会话。",
-                          count: uniqueSelectedSessionIds.length,
-                        })
+                      ? t(
+                          "codex.sessionManager.repairModal.scopeSelectedDesc",
+                          {
+                            defaultValue: "只修复已勾选的 {{count}} 条会话。",
+                            count: uniqueSelectedSessionIds.length,
+                          },
+                        )
                       : t(
                           "codex.sessionManager.repairModal.scopeSelectedEmpty",
                           "先在列表中勾选会话。",
@@ -706,9 +971,21 @@ export function CodexSessionVisibilityRepairModal({
             </div>
           </div>
           {running && (
-            <CodexSessionVisibilityRepairProgressView
-              progress={progress}
-            />
+            <CodexSessionVisibilityRepairProgressView progress={progress} />
+          )}
+          {(isHistoryRepair || repairRequiresStop) && hasRunningRepairTarget && !running && (
+            <div className="codex-api-switch-notice-repair-status is-warning">
+              <span>
+                {isHistoryRepair
+                  ? t("codex.sessionManager.repairModal.historyLiveHint")
+                  : selectedMode === "projects"
+                    ? t("codex.sessionManager.repairModal.projectsStopHint")
+                    : t(
+                      "codex.sessionManager.repairModal.stopInstanceHint",
+                      "完整修复前请先完全退出所选 Codex App/ChatGPT 实例；仍可先预览变更。",
+                    )}
+              </span>
+            </div>
           )}
           {status === "success" && result && (
             <div className="codex-api-switch-notice-repair-status is-success">
@@ -722,9 +999,23 @@ export function CodexSessionVisibilityRepairModal({
               <span>{result}</span>
             </div>
           )}
+          {!isHistoryRepair && encryptedContentWarningVisible && (
+            <div className="codex-api-switch-notice-repair-status is-warning">
+              <span>
+                {t(
+                  "codex.sessionManager.repairModal.encryptedContentWarning",
+                  "检测到由其他 Provider/账号加密的历史内容。元数据可以完成迁移，但继续或压缩这些会话仍可能失败；需要可靠续聊时请切回原 Provider/账号或开启新会话。",
+                )}
+              </span>
+            </div>
+          )}
         </div>
         <div className="modal-footer codex-api-switch-notice-footer">
-          <button className="btn btn-secondary" onClick={closeModal} disabled={running}>
+          <button
+            className="btn btn-secondary"
+            onClick={closeModal}
+            disabled={running}
+          >
             {t("common.close", "关闭")}
           </button>
           <button
@@ -732,7 +1023,10 @@ export function CodexSessionVisibilityRepairModal({
             onClick={() => void handlePreview()}
             disabled={startDisabled}
           >
-            <Search size={14} className={previewing ? "icon-spin" : undefined} />
+            <Search
+              size={14}
+              className={previewing ? "icon-spin" : undefined}
+            />
             {previewing
               ? t("codex.sessionManager.repairModal.previewing", "正在预览...")
               : hasPreview
@@ -742,13 +1036,19 @@ export function CodexSessionVisibilityRepairModal({
           <button
             className="btn btn-primary"
             onClick={() => void handleRepair()}
-            disabled={startDisabled}
+            disabled={repairDisabled}
           >
-            <RefreshCw size={14} className={repairing ? "icon-spin" : undefined} />
+            <RefreshCw
+              size={14}
+              className={repairing ? "icon-spin" : undefined}
+            />
             {repairing
               ? t("codex.sessionManager.repairModal.running", "正在修复...")
               : hasPreview
-                ? t("codex.sessionManager.repairModal.confirmRepair", "确认修复")
+                ? t(
+                    "codex.sessionManager.repairModal.confirmRepair",
+                    "确认修复",
+                  )
                 : t("codex.sessionManager.repairModal.start", "开始修复")}
           </button>
         </div>

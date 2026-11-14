@@ -73,11 +73,16 @@ pub struct CodexAccount {
     pub account_id: Option<String>,
     pub organization_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<CodexAgentIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_structure: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_note: Option<String>,
+    /// 账号级出口代理。留空时继续使用全局/API 服务代理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_proxy_url: Option<String>,
     pub tokens: CodexTokens,
     #[serde(default)]
     pub token_generation: u64,
@@ -106,6 +111,27 @@ pub struct CodexTokens {
     pub access_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
+}
+
+/// Codex Agent Identity credentials from the official auth.json format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexAgentIdentity {
+    #[serde(alias = "agentRuntimeId")]
+    pub agent_runtime_id: String,
+    #[serde(alias = "agentPrivateKey")]
+    pub agent_private_key: String,
+    #[serde(default, alias = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(alias = "accountId")]
+    pub account_id: String,
+    #[serde(alias = "chatgptUserId")]
+    pub chatgpt_user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, alias = "planType", skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(default, alias = "chatgptAccountIsFedramp")]
+    pub chatgpt_account_is_fedramp: bool,
 }
 
 /// Codex 配额数据（5小时配额 + 周配额）
@@ -162,6 +188,12 @@ pub struct CodexAuthFile {
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<CodexAuthTokens>,
+    #[serde(
+        default,
+        alias = "agentIdentity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent_identity: Option<CodexAgentIdentity>,
     #[serde(default)]
     pub last_refresh: Option<serde_json::Value>, // 可以是字符串或数字
 }
@@ -185,6 +217,8 @@ pub struct CodexAccountIndex {
     pub detail_schema_version: u32,
     pub accounts: Vec<CodexAccountSummary>,
     pub current_account_id: Option<String>,
+    #[serde(skip)]
+    pub(crate) storage_revision: Option<u64>,
 }
 
 /// 账号摘要信息
@@ -193,6 +227,8 @@ pub struct CodexAccountSummary {
     pub id: String,
     pub email: String,
     pub plan_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_active_until: Option<String>,
     pub created_at: i64,
     pub last_used: i64,
 }
@@ -204,6 +240,7 @@ impl CodexAccountIndex {
             detail_schema_version: 2,
             accounts: Vec::new(),
             current_account_id: None,
+            storage_revision: None,
         }
     }
 }
@@ -256,9 +293,11 @@ impl CodexAccount {
             plan_type: None,
             account_id: None,
             organization_id: None,
+            agent_identity: None,
             account_name: None,
             account_structure: None,
             account_note: None,
+            egress_proxy_url: None,
             tokens,
             token_generation: 0,
             token_updated_at: Some(now),
@@ -304,6 +343,10 @@ impl CodexAccount {
 
     pub fn is_api_key_auth(&self) -> bool {
         self.auth_mode == CodexAuthMode::Apikey
+    }
+
+    pub fn is_agent_identity_auth(&self) -> bool {
+        self.agent_identity.is_some()
     }
 
     pub fn update_last_used(&mut self) {

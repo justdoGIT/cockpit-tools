@@ -6,6 +6,12 @@
   /* No specific height, flex parent handles it */
 }
 
+.dashboard-page > .page-tabs-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
 /* Reusing .page-heading from App.css, so .dashboard-header styles are removed/minimized */
 .date-display {
   font-size: 14px;
@@ -14,10 +20,13 @@
 }
 
 .dashboard-top-actions {
-  margin-left: auto;
+  margin-inline-start: auto;
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
+  max-width: 100%;
   position: relative;
   z-index: 2;
 }
@@ -27,6 +36,28 @@
   align-items: center;
   gap: 8px;
   z-index: 2;
+}
+
+.dashboard-all-accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+}
+
+.dashboard-all-accounts-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-all-accounts-platform {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* Stats Row */
@@ -503,10 +534,10 @@
 }
 
 .account-mini-card .tier-badge.codex-pro-max {
-  background: linear-gradient(135deg, #fff7cc 0%, #f6d365 42%, #d99b16 100%);
+  background: linear-gradient(135deg, #fff4d4 0%, #efd394 42%, #d4aa54 100%);
   color: #5a3700;
-  border: 1px solid rgba(180, 116, 11, 0.42);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 3px rgba(180, 116, 11, 0.2);
+  border: 1px solid rgba(180, 116, 11, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38), 0 1px 3px rgba(180, 116, 11, 0.12);
 }
 
 .account-mini-card .tier-badge.pro-plus,
@@ -764,6 +795,13 @@
   margin-bottom: 0px; 
 }
 
+.mini-quota-row-stacked > .mini-progress-track {
+  /* The row track's flex: 1 must not collapse its height in a column. */
+  flex: none;
+  width: 100%;
+  min-height: 3px;
+}
+
 .mini-quota-header {
   display: flex;
   justify-content: space-between;
@@ -914,4 +952,22 @@
   border-color: rgba(29, 78, 216, 0.3);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(29, 78, 216, 0.15);
+}
+
+.account-mini-reset-credits {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 0;
+  min-width: 0;
+}
+
+.account-mini-reset-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
 }

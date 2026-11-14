@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { CODEX_PATH_RECOVERY_CANCELLED, codexPathRecoveryKey, withCodexPathRecovery } from "../stores/useCodexPathRecoveryStore";
+import { withProxyEnginePrerequisite } from "../utils/codexProxyEnginePrerequisite";
 import { createPlatformInstanceService } from "./platform/createPlatformInstanceService";
 import type {
   CodexSessionVisibilityRepairInstanceList,
@@ -10,6 +12,9 @@ import type {
   CodexSessionRecord,
   CodexSessionSearchOptions,
   CodexSessionTokenStats,
+  CodexSessionUsageQuery,
+  CodexSessionUsageReport,
+  CodexSessionUsageSyncResult,
   CodexSessionTrashSummary,
   CodexTrashedSessionRecord,
   CodexSessionRestoreSummary,
@@ -19,32 +24,95 @@ import type {
   CodexSessionImportPreview,
   CodexSessionImportSummary,
   CodexQuickConfig,
+  CodexExperimentalModelDefinition,
   CodexAppSpeed,
 } from "../types/codex";
-import type { InstanceLaunchMode, InstanceProfile } from "../types/instance";
+import type {
+  CodexInstanceModelRouting,
+  InstanceLaunchMode,
+  InstanceProfile,
+} from "../types/instance";
 
 const service = createPlatformInstanceService("codex");
 
 export const getInstanceDefaults = service.getInstanceDefaults;
 export const listInstances = service.listInstances;
+/** Fresh launch reconciliation; failed native probes must not reuse cached status. */
+let launchConfirmationRead: Promise<InstanceProfile[]> | undefined;
+export function listInstancesForLaunchConfirmation(): Promise<InstanceProfile[]> {
+  return launchConfirmationRead ??= invoke<InstanceProfile[]>("codex_list_instances", { fresh: true })
+    .finally(() => { launchConfirmationRead = undefined; });
+}
 export const deleteInstance = service.deleteInstance;
-export async function startInstance(instanceId: string): Promise<InstanceProfile> {
+export async function startInstance(
+  instanceId: string,
+  options?: {
+    transferConflictingAccount?: boolean;
+    skipFailedStep?: string;
+  },
+): Promise<InstanceProfile> {
   const startedAt = performance.now();
   console.info("[Codex Start][Service] invoke codex_start_instance started", {
     instanceId,
   });
+  let attempted = false;
   try {
-    return await service.startInstance(instanceId);
-  } finally {
-    console.info("[Codex Start][Service] invoke codex_start_instance finished", {
+    const args = {
       instanceId,
-      elapsedMs: Math.round(performance.now() - startedAt),
-    });
+      transferConflictingAccount:
+        options?.transferConflictingAccount === true ? true : null,
+      skipFailedStep: options?.skipFailedStep ?? null,
+    };
+    return await withCodexPathRecovery(
+      () => {
+        attempted = true;
+        return withProxyEnginePrerequisite(invoke<InstanceProfile>("codex_start_instance", args));
+      },
+      { key: codexPathRecoveryKey("codex_start_instance", args) },
+    );
+  } catch (error) {
+    if (attempted && String(error).replace(/^Error:\s*/, "") === CODEX_PATH_RECOVERY_CANCELLED) {
+      window.dispatchEvent(new CustomEvent("codex:instance-launch-progress", { detail: {
+        type: "cancelled", cancelled: true, instanceId,
+        isDefault: instanceId === "__default__", operation: "instance-launch", canRetry: false,
+      } }));
+    }
+    throw error;
+  } finally {
+    console.info(
+      "[Codex Start][Service] invoke codex_start_instance finished",
+      {
+        instanceId,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      },
+    );
   }
 }
+
+/** 请求后端停止目标实例的启动事务；弹框是否关闭由调用方决定。 */
+export async function cancelInstanceStart(instanceId: string): Promise<void> {
+  await invoke("codex_cancel_instance_start", { instanceId });
+}
 export const stopInstance = service.stopInstance;
+export async function switchInstanceAccount(
+  instanceId: string,
+  bindAccountId: string,
+  appSpeed?: CodexAppSpeed,
+): Promise<boolean> {
+  const args = { instanceId, bindAccountId, appSpeed: appSpeed ?? null };
+  return withCodexPathRecovery(
+    () => withProxyEnginePrerequisite(invoke<boolean>("codex_switch_instance_account", args)),
+    { key: codexPathRecoveryKey("codex_switch_instance_account", args) },
+  );
+}
+
 export const closeAllInstances = service.closeAllInstances;
-export const openInstanceWindow = service.openInstanceWindow;
+export async function openInstanceWindow(instanceId: string): Promise<void> {
+  return withCodexPathRecovery(
+    () => service.openInstanceWindow(instanceId),
+    { key: codexPathRecoveryKey("codex_open_instance_window", { instanceId }) },
+  );
+}
 
 export async function createInstance(payload: {
   name: string;
@@ -52,6 +120,7 @@ export async function createInstance(payload: {
   workingDir?: string | null;
   extraArgs?: string;
   bindAccountId?: string | null;
+  modelRouting?: CodexInstanceModelRouting | null;
   launchMode?: InstanceLaunchMode;
   appSpeed?: CodexAppSpeed;
   copySourceInstanceId: string;
@@ -63,6 +132,7 @@ export async function createInstance(payload: {
     workingDir: payload.workingDir ?? null,
     extraArgs: payload.extraArgs ?? "",
     bindAccountId: payload.bindAccountId ?? null,
+    modelRouting: payload.modelRouting ?? null,
     launchMode: payload.launchMode ?? "app",
     appSpeed: payload.appSpeed ?? "standard",
     copySourceInstanceId: payload.copySourceInstanceId,
@@ -76,10 +146,12 @@ export async function updateInstance(payload: {
   workingDir?: string | null;
   extraArgs?: string;
   bindAccountId?: string | null;
+  modelRouting?: CodexInstanceModelRouting | null;
   followLocalAccount?: boolean;
   launchMode?: InstanceLaunchMode;
   appSpeed?: CodexAppSpeed;
   autoSyncThreads?: boolean;
+  deferBindAccountApplication?: boolean;
 }): Promise<InstanceProfile> {
   const body: Record<string, unknown> = {
     instanceId: payload.instanceId,
@@ -96,6 +168,9 @@ export async function updateInstance(payload: {
   if (payload.bindAccountId !== undefined) {
     body.bindAccountId = payload.bindAccountId;
   }
+  if (payload.modelRouting !== undefined) {
+    body.modelRouting = payload.modelRouting;
+  }
   if (payload.followLocalAccount !== undefined) {
     body.followLocalAccount = payload.followLocalAccount;
   }
@@ -108,14 +183,32 @@ export async function updateInstance(payload: {
   if (payload.autoSyncThreads !== undefined) {
     body.autoSyncThreads = payload.autoSyncThreads;
   }
-  return await invoke("codex_update_instance", body);
+  if (payload.deferBindAccountApplication !== undefined) {
+    body.deferBindAccountApplication = payload.deferBindAccountApplication;
+  }
+  return await withCodexPathRecovery(
+    () => invoke<InstanceProfile>("codex_update_instance", body),
+    { key: codexPathRecoveryKey("codex_update_instance", body) },
+  );
 }
 
 export async function getCodexInstanceQuickConfig(
   instanceId: string,
+  apiServicePreview = false,
 ): Promise<CodexQuickConfig> {
   return await invoke("codex_get_instance_quick_config", {
     instanceId,
+    apiServicePreview,
+  });
+}
+
+export async function saveCodexInstanceContextManagement(
+  instanceId: string,
+  experimentalMode: boolean,
+): Promise<CodexQuickConfig> {
+  return await invoke("codex_save_instance_context_management", {
+    instanceId,
+    experimentalMode,
   });
 }
 
@@ -123,12 +216,81 @@ export async function saveCodexInstanceQuickConfig(
   instanceId: string,
   modelContextWindow?: number,
   autoCompactTokenLimit?: number,
+  experimentalModelCatalogEnabled?: boolean,
+  experimentalModelCatalogModels?: CodexExperimentalModelDefinition[],
+  experimentalModelCatalogDefaultModelId?: string | null,
 ): Promise<CodexQuickConfig> {
   return await invoke("codex_save_instance_quick_config", {
     instanceId,
     modelContextWindow: modelContextWindow ?? null,
     autoCompactTokenLimit: autoCompactTokenLimit ?? null,
+    experimentalModelCatalogEnabled: experimentalModelCatalogEnabled ?? null,
+    experimentalModelCatalogModels: experimentalModelCatalogModels ?? null,
+    experimentalModelCatalogDefaultModelId:
+      experimentalModelCatalogDefaultModelId ?? null,
   });
+}
+
+export async function saveCodexInstanceModelCatalog(
+  instanceId: string,
+  experimentalModelCatalogEnabled: boolean,
+  experimentalModelCatalogModels: CodexExperimentalModelDefinition[],
+  experimentalModelCatalogDefaultModelId?: string | null,
+): Promise<CodexQuickConfig> {
+  return await invoke("codex_save_instance_model_catalog", {
+    instanceId,
+    experimentalModelCatalogEnabled,
+    experimentalModelCatalogModels,
+    experimentalModelCatalogDefaultModelId:
+      experimentalModelCatalogDefaultModelId ?? null,
+  });
+}
+
+export async function saveCodexInstanceConfiguration(payload: {
+  instanceId: string;
+  name?: string;
+  workingDir?: string | null;
+  extraArgs?: string;
+  bindAccountId?: string | null;
+  modelRouting?: CodexInstanceModelRouting | null;
+  followLocalAccount?: boolean;
+  launchMode?: InstanceLaunchMode;
+  appSpeed?: CodexAppSpeed;
+  autoSyncThreads?: boolean;
+  deferBindAccountApplication?: boolean;
+  updateContextOverride?: boolean;
+  modelContextWindow?: number | null;
+  autoCompactTokenLimit?: number | null;
+  experimentalModelCatalogEnabled: boolean;
+  experimentalModelCatalogModels: CodexExperimentalModelDefinition[];
+  experimentalModelCatalogDefaultModelId?: string | null;
+}): Promise<{ instance: InstanceProfile; quickConfig: CodexQuickConfig }> {
+  const body: Record<string, unknown> = {
+    instanceId: payload.instanceId,
+    experimentalModelCatalogEnabled:
+      payload.experimentalModelCatalogEnabled,
+    experimentalModelCatalogModels: payload.experimentalModelCatalogModels,
+    experimentalModelCatalogDefaultModelId:
+      payload.experimentalModelCatalogDefaultModelId ?? null,
+  };
+  for (const [key, value] of Object.entries({
+    name: payload.name,
+    workingDir: payload.workingDir,
+    extraArgs: payload.extraArgs,
+    bindAccountId: payload.bindAccountId,
+    modelRouting: payload.modelRouting,
+    followLocalAccount: payload.followLocalAccount,
+    launchMode: payload.launchMode,
+    appSpeed: payload.appSpeed,
+    autoSyncThreads: payload.autoSyncThreads,
+    deferBindAccountApplication: payload.deferBindAccountApplication,
+    updateContextOverride: payload.updateContextOverride,
+    modelContextWindow: payload.modelContextWindow,
+    autoCompactTokenLimit: payload.autoCompactTokenLimit,
+  })) {
+    if (value !== undefined) body[key] = value;
+  }
+  return await invoke("codex_save_instance_configuration", body);
 }
 
 export async function openCodexInstanceConfigToml(
@@ -143,22 +305,57 @@ export interface CodexInstanceLaunchInfo {
   instanceId: string;
   userDataDir: string;
   launchCommand: string;
+  terminalCommand: string;
+  terminal: string;
+}
+
+export interface CodexInstanceLaunchPreviewInfo {
+  userDataDir: string;
+  launchCommand: string;
+  terminalCommand: string;
+  terminal: string;
+}
+
+export async function previewCodexInstanceLaunchCommand(payload: {
+  userDataDir: string;
+  workingDir?: string | null;
+  extraArgs?: string;
+  terminal?: string;
+  launchCommand?: string | null;
+}): Promise<CodexInstanceLaunchPreviewInfo> {
+  const args = {
+    userDataDir: payload.userDataDir,
+    workingDir: payload.workingDir ?? null,
+    extraArgs: payload.extraArgs ?? "",
+    terminal: payload.terminal ?? null,
+    launchCommand: payload.launchCommand ?? null,
+  };
+  return withCodexPathRecovery(
+    () => invoke<CodexInstanceLaunchPreviewInfo>("codex_preview_instance_launch_command", args),
+    { key: codexPathRecoveryKey("codex_preview_instance_launch_command", args) },
+  );
 }
 
 export async function getCodexInstanceLaunchCommand(
   instanceId: string,
+  terminal?: string,
 ): Promise<CodexInstanceLaunchInfo> {
-  return await invoke("codex_get_instance_launch_command", { instanceId });
+  const args = { instanceId, terminal: terminal ?? null };
+  return withCodexPathRecovery(
+    () => invoke<CodexInstanceLaunchInfo>("codex_get_instance_launch_command", args),
+    { key: codexPathRecoveryKey("codex_get_instance_launch_command", args) },
+  );
 }
 
 export async function executeCodexInstanceLaunchCommand(
   instanceId: string,
   terminal?: string,
 ): Promise<string> {
-  return await invoke("codex_execute_instance_launch_command", {
-    instanceId,
-    terminal: terminal ?? null,
-  });
+  const args = { instanceId, terminal: terminal ?? null };
+  return withCodexPathRecovery(
+    () => invoke<string>("codex_execute_instance_launch_command", args),
+    { key: codexPathRecoveryKey("codex_execute_instance_launch_command", args) },
+  );
 }
 
 export async function syncThreadsAcrossInstances(): Promise<CodexInstanceThreadSyncSummary> {
@@ -190,23 +387,17 @@ export async function repairSessionVisibilityAcrossInstances(
   });
 }
 
-export async function listSessionVisibilityRepairInstances(): Promise<
-  CodexSessionVisibilityRepairInstanceList
-> {
+export async function listSessionVisibilityRepairInstances(): Promise<CodexSessionVisibilityRepairInstanceList> {
   return await invoke("codex_list_session_visibility_repair_instances");
 }
 
-export async function listSessionVisibilityRepairProviders(): Promise<
-  CodexSessionVisibilityRepairProviderList
-> {
+export async function listSessionVisibilityRepairProviders(): Promise<CodexSessionVisibilityRepairProviderList> {
   return await invoke("codex_list_session_visibility_repair_providers");
 }
 
 export async function listSessionsAcrossInstances(
   options: CodexSessionSearchOptions = {},
-): Promise<
-  CodexSessionRecord[]
-> {
+): Promise<CodexSessionRecord[]> {
   return await invoke("codex_list_sessions_across_instances", {
     titleQuery: options.titleQuery?.trim() || null,
     contentQuery: options.contentQuery?.trim() || null,
@@ -218,6 +409,21 @@ export async function getSessionTokenStatsAcrossInstances(
 ): Promise<CodexSessionTokenStats[]> {
   return await invoke("codex_get_session_token_stats_across_instances", {
     sessionIds,
+  });
+}
+
+export async function querySessionUsage(
+  query: CodexSessionUsageQuery = {},
+): Promise<CodexSessionUsageReport> {
+  return await invoke("codex_query_session_usage", { query });
+}
+
+export async function syncSessionUsage(
+  options: { rebuild?: boolean; query?: CodexSessionUsageQuery } = {},
+): Promise<CodexSessionUsageSyncResult> {
+  return await invoke("codex_sync_session_usage", {
+    rebuild: options.rebuild ?? false,
+    query: options.query ?? {},
   });
 }
 
@@ -289,14 +495,20 @@ export async function importSessions(
   importFilePath: string,
   targetInstanceId: string,
   sessionIds: string[],
+  cwdMappings: Record<string, string>,
   transferId?: string | null,
 ): Promise<CodexSessionImportSummary> {
   return await invoke("codex_import_sessions", {
     importFilePath,
     targetInstanceId,
     sessionIds,
+    cwdMappings,
     transferId: transferId ?? null,
   });
+}
+
+export async function validateSessionImportPaths(cwdMappings: Record<string, string>): Promise<Record<string, string>> {
+  return await invoke('codex_validate_session_import_paths', { cwdMappings });
 }
 
 export async function openSessionLocation(

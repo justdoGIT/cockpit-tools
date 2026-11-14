@@ -1,7 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
+import { codexRemoteBinding } from '../utils/codexRemoteBinding';
 
 export type ModelProviderUsageIntegrationType = 'sub2api' | 'new_api';
-export type ModelProviderUsageMode = ModelProviderUsageIntegrationType;
+export type ModelProviderUsageMode =
+  | ModelProviderUsageIntegrationType
+  | 'deepseek'
+  | 'token_plan'
+  | 'cockpit'
+  | 'openai_official';
 
 export interface ModelProviderModel {
   id: string;
@@ -14,12 +20,15 @@ export interface ModelProviderModelsResult {
 }
 
 export interface ModelProviderUsageSummary {
+  cockpit?: import('../types/codexRemoteService').CodexRemoteConnection | null;
+  sourceBinding?: string;
   mode?: string | null;
   isValid?: boolean | null;
   status?: string | null;
   planName?: string | null;
   remaining?: number | null;
   balance?: number | null;
+  /** Empty string explicitly means the source did not identify its unit. */
   unit?: string | null;
   quotaUnlimited?: boolean | null;
   quotaLimit?: number | null;
@@ -40,18 +49,63 @@ export interface ModelProviderUsageSummary {
   }>;
 }
 
-function buildUsageBaseUrlCandidates(baseUrl: string): string[] {
+export interface NewApiQuotaSnapshot {
+  granted: number | null;
+  available: number | null;
+  expiresAt: number | null;
+}
+
+function finiteUsageNumber(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function usageDetailNumber(
+  summary: ModelProviderUsageSummary | undefined,
+  key: string,
+): number | null {
+  return finiteUsageNumber(summary?.details?.find((item) => item.key === key)?.value);
+}
+
+export function resolveNewApiQuotaSnapshot(
+  summary?: ModelProviderUsageSummary,
+): NewApiQuotaSnapshot {
+  const used =
+    finiteUsageNumber(summary?.quotaUsed) ??
+    finiteUsageNumber(summary?.totalCost);
+  const granted =
+    usageDetailNumber(summary, 'totalGranted') ??
+    finiteUsageNumber(summary?.quotaLimit) ??
+    usageDetailNumber(summary, 'hardLimitUsd') ??
+    usageDetailNumber(summary, 'softLimitUsd') ??
+    usageDetailNumber(summary, 'systemHardLimitUsd');
+  const available =
+    usageDetailNumber(summary, 'totalAvailable') ??
+    finiteUsageNumber(summary?.quotaRemaining) ??
+    (granted != null && used != null
+      ? Math.max(0, granted - used)
+      : null);
+  const expiresAt =
+    usageDetailNumber(summary, 'expiresAt') ??
+    usageDetailNumber(summary, 'accessUntil');
+
+  return { granted, available, expiresAt };
+}
+
+export function buildUsageBaseUrlCandidates(baseUrl: string): string[] {
   const trimmed = baseUrl.trim();
   if (!trimmed) return [];
   const candidates = [trimmed];
   try {
     const parsed = new URL(trimmed);
-    const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.replace(/\/+$/, '');
-    if (
-      (host === 'api.apikey.fun' || host === 'slb.apikey.fun') &&
-      (path === '' || path === '/')
-    ) {
+    if (path === '' || path === '/') {
+      // Sub2API-compatible services may expose /usage at either the host root
+      // or under /v1. Try the user's URL first, then the conventional prefix.
       const usageUrl = `${parsed.origin}/v1`;
       if (!candidates.includes(usageUrl)) candidates.push(usageUrl);
     }
@@ -64,17 +118,26 @@ function buildUsageBaseUrlCandidates(baseUrl: string): string[] {
 export async function queryModelProviderUsage(input: {
   baseUrl: string;
   apiKey: string;
+  /** Only used for OpenAI organization usage; never replaces the model credential. */
+  usageApiKey?: string;
   integrationType?: ModelProviderUsageIntegrationType | null;
+  respectRelayBalanceSwitch?: boolean;
+  accountId?: string;
 }): Promise<ModelProviderUsageSummary> {
   const candidates = buildUsageBaseUrlCandidates(input.baseUrl);
   let lastError: unknown = null;
   for (const baseUrl of candidates) {
     try {
-      return await invoke('codex_query_model_provider_usage', {
+      const summary = await invoke<ModelProviderUsageSummary>('codex_query_model_provider_usage', {
         baseUrl,
         apiKey: input.apiKey,
+        usageApiKey: input.usageApiKey ?? null,
         integrationType: input.integrationType ?? null,
+        respectRelayBalanceSwitch: input.respectRelayBalanceSwitch ?? false,
+        accountId: input.accountId ?? null,
       });
+      if (summary.cockpit) summary.sourceBinding = await codexRemoteBinding(input.baseUrl, input.apiKey);
+      return summary;
     } catch (error) {
       lastError = error;
       if (!isModelProviderUsageUnavailableError(error)) {
@@ -88,11 +151,33 @@ export async function queryModelProviderUsage(input: {
 export async function listModelProviderModels(input: {
   baseUrl: string;
   apiKey: string;
+  wireApi?: string;
+  authScheme?: "x-api-key" | "bearer";
+  rememberForLaunch?: boolean;
 }): Promise<ModelProviderModelsResult> {
   return await invoke('codex_list_model_provider_models', {
     baseUrl: input.baseUrl,
     apiKey: input.apiKey,
+    wireApi: input.wireApi ?? null,
+    authScheme: input.authScheme ?? null,
+    rememberForLaunch: input.rememberForLaunch ?? null,
   });
+}
+
+const launchModelRequests = new Map<string, Promise<ModelProviderModelsResult>>();
+
+export function discoverModelProviderLaunchModels(input: Parameters<typeof listModelProviderModels>[0]) {
+  const requestKey = JSON.stringify([input.baseUrl, input.apiKey, input.wireApi, input.authScheme]);
+  const current = launchModelRequests.get(requestKey);
+  if (current) return current;
+  const request = listModelProviderModels({ ...input, rememberForLaunch: true })
+    .finally(() => launchModelRequests.delete(requestKey));
+  launchModelRequests.set(requestKey, request);
+  return request;
+}
+
+export function isRelayBalanceDisabledError(error: unknown): boolean {
+  return String(error).replace(/^Error:\s*/, '') === 'PROVIDER_RELAY_BALANCE_DISABLED';
 }
 
 export function isModelProviderUsageUnavailableError(error: unknown): boolean {
@@ -108,7 +193,14 @@ export function resolveModelProviderUsageMode(
   summary?: ModelProviderUsageSummary,
 ): ModelProviderUsageMode | null {
   if (!summary) return null;
-  if (summary.mode === 'new_api' || summary.mode === 'sub2api') {
+  if (summary.cockpit) return 'cockpit';
+  if (
+    summary.mode === 'new_api' ||
+    summary.mode === 'sub2api' ||
+    summary.mode === 'deepseek' ||
+    summary.mode === 'token_plan' ||
+    summary.mode === 'openai_official'
+  ) {
     return summary.mode;
   }
   if (
@@ -140,9 +232,15 @@ export function formatModelProviderUsageMoney(
   unit?: string | null,
 ): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '-';
-  const normalizedUnit = unit?.trim() || 'USD';
+  const normalizedUnit = unit === '' ? '' : unit?.trim() || 'USD';
+  if (normalizedUnit === '%') {
+    return `${Math.round(value)}%`;
+  }
   const formatted = value.toFixed(value >= 100 ? 0 : 2);
-  return normalizedUnit === 'USD' ? `$${formatted}` : `${formatted} ${normalizedUnit}`;
+  if (normalizedUnit === '') return formatted;
+  if (normalizedUnit === 'USD') return `$${formatted}`;
+  if (normalizedUnit === 'CNY') return `¥${formatted}`;
+  return `${formatted} ${normalizedUnit}`;
 }
 
 export function formatModelProviderUsageInteger(value?: number | null): string {

@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import { TraeAccount } from '../types/trae';
-import { getProviderCurrentAccountId } from './providerCurrentAccountService';
 
 export type TraePlatformId = 'trae' | 'trae_solo' | 'trae_cn' | 'trae_solo_cn';
 
@@ -121,7 +120,20 @@ export async function getTraeAccountsIndexPath(): Promise<string> {
 export async function getTraeCurrentAccountId(
   platformId: TraePlatformId = 'trae',
 ): Promise<string | null> {
-  return await getProviderCurrentAccountId(platformId);
+  return (await getTraeCurrentAccounts([platformId]))[platformId]?.id ?? null;
+}
+
+type TraeCurrentAccounts = Partial<Record<TraePlatformId, { id: string; email: string } | null>>;
+
+export function getTraeCurrentAccounts(platforms: TraePlatformId[]): Promise<TraeCurrentAccounts> {
+  if (!platforms.length) return Promise.resolve({});
+  const targets = [...new Set(platforms)].sort();
+  const request = invoke<TraeCurrentAccounts>('get_trae_current_accounts', { platforms: targets });
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('trae_current_accounts_timeout')), 3_000);
+  });
+  return Promise.race([request, deadline]).finally(() => clearTimeout(timer));
 }
 
 export async function injectTraeAccount(
@@ -129,4 +141,28 @@ export async function injectTraeAccount(
   platformId: TraePlatformId = 'trae',
 ): Promise<string> {
   return await invoke('inject_trae_account', { accountId, platformId });
+}
+
+// ============ 签到功能 ============
+
+/** 签到状态响应（与 Rust 后端 CheckinStatusResult 对齐） */
+export interface TraeCheckinStatusResult {
+  checked_in: boolean;
+  total_credits: number;
+  active: boolean;
+  message: string;
+}
+
+/** 获取 Trae 账号的今日签到状态（deviceId 由 Rust 端按账号管理） */
+export async function getTraeCheckinStatus(
+  accountId: string,
+): Promise<TraeCheckinStatusResult> {
+  return await invoke('get_trae_checkin_status', { accountId });
+}
+
+/** 领取 Trae 账号的今日签到积分 */
+export async function claimTraeCheckin(
+  accountId: string,
+): Promise<TraeCheckinStatusResult> {
+  return await invoke('claim_trae_checkin', { accountId });
 }

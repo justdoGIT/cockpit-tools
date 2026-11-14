@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 /// 默认 WebSocket 端口
 pub const DEFAULT_WS_PORT: u16 = 19528;
@@ -65,6 +65,8 @@ pub struct UserConfig {
     /// NO_PROXY 白名单（逗号分隔）
     #[serde(default = "default_global_proxy_no_proxy")]
     pub global_proxy_no_proxy: String,
+    #[serde(default)]
+    pub codex_proxy_direct_hosts: Vec<String>,
     /// 是否启用匿名错误诊断上报
     #[serde(default = "default_diagnostics_error_reporting_enabled")]
     pub diagnostics_error_reporting_enabled: bool,
@@ -101,9 +103,21 @@ pub struct UserConfig {
     /// Codex 自动刷新间隔（分钟），-1 表示禁用
     #[serde(default = "default_codex_auto_refresh")]
     pub codex_auto_refresh_minutes: i32,
+    /// OAuth 套餐范围；旧配置默认全部，显式空数组关闭套餐额度轮询。
+    #[serde(default = "default_codex_auto_refresh_plan_types")]
+    pub codex_auto_refresh_plan_types: Vec<String>,
     /// Codex 切号时是否同步覆盖 WSL 配置 (Windows Only)
     #[serde(default = "default_codex_sync_wsl")]
     pub codex_sync_wsl: bool,
+    /// 是否启用 Codex 客户端中的 API 服务额度显示注入
+    #[serde(default = "default_codex_app_ui_injection_enabled")]
+    pub codex_app_ui_injection_enabled: bool,
+    /// 官方客户端增强，仅在重启目标实例后应用。
+    #[serde(default = "default_codex_app_enhancements_enabled")]
+    pub codex_app_api_quota_compat_enabled: bool,
+    /// 本地 API 模式下的原生下一步预测；额外消耗供应商额度，默认关闭。
+    #[serde(default)]
+    pub codex_app_native_predictions_enabled: bool,
     /// Codex WSL 配置目录 (Windows Only)
     #[serde(default = "default_codex_wsl_config_dir")]
     pub codex_wsl_config_dir: String,
@@ -128,6 +142,12 @@ pub struct UserConfig {
     /// 默认实例切号时是否同步写入官方 ~/.grok/auth.json
     #[serde(default)]
     pub grok_sync_official_auth_on_switch: bool,
+    /// 切换 Grok 时是否自动重启 OpenCode
+    #[serde(default = "default_grok_opencode_sync_on_switch")]
+    pub grok_opencode_sync_on_switch: bool,
+    /// 切换 Grok 时是否覆盖 OpenCode 登录信息
+    #[serde(default = "default_grok_opencode_auth_overwrite_on_switch")]
+    pub grok_opencode_auth_overwrite_on_switch: bool,
     /// Claude 自动刷新间隔（分钟），-1 表示禁用
     #[serde(default = "default_claude_auto_refresh")]
     pub claude_auto_refresh_minutes: i32,
@@ -140,6 +160,9 @@ pub struct UserConfig {
     /// WorkBuddy 自动刷新间隔（分钟），-1 表示禁用
     #[serde(default = "default_workbuddy_auto_refresh")]
     pub workbuddy_auto_refresh_minutes: i32,
+    /// MiniMax Code 自动刷新间隔（分钟），-1 表示禁用
+    #[serde(default = "default_minimax_code_auto_refresh")]
+    pub minimax_code_auto_refresh_minutes: i32,
     /// Qoder 自动刷新间隔（分钟），-1 表示禁用
     #[serde(default = "default_qoder_auto_refresh")]
     pub qoder_auto_refresh_minutes: i32,
@@ -164,21 +187,45 @@ pub struct UserConfig {
     /// 是否隐藏 Dock 图标（macOS）
     #[serde(default = "default_hide_dock_icon")]
     pub hide_dock_icon: bool,
+    #[serde(default = "default_show_tray_icon")]
+    pub show_tray_icon: bool,
     /// 菜单栏图标样式（macOS）
     #[serde(default = "default_tray_icon_style")]
     pub tray_icon_style: TrayIconStyle,
+    /// 是否在 macOS 菜单栏图标旁显示当前账号剩余额度
+    #[serde(default = "default_menu_bar_quota_enabled")]
+    pub menu_bar_quota_enabled: bool,
+    /// 是否在 macOS 菜单栏额度前显示账号标识前 4 位
+    #[serde(default = "default_menu_bar_show_account_prefix")]
+    pub menu_bar_show_account_prefix: bool,
+    /// macOS 菜单栏额度监控平台
+    #[serde(default = "default_menu_bar_quota_platform")]
+    pub menu_bar_quota_platform: String,
+    /// Antigravity 模型或配额窗口；空值沿用最低剩余额度。
+    #[serde(default)]
+    pub menu_bar_antigravity_metric: String,
     /// 是否在启动后自动显示悬浮卡片
     #[serde(default = "default_floating_card_show_on_startup")]
     pub floating_card_show_on_startup: bool,
     /// 是否在启动后自动最小化主窗口
     #[serde(default = "default_startup_minimized")]
     pub startup_minimized: bool,
+    /// 是否已将「启动后自动最小化」一次性默认关闭
+    #[serde(default = "default_startup_minimized_default_off_migrated")]
+    pub startup_minimized_default_off_migrated: bool,
+    /// 是否记住主窗口尺寸和位置
+    #[serde(default = "default_remember_main_window_state")]
+    pub remember_main_window_state: bool,
     /// 启动默认页面：`last` 表示恢复上次页面，其它为页面 id（如 dashboard、codex）
     #[serde(default = "default_startup_page")]
     pub startup_page: String,
     /// 悬浮卡片是否默认置顶
     #[serde(default = "default_floating_card_always_on_top")]
     pub floating_card_always_on_top: bool,
+    #[serde(default)]
+    pub floating_card_minimal: bool,
+    #[serde(default = "default_floating_card_background_opacity")]
+    pub floating_card_background_opacity: f64,
     /// 是否启用应用开机自启动
     #[serde(default = "default_app_auto_launch_enabled")]
     pub app_auto_launch_enabled: bool,
@@ -221,6 +268,9 @@ pub struct UserConfig {
     /// 最近一次自动备份时间（ISO 8601）
     #[serde(default)]
     pub auto_backup_last_backup_at: Option<String>,
+    /// Cockpit 生成的本地备份根目录；为空时使用数据目录下的 backups
+    #[serde(default)]
+    pub backup_directory: String,
     /// WebDAV 备份同步是否启用
     #[serde(default = "default_webdav_sync_enabled")]
     pub webdav_sync_enabled: bool,
@@ -263,9 +313,14 @@ pub struct UserConfig {
     /// Antigravity IDE 启动路径（为空则使用默认路径）
     #[serde(default = "default_antigravity_app_path")]
     pub antigravity_app_path: String,
+    #[serde(default)]
+    pub antigravity_legacy_app_path: String,
     /// Codex 启动路径（为空则使用默认路径）
     #[serde(default = "default_codex_app_path")]
     pub codex_app_path: String,
+    /// OAuth hosted login 使用的官方桌面版本（为空则跟随远端默认值）
+    #[serde(default)]
+    pub codex_oauth_app_version: String,
     /// Grok CLI 路径（为空则自动检测）
     #[serde(default)]
     pub grok_cli_path: Option<String>,
@@ -295,9 +350,15 @@ pub struct UserConfig {
     /// CodeBuddy 启动路径（为空则使用默认路径）
     #[serde(default = "default_codebuddy_app_path")]
     pub codebuddy_app_path: String,
+    /// 切换 CodeBuddy 账号时是否在本机账号间合并本地会话
+    #[serde(default = "default_codebuddy_share_sessions_on_switch")]
+    pub codebuddy_share_sessions_on_switch: bool,
     /// CodeBuddy CN 启动路径（为空则使用默认路径）
     #[serde(default = "default_codebuddy_cn_app_path")]
     pub codebuddy_cn_app_path: String,
+    /// 切换 CodeBuddy CN 账号时是否在本机账号间合并本地会话
+    #[serde(default = "default_codebuddy_cn_share_sessions_on_switch")]
+    pub codebuddy_cn_share_sessions_on_switch: bool,
     /// Qoder 启动路径（为空则使用默认路径）
     #[serde(default = "default_qoder_app_path")]
     pub qoder_app_path: String,
@@ -313,6 +374,15 @@ pub struct UserConfig {
     pub trae_cn_app_path: String,
     #[serde(default = "default_trae_app_path")]
     pub trae_solo_cn_app_path: String,
+    /// 切换 Trae 系列账号时是否共享本地 workspace 会话状态
+    #[serde(default)]
+    pub trae_share_sessions_on_switch: bool,
+    #[serde(default)]
+    pub trae_solo_share_sessions_on_switch: bool,
+    #[serde(default)]
+    pub trae_cn_share_sessions_on_switch: bool,
+    #[serde(default)]
+    pub trae_solo_cn_share_sessions_on_switch: bool,
     /// Trae Windows 应用扫描范围（每行一个目录）
     #[serde(default = "default_trae_app_scan_roots")]
     pub trae_app_scan_roots: String,
@@ -325,6 +395,15 @@ pub struct UserConfig {
     /// WorkBuddy 启动路径（为空则使用默认路径）
     #[serde(default = "default_workbuddy_app_path")]
     pub workbuddy_app_path: String,
+    /// MiniMax Code 启动路径（为空则使用默认路径）
+    #[serde(default = "default_minimax_code_app_path")]
+    pub minimax_code_app_path: String,
+    /// MiniMax Code 区域
+    #[serde(default = "default_minimax_code_region")]
+    pub minimax_code_region: String,
+    /// 切换 WorkBuddy 账号时是否在本机账号间合并本地会话
+    #[serde(default = "default_workbuddy_share_sessions_on_switch")]
+    pub workbuddy_share_sessions_on_switch: bool,
     /// 切换 Codex 时是否自动重启 OpenCode
     #[serde(default = "default_opencode_sync_on_switch")]
     pub opencode_sync_on_switch: bool,
@@ -349,6 +428,9 @@ pub struct UserConfig {
     /// 切换 Codex 时是否自动启动/重启 Codex App
     #[serde(default = "default_codex_launch_on_switch")]
     pub codex_launch_on_switch: bool,
+    /// 启动时是否自动恢复 Codex 代理接管状态
+    #[serde(default = "default_codex_auto_restore_takeover_on_launch")]
+    pub codex_auto_restore_takeover_on_launch: bool,
     /// 切换 Antigravity IDE 时是否自动启动/重启应用
     #[serde(default = "default_antigravity_launch_on_switch")]
     pub antigravity_launch_on_switch: bool,
@@ -358,6 +440,9 @@ pub struct UserConfig {
     /// 是否在 Codex 总览中显示 API 服务入口
     #[serde(default = "default_codex_local_access_entry_visible")]
     pub codex_local_access_entry_visible: bool,
+    /// 是否隐藏 Codex 总览中的中转站 / New API 类额度面板
+    #[serde(default = "default_codex_hide_relay_quota")]
+    pub codex_hide_relay_quota: bool,
     /// 是否显示顶部推广位
     #[serde(default = "default_top_right_ad_visible")]
     pub top_right_ad_visible: bool,
@@ -376,6 +461,15 @@ pub struct UserConfig {
     /// Credits 自动切号阈值（剩余值）
     #[serde(default = "default_auto_switch_credits_threshold")]
     pub auto_switch_credits_threshold: i32,
+    /// 是否按 5h / 周 配额窗口分别设置切号阈值（类似 Codex）
+    #[serde(default = "default_auto_switch_window_thresholds_enabled")]
+    pub auto_switch_window_thresholds_enabled: bool,
+    /// 5h 配额窗口切号阈值（百分比）
+    #[serde(default = "default_auto_switch_window_threshold")]
+    pub auto_switch_five_hour_threshold: i32,
+    /// 周配额窗口切号阈值（百分比）
+    #[serde(default = "default_auto_switch_window_threshold")]
+    pub auto_switch_weekly_threshold: i32,
     /// 自动切号触发模式：any_group | selected_groups
     #[serde(default = "default_auto_switch_scope_mode")]
     pub auto_switch_scope_mode: String,
@@ -391,10 +485,10 @@ pub struct UserConfig {
     /// 是否启用 Codex 自动切号
     #[serde(default = "default_codex_auto_switch_enabled")]
     pub codex_auto_switch_enabled: bool,
-    /// Codex primary_window 自动切号阈值（百分比）
+    /// Codex 短周期自动切号阈值；缺少时长时用于 primary_window（百分比）
     #[serde(default = "default_codex_auto_switch_primary_threshold")]
     pub codex_auto_switch_primary_threshold: i32,
-    /// Codex secondary_window 自动切号阈值（百分比）
+    /// Codex 周额度自动切号阈值；缺少时长时用于 secondary_window（百分比）
     #[serde(default = "default_codex_auto_switch_secondary_threshold")]
     pub codex_auto_switch_secondary_threshold: i32,
     /// Codex 自动切号账号范围模式：all_accounts | selected_accounts
@@ -421,10 +515,10 @@ pub struct UserConfig {
     /// Zed 配额预警阈值（百分比）
     #[serde(default = "default_zed_quota_alert_threshold")]
     pub zed_quota_alert_threshold: i32,
-    /// Codex primary_window 配额预警阈值（百分比）
+    /// Codex 短周期预警阈值；缺少时长时用于 primary_window（百分比）
     #[serde(default = "default_codex_quota_alert_primary_threshold")]
     pub codex_quota_alert_primary_threshold: i32,
-    /// Codex secondary_window 配额预警阈值（百分比）
+    /// Codex 周额度预警阈值；缺少时长时用于 secondary_window（百分比）
     #[serde(default = "default_codex_quota_alert_secondary_threshold")]
     pub codex_quota_alert_secondary_threshold: i32,
     /// 是否启用 GitHub Copilot 配额预警通知
@@ -463,6 +557,9 @@ pub struct UserConfig {
     /// Claude 配额预警阈值（百分比）
     #[serde(default = "default_claude_quota_alert_threshold")]
     pub claude_quota_alert_threshold: i32,
+    /// Claude 额度 UI 是否显示「剩余%」（默认 false，保持历史「已用%」）
+    #[serde(default = "default_claude_quota_display_remaining")]
+    pub claude_quota_display_remaining: bool,
     /// 是否启用 CodeBuddy 配额预警通知
     #[serde(default = "default_codebuddy_quota_alert_enabled")]
     pub codebuddy_quota_alert_enabled: bool,
@@ -505,6 +602,12 @@ pub struct UserConfig {
     /// WorkBuddy 配额预警阈值（百分比）
     #[serde(default = "default_workbuddy_quota_alert_threshold")]
     pub workbuddy_quota_alert_threshold: i32,
+    /// 是否启用 MiniMax Code 配额预警通知
+    #[serde(default = "default_minimax_code_quota_alert_enabled")]
+    pub minimax_code_quota_alert_enabled: bool,
+    /// MiniMax Code 配额预警阈值（百分比）
+    #[serde(default = "default_minimax_code_quota_alert_threshold")]
+    pub minimax_code_quota_alert_threshold: i32,
 }
 
 /// 窗口关闭行为
@@ -633,7 +736,7 @@ pub fn normalize_theme_color(raw: &str) -> String {
                 v
             }
         }
-        "catppuccin" | "gruvbox" | "everforest" | "ayu" | "one-dark" | "onedark" => {
+        "catppuccin" | "gruvbox" | "everforest" | "oled" | "ayu" | "one-dark" | "onedark" => {
             if v == "onedark" {
                 "one-dark".to_string()
             } else {
@@ -656,9 +759,21 @@ fn default_auto_refresh() -> i32 {
 fn default_codex_auto_refresh() -> i32 {
     10
 } // 默认 10 分钟
+fn default_codex_auto_refresh_plan_types() -> Vec<String> {
+    ["free", "go", "plus", "pro", "team", "business", "enterprise", "edu_k12", "unknown"]
+        .into_iter().map(str::to_string).collect()
+}
 fn default_codex_sync_wsl() -> bool {
     false
 }
+fn default_codex_app_ui_injection_enabled() -> bool {
+    true
+}
+
+fn default_codex_app_enhancements_enabled() -> bool {
+    true
+}
+
 fn default_codex_wsl_config_dir() -> String {
     String::new()
 }
@@ -692,6 +807,9 @@ fn default_codebuddy_cn_auto_refresh() -> i32 {
 fn default_workbuddy_auto_refresh() -> i32 {
     10
 }
+fn default_minimax_code_auto_refresh() -> i32 {
+    -1
+}
 fn default_qoder_auto_refresh() -> i32 {
     10
 }
@@ -707,11 +825,26 @@ fn default_close_behavior() -> CloseWindowBehavior {
 fn default_minimize_behavior() -> MinimizeWindowBehavior {
     MinimizeWindowBehavior::DockAndTray
 }
+fn default_show_tray_icon() -> bool {
+    true
+}
+
 fn default_hide_dock_icon() -> bool {
     false
 }
 fn default_tray_icon_style() -> TrayIconStyle {
     TrayIconStyle::Template
+}
+fn default_menu_bar_quota_enabled() -> bool {
+    false
+}
+fn default_menu_bar_show_account_prefix() -> bool {
+    true
+}
+pub(crate) const MENU_BAR_QUOTA_CLAUDE_CLI: &str = "claude_cli";
+
+fn default_menu_bar_quota_platform() -> String {
+    "codex".to_string()
 }
 fn default_floating_card_show_on_startup() -> bool {
     false
@@ -719,8 +852,22 @@ fn default_floating_card_show_on_startup() -> bool {
 fn default_startup_minimized() -> bool {
     false
 }
+fn default_startup_minimized_default_off_migrated() -> bool {
+    true
+}
+fn default_remember_main_window_state() -> bool {
+    false
+}
 fn default_startup_page() -> String {
     "last".to_string()
+}
+
+/// 规范化 MiniMax Code 区域；仅支持 `cn` / `en`，非法值回退为 `cn`。
+pub fn normalize_minimax_code_region(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "en" | "global" | "us" => "en".to_string(),
+        _ => "cn".to_string(),
+    }
 }
 
 /// 规范化启动页配置；非法值回退为 `last`。
@@ -733,6 +880,8 @@ pub fn normalize_startup_page(value: &str) -> String {
         "dashboard",
         "api-relay",
         "overview",
+        "antigravity",
+        "antigravity-ide",
         "codex",
         "claude",
         "claude-cli",
@@ -751,6 +900,7 @@ pub fn normalize_startup_page(value: &str) -> String {
         "trae-cn",
         "trae-solo-cn",
         "workbuddy",
+        "minimaxcode",
         "zed",
         "instances",
         "wakeup",
@@ -767,6 +917,11 @@ pub fn normalize_startup_page(value: &str) -> String {
 }
 fn default_floating_card_always_on_top() -> bool {
     false
+}
+fn default_floating_card_background_opacity() -> f64 { 1.0 }
+
+pub fn normalize_floating_card_background_opacity(value: f64) -> f64 {
+    if value.is_finite() { value.clamp(0.0, 1.0) } else { 1.0 }
 }
 fn default_app_auto_launch_enabled() -> bool {
     false
@@ -880,8 +1035,14 @@ fn default_cursor_app_path() -> String {
 fn default_codebuddy_app_path() -> String {
     String::new()
 }
+fn default_codebuddy_share_sessions_on_switch() -> bool {
+    false
+}
 fn default_codebuddy_cn_app_path() -> String {
     String::new()
+}
+fn default_codebuddy_cn_share_sessions_on_switch() -> bool {
+    false
 }
 fn default_qoder_app_path() -> String {
     String::new()
@@ -898,6 +1059,15 @@ fn default_trae_app_scan_roots() -> String {
 fn default_workbuddy_app_path() -> String {
     String::new()
 }
+fn default_minimax_code_app_path() -> String {
+    String::new()
+}
+fn default_minimax_code_region() -> String {
+    "cn".to_string()
+}
+fn default_workbuddy_share_sessions_on_switch() -> bool {
+    true
+}
 fn default_opencode_sync_on_switch() -> bool {
     false
 }
@@ -908,6 +1078,12 @@ fn default_ghcp_opencode_sync_on_switch() -> bool {
     false
 }
 fn default_ghcp_opencode_auth_overwrite_on_switch() -> bool {
+    false
+}
+fn default_grok_opencode_sync_on_switch() -> bool {
+    false
+}
+fn default_grok_opencode_auth_overwrite_on_switch() -> bool {
     false
 }
 fn default_ghcp_launch_on_switch() -> bool {
@@ -922,6 +1098,9 @@ fn default_hermes_auth_overwrite_on_switch() -> bool {
 fn default_codex_launch_on_switch() -> bool {
     true
 }
+fn default_codex_auto_restore_takeover_on_launch() -> bool {
+    true
+}
 fn default_antigravity_launch_on_switch() -> bool {
     true
 }
@@ -930,6 +1109,9 @@ fn default_codex_restart_specified_app_on_switch() -> bool {
 }
 fn default_codex_local_access_entry_visible() -> bool {
     true
+}
+fn default_codex_hide_relay_quota() -> bool {
+    false
 }
 fn default_top_right_ad_visible() -> bool {
     true
@@ -947,6 +1129,12 @@ fn default_auto_switch_credits_enabled() -> bool {
     false
 }
 fn default_auto_switch_credits_threshold() -> i32 {
+    5
+}
+fn default_auto_switch_window_thresholds_enabled() -> bool {
+    false
+}
+fn default_auto_switch_window_threshold() -> i32 {
     5
 }
 fn default_auto_switch_scope_mode() -> String {
@@ -1030,6 +1218,9 @@ fn default_grok_quota_alert_enabled() -> bool {
 fn default_grok_quota_alert_threshold() -> i32 {
     20
 }
+fn default_claude_quota_display_remaining() -> bool {
+    false
+}
 fn default_claude_quota_alert_enabled() -> bool {
     false
 }
@@ -1066,6 +1257,12 @@ fn default_workbuddy_quota_alert_enabled() -> bool {
 fn default_workbuddy_quota_alert_threshold() -> i32 {
     20
 }
+fn default_minimax_code_quota_alert_enabled() -> bool {
+    false
+}
+fn default_minimax_code_quota_alert_threshold() -> i32 {
+    200
+}
 
 impl Default for UserConfig {
     fn default() -> Self {
@@ -1078,6 +1275,7 @@ impl Default for UserConfig {
             global_proxy_enabled: default_global_proxy_enabled(),
             global_proxy_url: default_global_proxy_url(),
             global_proxy_no_proxy: default_global_proxy_no_proxy(),
+            codex_proxy_direct_hosts: Vec::new(),
             diagnostics_error_reporting_enabled: default_diagnostics_error_reporting_enabled(),
             diagnostics_error_reporting_debug: default_diagnostics_error_reporting_debug(),
             language: default_language(),
@@ -1090,7 +1288,11 @@ impl Default for UserConfig {
             ui_scale: default_ui_scale(),
             auto_refresh_minutes: default_auto_refresh(),
             codex_auto_refresh_minutes: default_codex_auto_refresh(),
+            codex_auto_refresh_plan_types: default_codex_auto_refresh_plan_types(),
             codex_sync_wsl: default_codex_sync_wsl(),
+            codex_app_ui_injection_enabled: default_codex_app_ui_injection_enabled(),
+            codex_app_api_quota_compat_enabled: default_codex_app_enhancements_enabled(),
+            codex_app_native_predictions_enabled: false,
             codex_wsl_config_dir: default_codex_wsl_config_dir(),
             zed_auto_refresh_minutes: default_zed_auto_refresh(),
             ghcp_auto_refresh_minutes: default_ghcp_auto_refresh(),
@@ -1099,10 +1301,14 @@ impl Default for UserConfig {
             cursor_auto_refresh_minutes: default_cursor_auto_refresh(),
             grok_auto_refresh_minutes: default_grok_auto_refresh(),
             grok_sync_official_auth_on_switch: false,
+            grok_opencode_sync_on_switch: default_grok_opencode_sync_on_switch(),
+            grok_opencode_auth_overwrite_on_switch: default_grok_opencode_auth_overwrite_on_switch(
+            ),
             claude_auto_refresh_minutes: default_claude_auto_refresh(),
             codebuddy_auto_refresh_minutes: default_codebuddy_auto_refresh(),
             codebuddy_cn_auto_refresh_minutes: default_codebuddy_cn_auto_refresh(),
             workbuddy_auto_refresh_minutes: default_workbuddy_auto_refresh(),
+            minimax_code_auto_refresh_minutes: default_minimax_code_auto_refresh(),
             qoder_auto_refresh_minutes: default_qoder_auto_refresh(),
             zcode_auto_refresh_minutes: default_zcode_auto_refresh(),
             trae_auto_refresh_minutes: default_trae_auto_refresh(),
@@ -1112,11 +1318,21 @@ impl Default for UserConfig {
             close_behavior: default_close_behavior(),
             minimize_behavior: default_minimize_behavior(),
             hide_dock_icon: default_hide_dock_icon(),
+            show_tray_icon: default_show_tray_icon(),
             tray_icon_style: default_tray_icon_style(),
+            menu_bar_quota_enabled: default_menu_bar_quota_enabled(),
+            menu_bar_show_account_prefix: default_menu_bar_show_account_prefix(),
+            menu_bar_quota_platform: default_menu_bar_quota_platform(),
+            menu_bar_antigravity_metric: String::new(),
             floating_card_show_on_startup: default_floating_card_show_on_startup(),
             startup_minimized: default_startup_minimized(),
+            startup_minimized_default_off_migrated:
+                default_startup_minimized_default_off_migrated(),
+            remember_main_window_state: default_remember_main_window_state(),
             startup_page: default_startup_page(),
             floating_card_always_on_top: default_floating_card_always_on_top(),
+            floating_card_minimal: false,
+            floating_card_background_opacity: default_floating_card_background_opacity(),
             app_auto_launch_enabled: default_app_auto_launch_enabled(),
             token_keeper_enabled: default_token_keeper_enabled(),
             auto_import_from_local_enabled: default_auto_import_from_local_enabled(),
@@ -1132,6 +1348,7 @@ impl Default for UserConfig {
             auto_backup_retention_days: default_auto_backup_retention_days(),
             auto_backup_retention_days_migrated: default_auto_backup_retention_days_migrated(),
             auto_backup_last_backup_at: None,
+            backup_directory: String::new(),
             webdav_sync_enabled: default_webdav_sync_enabled(),
             webdav_sync_url: default_webdav_sync_url(),
             webdav_sync_username: default_webdav_sync_username(),
@@ -1146,7 +1363,9 @@ impl Default for UserConfig {
             floating_card_position_y: None,
             opencode_app_path: default_opencode_app_path(),
             antigravity_app_path: default_antigravity_app_path(),
+            antigravity_legacy_app_path: String::new(),
             codex_app_path: default_codex_app_path(),
+            codex_oauth_app_version: String::new(),
             grok_cli_path: None,
             claude_app_path: default_claude_app_path(),
             claude_app_scan_roots: default_claude_app_scan_roots(),
@@ -1157,18 +1376,27 @@ impl Default for UserConfig {
             kiro_app_path: default_kiro_app_path(),
             cursor_app_path: default_cursor_app_path(),
             codebuddy_app_path: default_codebuddy_app_path(),
+            codebuddy_share_sessions_on_switch: default_codebuddy_share_sessions_on_switch(),
             codebuddy_cn_app_path: default_codebuddy_cn_app_path(),
+            codebuddy_cn_share_sessions_on_switch: default_codebuddy_cn_share_sessions_on_switch(),
             qoder_app_path: default_qoder_app_path(),
             zcode_app_path: default_zcode_app_path(),
             trae_app_path: default_trae_app_path(),
             trae_solo_app_path: default_trae_app_path(),
             trae_cn_app_path: default_trae_app_path(),
             trae_solo_cn_app_path: default_trae_app_path(),
+            trae_share_sessions_on_switch: false,
+            trae_solo_share_sessions_on_switch: false,
+            trae_cn_share_sessions_on_switch: false,
+            trae_solo_cn_share_sessions_on_switch: false,
             trae_app_scan_roots: default_trae_app_scan_roots(),
             trae_solo_app_scan_roots: default_trae_app_scan_roots(),
             trae_cn_app_scan_roots: default_trae_app_scan_roots(),
             trae_solo_cn_app_scan_roots: default_trae_app_scan_roots(),
             workbuddy_app_path: default_workbuddy_app_path(),
+            minimax_code_app_path: default_minimax_code_app_path(),
+            minimax_code_region: default_minimax_code_region(),
+            workbuddy_share_sessions_on_switch: default_workbuddy_share_sessions_on_switch(),
             opencode_sync_on_switch: default_opencode_sync_on_switch(),
             opencode_auth_overwrite_on_switch: default_opencode_auth_overwrite_on_switch(),
             ghcp_opencode_sync_on_switch: default_ghcp_opencode_sync_on_switch(),
@@ -1178,9 +1406,12 @@ impl Default for UserConfig {
             openclaw_auth_overwrite_on_switch: default_openclaw_auth_overwrite_on_switch(),
             hermes_auth_overwrite_on_switch: default_hermes_auth_overwrite_on_switch(),
             codex_launch_on_switch: default_codex_launch_on_switch(),
+            codex_auto_restore_takeover_on_launch:
+                default_codex_auto_restore_takeover_on_launch(),
             antigravity_launch_on_switch: default_antigravity_launch_on_switch(),
             codex_restart_specified_app_on_switch: default_codex_restart_specified_app_on_switch(),
             codex_local_access_entry_visible: default_codex_local_access_entry_visible(),
+            codex_hide_relay_quota: default_codex_hide_relay_quota(),
             top_right_ad_visible: default_top_right_ad_visible(),
             antigravity_dual_switch_no_restart_enabled:
                 default_antigravity_dual_switch_no_restart_enabled(),
@@ -1188,6 +1419,9 @@ impl Default for UserConfig {
             auto_switch_threshold: default_auto_switch_threshold(),
             auto_switch_credits_enabled: default_auto_switch_credits_enabled(),
             auto_switch_credits_threshold: default_auto_switch_credits_threshold(),
+            auto_switch_window_thresholds_enabled: default_auto_switch_window_thresholds_enabled(),
+            auto_switch_five_hour_threshold: default_auto_switch_window_threshold(),
+            auto_switch_weekly_threshold: default_auto_switch_window_threshold(),
             auto_switch_scope_mode: default_auto_switch_scope_mode(),
             auto_switch_selected_group_ids: default_auto_switch_selected_group_ids(),
             auto_switch_account_scope_mode: default_auto_switch_account_scope_mode(),
@@ -1217,6 +1451,7 @@ impl Default for UserConfig {
             grok_quota_alert_enabled: default_grok_quota_alert_enabled(),
             grok_quota_alert_threshold: default_grok_quota_alert_threshold(),
             claude_quota_alert_enabled: default_claude_quota_alert_enabled(),
+            claude_quota_display_remaining: default_claude_quota_display_remaining(),
             claude_quota_alert_threshold: default_claude_quota_alert_threshold(),
             codebuddy_quota_alert_enabled: default_codebuddy_quota_alert_enabled(),
             codebuddy_quota_alert_threshold: default_codebuddy_quota_alert_threshold(),
@@ -1234,6 +1469,8 @@ impl Default for UserConfig {
             trae_solo_cn_quota_alert_threshold: default_trae_quota_alert_threshold(),
             workbuddy_quota_alert_enabled: default_workbuddy_quota_alert_enabled(),
             workbuddy_quota_alert_threshold: default_workbuddy_quota_alert_threshold(),
+            minimax_code_quota_alert_enabled: default_minimax_code_quota_alert_enabled(),
+            minimax_code_quota_alert_threshold: default_minimax_code_quota_alert_threshold(),
         }
     }
 }
@@ -1343,6 +1580,9 @@ fn restore_inherited_proxy_env() {
 }
 
 pub fn sync_global_proxy_env(config: &UserConfig) {
+    // Capture the startup values before either branch clears or replaces them.
+    // The first call may already have the application proxy enabled.
+    let _ = inherited_proxy_env();
     let pairs = managed_proxy_env_pairs(config);
     if pairs.is_empty() {
         restore_inherited_proxy_env();
@@ -1372,7 +1612,7 @@ pub fn get_data_dir() -> Result<PathBuf, String> {
 /// 与 get_data_dir 相同，但不返回 Result
 pub fn get_shared_dir() -> PathBuf {
     crate::modules::account::resolve_data_dir()
-        .unwrap_or_else(|_| PathBuf::from(".antigravity_cockpit"))
+        .unwrap_or_else(|_| crate::modules::data_paths::fallback_data_dir())
 }
 
 /// 获取服务状态文件路径
@@ -1385,6 +1625,28 @@ pub fn get_server_status_path() -> Result<PathBuf, String> {
 pub fn get_user_config_path() -> Result<PathBuf, String> {
     let data_dir = get_data_dir()?;
     Ok(data_dir.join(USER_CONFIG_FILE))
+}
+
+fn split_legacy_antigravity_app_path(config: &mut serde_json::Map<String, serde_json::Value>) {
+    if config.contains_key("antigravity_legacy_app_path") {
+        return;
+    }
+    let Some(path) = config.get("antigravity_app_path").and_then(|value| value.as_str()) else {
+        return;
+    };
+    let normalized = path.trim().trim_matches('"').replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    let desktop_bundle = lower.split('/').any(|part| part == "antigravity.app");
+    let windows_desktop = lower.as_bytes().get(1) == Some(&b':')
+        && lower.split('/').any(|part| part == "antigravity")
+        && !lower.contains("antigravity ide")
+        && !lower.contains("antigravity-ide");
+    let linux_desktop = normalized.trim_end_matches('/') == "/opt/Antigravity"
+        || normalized.starts_with("/opt/Antigravity/");
+    if desktop_bundle || windows_desktop || linux_desktop {
+        let desktop_path = config.remove("antigravity_app_path").unwrap_or_default();
+        config.insert("antigravity_legacy_app_path".to_string(), desktop_path);
+    }
 }
 
 /// 加载用户配置
@@ -1426,6 +1688,7 @@ pub fn load_user_config() -> Result<UserConfig, String> {
 
     // 兼容旧配置：平台独立预警字段不存在时，继承历史全局预警配置
     if let Some(obj) = value.as_object_mut() {
+        split_legacy_antigravity_app_path(obj);
         if !obj.contains_key("kiro_auto_refresh_minutes") {
             let inherited_refresh = obj
                 .get("windsurf_auto_refresh_minutes")
@@ -1527,6 +1790,20 @@ pub fn load_user_config() -> Result<UserConfig, String> {
             );
         }
 
+        if !obj.contains_key("minimax_code_auto_refresh_minutes") {
+            let inherited_refresh = obj
+                .get("workbuddy_auto_refresh_minutes")
+                .or_else(|| obj.get("codebuddy_cn_auto_refresh_minutes"))
+                .or_else(|| obj.get("codebuddy_auto_refresh_minutes"))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+                .unwrap_or_else(default_minimax_code_auto_refresh);
+            obj.insert(
+                "minimax_code_auto_refresh_minutes".to_string(),
+                json!(inherited_refresh),
+            );
+        }
+
         if !obj.contains_key("trae_auto_refresh_minutes") {
             let inherited_refresh = obj
                 .get("qoder_auto_refresh_minutes")
@@ -1572,6 +1849,27 @@ pub fn load_user_config() -> Result<UserConfig, String> {
             );
         }
 
+        if !obj.contains_key("menu_bar_quota_enabled") {
+            obj.insert(
+                "menu_bar_quota_enabled".to_string(),
+                json!(default_menu_bar_quota_enabled()),
+            );
+        }
+
+        if !obj.contains_key("menu_bar_show_account_prefix") {
+            obj.insert(
+                "menu_bar_show_account_prefix".to_string(),
+                json!(default_menu_bar_show_account_prefix()),
+            );
+        }
+
+        if !obj.contains_key("menu_bar_quota_platform") {
+            obj.insert(
+                "menu_bar_quota_platform".to_string(),
+                json!(default_menu_bar_quota_platform()),
+            );
+        }
+
         if !obj.contains_key("floating_card_show_on_startup") {
             obj.insert(
                 "floating_card_show_on_startup".to_string(),
@@ -1585,12 +1883,23 @@ pub fn load_user_config() -> Result<UserConfig, String> {
                 json!(default_startup_minimized()),
             );
         }
+        if !obj.contains_key("startup_minimized_default_off_migrated") {
+            // 老配置没有该标记时，默认视为“尚未迁移”，以便执行一次默认关闭。
+            obj.insert(
+                "startup_minimized_default_off_migrated".to_string(),
+                json!(false),
+            );
+        }
+
+        if !obj.contains_key("remember_main_window_state") {
+            obj.insert(
+                "remember_main_window_state".to_string(),
+                json!(default_remember_main_window_state()),
+            );
+        }
 
         if !obj.contains_key("startup_page") {
-            obj.insert(
-                "startup_page".to_string(),
-                json!(default_startup_page()),
-            );
+            obj.insert("startup_page".to_string(), json!(default_startup_page()));
         } else if let Some(value) = obj.get("startup_page").and_then(|v| v.as_str()) {
             let normalized = normalize_startup_page(value);
             obj.insert("startup_page".to_string(), json!(normalized));
@@ -1642,6 +1951,13 @@ pub fn load_user_config() -> Result<UserConfig, String> {
             obj.insert(
                 "codex_local_access_entry_visible".to_string(),
                 json!(default_codex_local_access_entry_visible()),
+            );
+        }
+
+        if !obj.contains_key("codex_hide_relay_quota") {
+            obj.insert(
+                "codex_hide_relay_quota".to_string(),
+                json!(default_codex_hide_relay_quota()),
             );
         }
 
@@ -2007,6 +2323,12 @@ pub fn load_user_config() -> Result<UserConfig, String> {
                 json!(legacy_threshold),
             );
         }
+        if !obj.contains_key("claude_quota_display_remaining") {
+            obj.insert(
+                "claude_quota_display_remaining".to_string(),
+                json!(default_claude_quota_display_remaining()),
+            );
+        }
         if !obj.contains_key("codebuddy_quota_alert_enabled") {
             obj.insert(
                 "codebuddy_quota_alert_enabled".to_string(),
@@ -2094,6 +2416,18 @@ pub fn load_user_config() -> Result<UserConfig, String> {
                 json!(legacy_threshold),
             );
         }
+        if !obj.contains_key("minimax_code_quota_alert_enabled") {
+            obj.insert(
+                "minimax_code_quota_alert_enabled".to_string(),
+                json!(legacy_enabled),
+            );
+        }
+        if !obj.contains_key("minimax_code_quota_alert_threshold") {
+            obj.insert(
+                "minimax_code_quota_alert_threshold".to_string(),
+                json!(legacy_threshold),
+            );
+        }
     }
 
     let mut config: UserConfig = match serde_json::from_value(value) {
@@ -2134,6 +2468,7 @@ pub fn load_user_config() -> Result<UserConfig, String> {
         }
         config.auto_backup_retention_days_migrated = true;
     }
+    let startup_minimized_migrated = apply_startup_minimized_default_off_migration(&mut config);
     config.auto_backup_retention_days =
         sanitize_auto_backup_retention_days(config.auto_backup_retention_days);
     config.webdav_sync_retention_days =
@@ -2147,7 +2482,25 @@ pub fn load_user_config() -> Result<UserConfig, String> {
         }
     });
 
+    if startup_minimized_migrated {
+        if let Err(error) = persist_user_config(&config) {
+            crate::modules::logger::log_warn(&format!(
+                "关闭启动后自动最小化失败，已在本次运行生效，下次启动将重试: {}",
+                error
+            ));
+        }
+    }
+
     Ok(config)
+}
+
+fn apply_startup_minimized_default_off_migration(config: &mut UserConfig) -> bool {
+    if config.startup_minimized_default_off_migrated {
+        return false;
+    }
+    config.startup_minimized = false;
+    config.startup_minimized_default_off_migrated = true;
+    true
 }
 
 /// 保存用户配置
@@ -2179,8 +2532,15 @@ fn acquire_config_file_lock(path: &Path) -> Result<fs::File, String> {
         .create(true)
         .open(path)
         .map_err(|error| format!("打开配置锁文件失败: {}", error))?;
-    file.lock()
-        .map_err(|error| format!("锁定配置文件失败: {}", error))?;
+    let started = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < std::time::Duration::from_secs(5) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(std::fs::TryLockError::WouldBlock) => return Err("common.configSaveTimeout".into()),
+            Err(error) => return Err(format!("锁定配置文件失败: {}", error)),
+        }
+    }
     Ok(file)
 }
 
@@ -2206,15 +2566,30 @@ where
     P: FnOnce(&UserConfig) -> Result<(), String>,
     C: FnOnce(&UserConfig),
 {
-    let mut state = state
-        .write()
+    // Serialize writers independently of the cache lock. Disk/file-lock waits
+    // must never block account/startup readers of the last committed config.
+    static TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
+    let started = std::time::Instant::now();
+    let _transaction = loop {
+        match TRANSACTION_LOCK.try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::WouldBlock) if started.elapsed() < std::time::Duration::from_secs(5) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(std::sync::TryLockError::WouldBlock) => return Err("common.configSaveTimeout".into()),
+            Err(_) => return Err("用户配置事务锁已损坏".into()),
+        }
+    };
+    let cached = state
+        .read()
         .map_err(|_| "用户配置状态锁已损坏".to_string())?;
-    let (mut next_config, _file_lock_guard) = load_latest(&state.user_config)?;
+    let cached_config = cached.user_config.clone();
+    drop(cached);
+    let (mut next_config, _file_lock_guard) = load_latest(&cached_config)?;
     patch(&mut next_config)?;
 
-    // 同时持有运行态写锁与跨进程文件锁，保证重读、落盘、内存提交和副作用顺序一致。
+    // Keep the writer transaction and cross-process file lock through commit,
+    // while only holding the cache write lock for the in-memory assignment.
     persist(&next_config)?;
-    state.user_config = next_config.clone();
+    state.write().map_err(|_| "用户配置状态锁已损坏".to_string())?.user_config = next_config.clone();
     commit(&next_config);
 
     Ok(next_config)
@@ -2231,7 +2606,7 @@ fn finish_user_config_update(config: &UserConfig) {
 
 /// 基于最新运行态原子修改并保存用户配置。
 ///
-/// patch 在配置写锁内执行。调用方应只修改自己负责的字段，避免用读取到的旧快照覆盖
+/// patch 在写入事务内执行，磁盘操作不占用配置读取锁。调用方应只修改自己负责的字段，避免用读取到的旧快照覆盖
 /// 其他并发设置更新。
 pub fn patch_user_config<F>(patch: F) -> Result<UserConfig, String>
 where
@@ -2272,6 +2647,13 @@ pub fn get_user_config() -> UserConfig {
     get_runtime_state()
         .read()
         .map(|state| state.user_config.clone())
+        .unwrap_or_default()
+}
+
+pub(crate) fn get_codex_proxy_direct_hosts() -> Vec<String> {
+    get_runtime_state()
+        .read()
+        .map(|state| state.user_config.codex_proxy_direct_hosts.clone())
         .unwrap_or_default()
 }
 
@@ -2348,12 +2730,65 @@ pub fn init_server_status(actual_port: u16, auth_token: String) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn antigravity_desktop_path_migrates_once_without_overwriting_an_explicit_setting() {
+        use serde_json::json;
+
+        for path in [
+            "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+            r"C:\Users\fixture\AppData\Local\Programs\Antigravity\Antigravity.exe",
+            "/opt/Antigravity/antigravity",
+        ] {
+            let mut old = json!({"antigravity_app_path": path});
+            super::split_legacy_antigravity_app_path(old.as_object_mut().unwrap());
+            let config: UserConfig = serde_json::from_value(old).unwrap();
+            assert_eq!(config.antigravity_legacy_app_path, path);
+            assert!(config.antigravity_app_path.is_empty());
+        }
+        for mut config in [
+            json!({"antigravity_app_path": "/Applications/Antigravity IDE.app"}),
+            json!({"antigravity_app_path": "/opt/custom-app", "antigravity_legacy_app_path": ""}),
+        ] {
+            let expected = config.clone();
+            super::split_legacy_antigravity_app_path(config.as_object_mut().unwrap());
+            assert_eq!(config, expected);
+        }
+    }
+
+    #[test]
+    fn codex_refresh_scope_legacy_defaults_and_explicit_empty_round_trip() {
+        let defaults = UserConfig::default();
+        let expected = vec!["free", "go", "plus", "pro", "team", "business", "enterprise", "edu_k12", "unknown"];
+        assert_eq!(defaults.codex_auto_refresh_plan_types, expected);
+        let mut legacy = serde_json::to_value(defaults).unwrap();
+        legacy.as_object_mut().unwrap().remove("codex_auto_refresh_plan_types");
+        let mut restored: UserConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.codex_auto_refresh_plan_types, expected);
+        restored.codex_auto_refresh_plan_types.clear();
+        let empty: UserConfig = serde_json::from_value(serde_json::to_value(restored).unwrap()).unwrap();
+        assert!(empty.codex_auto_refresh_plan_types.is_empty());
+    }
+
+    include!("config_tests_nonblocking.rs");
+    include!("config_tests_proxy_env.rs");
+    #[test]
+    fn startup_client_preferences_preserve_app_ide_and_legacy_overview() {
+        for value in ["antigravity", "antigravity-ide", "overview", "last"] {
+            assert_eq!(super::normalize_startup_page(value), value);
+        }
+        assert_eq!(
+            super::normalize_startup_page(" Antigravity "),
+            "antigravity"
+        );
+        assert_eq!(super::normalize_startup_page("unknown"), "last");
+    }
 
     #[test]
     fn normalize_theme_color_maps_aliases() {
         assert_eq!(super::normalize_theme_color("TokyoNight"), "tokyo-night");
         assert_eq!(super::normalize_theme_color("onedark"), "one-dark");
         assert_eq!(super::normalize_theme_color("nope"), "default");
+        assert_eq!(super::normalize_theme_color(" OLED "), "oled");
     }
     use super::{acquire_config_file_lock, patch_runtime_state, RuntimeState, UserConfig};
     use std::fs;
@@ -2411,6 +2846,20 @@ mod tests {
     }
 
     #[test]
+    fn retired_codex_client_policy_is_ignored_when_loading_old_config() {
+        for enabled in [false, true] {
+            let cfg: UserConfig = serde_json::from_value(serde_json::json!({
+                "theme": "dark",
+                "codex_cli_only_allow_app_server_clients": enabled,
+            }))
+            .expect("old config remains readable");
+            let encoded = serde_json::to_value(&cfg).expect("serialize config");
+            assert_eq!(cfg.theme, "dark");
+            assert!(encoded.get("codex_cli_only_allow_app_server_clients").is_none());
+        }
+    }
+
+    #[test]
     fn openclaw_auth_overwrite_missing_field_falls_back_to_disabled() {
         let cfg: UserConfig =
             serde_json::from_value(serde_json::json!({})).expect("反序列化默认配置应成功");
@@ -2425,6 +2874,204 @@ mod tests {
         let migrated_cfg: UserConfig =
             serde_json::from_value(serde_json::json!({})).expect("旧配置反序列化应成功");
         assert!(!migrated_cfg.grok_sync_official_auth_on_switch);
+    }
+
+    #[test]
+    fn grok_opencode_sync_defaults_to_disabled() {
+        let default_cfg = UserConfig::default();
+        assert!(!default_cfg.grok_opencode_sync_on_switch);
+        assert!(!default_cfg.grok_opencode_auth_overwrite_on_switch);
+
+        let migrated_cfg: UserConfig =
+            serde_json::from_value(serde_json::json!({})).expect("旧配置反序列化应成功");
+        assert!(!migrated_cfg.grok_opencode_sync_on_switch);
+        assert!(!migrated_cfg.grok_opencode_auth_overwrite_on_switch);
+    }
+
+    #[test]
+    fn startup_minimized_defaults_to_disabled() {
+        let default_cfg = UserConfig::default();
+        assert!(!default_cfg.startup_minimized);
+        assert!(default_cfg.startup_minimized_default_off_migrated);
+
+        let missing_field_cfg: UserConfig =
+            serde_json::from_value(serde_json::json!({})).expect("缺字段配置反序列化应成功");
+        assert!(!missing_field_cfg.startup_minimized);
+        assert!(missing_field_cfg.startup_minimized_default_off_migrated);
+    }
+
+    #[test]
+    fn startup_minimized_legacy_enabled_is_turned_off_once() {
+        let mut legacy_cfg: UserConfig = serde_json::from_value(serde_json::json!({
+            "startup_minimized": true,
+            "startup_minimized_default_off_migrated": false,
+        }))
+        .expect("旧配置反序列化应成功");
+
+        assert!(super::apply_startup_minimized_default_off_migration(
+            &mut legacy_cfg
+        ));
+        assert!(!legacy_cfg.startup_minimized);
+        assert!(legacy_cfg.startup_minimized_default_off_migrated);
+
+        legacy_cfg.startup_minimized = true;
+        assert!(!super::apply_startup_minimized_default_off_migration(
+            &mut legacy_cfg
+        ));
+        assert!(legacy_cfg.startup_minimized);
+        assert!(legacy_cfg.startup_minimized_default_off_migrated);
+    }
+
+    #[test]
+    fn load_user_config_turns_off_legacy_startup_minimized_once() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let data_dir = make_temp_dir("config_startup_minimized_migrate");
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &data_dir);
+
+        let config_path = data_dir.join("config.json");
+        fs::write(
+            &config_path,
+            r#"{
+  "startup_minimized": true
+}
+"#,
+        )
+        .expect("write legacy config");
+
+        let loaded = super::load_user_config().expect("load legacy config");
+        assert!(!loaded.startup_minimized);
+        assert!(loaded.startup_minimized_default_off_migrated);
+
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).expect("read persisted config"))
+                .expect("parse persisted config");
+        assert_eq!(
+            persisted.get("startup_minimized").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            persisted
+                .get("startup_minimized_default_off_migrated")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let mut persisted_cfg: UserConfig =
+            serde_json::from_value(persisted).expect("deserialize persisted config");
+        persisted_cfg.startup_minimized = true;
+        persist_test_config(&config_path, &persisted_cfg).expect("rewrite user-enabled config");
+
+        let reloaded = super::load_user_config().expect("reload user-enabled config");
+        assert!(reloaded.startup_minimized);
+        assert!(reloaded.startup_minimized_default_off_migrated);
+
+        std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR");
+        fs::remove_dir_all(data_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn codex_app_enhancements_default_on_and_preserve_explicit_values() {
+        for config in [
+            UserConfig::default(),
+            serde_json::from_value(serde_json::json!({})).unwrap(),
+        ] {
+            assert!(config.codex_app_api_quota_compat_enabled);
+        }
+        let disabled: UserConfig = serde_json::from_value(serde_json::json!({
+            "codex_app_native_fast_enabled": false,
+            "codex_app_api_quota_compat_enabled": false
+        }))
+        .unwrap();
+        assert!(!disabled.codex_app_api_quota_compat_enabled);
+        let config: UserConfig = serde_json::from_value(serde_json::json!({
+            "codex_app_native_fast_enabled": true,
+            "codex_app_api_quota_compat_enabled": true
+        }))
+        .unwrap();
+        let restored: UserConfig =
+            serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
+        assert!(restored.codex_app_api_quota_compat_enabled);
+    }
+
+    #[test]
+    fn codex_native_predictions_remain_opt_in_across_config_upgrades() {
+        for config in [
+            UserConfig::default(),
+            serde_json::from_value(serde_json::json!({})).unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "codex_app_native_fast_enabled": false,
+                "codex_app_api_quota_compat_enabled": true
+            }))
+            .unwrap(),
+        ] {
+            assert!(!config.codex_app_native_predictions_enabled);
+        }
+        for enabled in [true, false] {
+            let config: UserConfig = serde_json::from_value(serde_json::json!({
+                "codex_app_native_fast_enabled": false,
+                "codex_app_api_quota_compat_enabled": true,
+                "codex_app_native_predictions_enabled": enabled
+            }))
+            .expect("read an explicit prediction preference");
+            let restored: UserConfig =
+                serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
+            assert_eq!(restored.codex_app_native_predictions_enabled, enabled);
+
+            assert!(restored.codex_app_api_quota_compat_enabled);
+        }
+    }
+
+    #[test]
+    fn retired_codex_api_dictation_fields_are_ignored_and_not_saved() {
+        let dir = make_temp_dir("retired_codex_api_dictation_config");
+        let path = dir.join("config.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "language": "ja",
+                "codex_app_native_fast_enabled": false,
+                "codex_app_api_quota_compat_enabled": true,
+                "codex_app_api_dictation_enabled": true,
+                "codex_app_api_dictation_model": "previously-enabled-model"
+            })
+            .to_string(),
+        )
+        .expect("write legacy configuration");
+        let legacy = load_test_config(&path);
+        assert!(legacy.codex_app_api_quota_compat_enabled);
+        persist_test_config(&path, &legacy).expect("save supported configuration fields");
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read saved configuration"))
+                .expect("parse saved configuration");
+        for retired in [
+            "codex_app_native_fast_enabled",
+            "codex_app_api_dictation_enabled",
+            "codex_app_api_dictation_model",
+        ] {
+            assert!(persisted.get(retired).is_none());
+        }
+        let reloaded = load_test_config(&path);
+        assert_eq!(reloaded.language, "ja");
+        assert!(reloaded.codex_app_api_quota_compat_enabled);
+        fs::remove_dir_all(dir).expect("remove temporary configuration");
+    }
+
+    #[test]
+    fn codex_api_service_quota_display_defaults_to_enabled() {
+        let default_cfg = UserConfig::default();
+        assert!(default_cfg.codex_app_ui_injection_enabled);
+
+        let upgraded_cfg: UserConfig =
+            serde_json::from_value(serde_json::json!({})).expect("旧配置反序列化应成功");
+        assert!(upgraded_cfg.codex_app_ui_injection_enabled);
+
+        let disabled_cfg: UserConfig = serde_json::from_value(serde_json::json!({
+            "codex_app_ui_injection_enabled": false
+        }))
+        .expect("显式关闭配置反序列化应成功");
+        assert!(!disabled_cfg.codex_app_ui_injection_enabled);
     }
 
     #[test]

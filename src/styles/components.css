@@ -174,6 +174,7 @@
 .main-wrapper {
   position: relative;
   flex: 1;
+  min-width: 0;
   margin-inline-start: 120px; /* 增加起始侧留白，主要避开 Sidebar */
   padding: 40px 32px 32px 0;
   padding-inline-start: 0;
@@ -183,20 +184,6 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
-}
-
-.app-global-promo-layer {
-  position: absolute;
-  top: 70px;
-  left: 0;
-  right: 32px;
-  height: 0;
-  z-index: 6;
-  pointer-events: none;
-}
-
-.app-global-promo-layer .global-promo-center {
-  top: 0;
 }
 
 .main-content {
@@ -443,17 +430,17 @@
   position: relative;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   width: 100%;
   min-height: 60px;
 }
 
 .page-top-strip-left {
-  position: absolute;
-  left: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  z-index: 2;
+  min-width: 0;
 }
 
 .page-top-strip-label {
@@ -462,7 +449,8 @@
   font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  line-height: 1;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
   background: var(--gradient-primary);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -478,9 +466,7 @@
 }
 
 .page-top-strip-right {
-  position: absolute;
-  right: 0;
-  z-index: 2;
+  margin-inline-start: auto;
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -540,7 +526,7 @@
 
 .page-tabs-row-with-leading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(120px, 1fr) minmax(0, max-content) minmax(max-content, 1fr);
   align-items: center;
 }
 
@@ -549,11 +535,29 @@
   justify-self: start;
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.page-tabs-row-with-leading .page-tabs {
+.page-tabs-leading .platform-group-switcher,
+.page-tabs-leading .platform-group-switcher-trigger {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.page-tabs-row-with-leading .page-tabs,
+.settings-page-tabs-row .page-tabs {
   grid-column: 2;
   justify-self: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.page-tabs-row-with-leading .page-tabs > .filter-tab,
+.settings-page-tabs-row .page-tabs > .filter-tab {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .page-tabs-leading .platform-group-switcher-trigger {
@@ -596,8 +600,8 @@
 }
 
 .page-tabs-label {
-  position: absolute;
-  left: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -605,6 +609,11 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.settings-page-tabs-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, max-content) minmax(0, 1fr);
 }
 
 .page-tabs-center {
@@ -706,11 +715,6 @@
 
 .platform-group-switcher-trigger.is-open .platform-group-switcher-trigger-caret {
   color: var(--primary);
-}
-
-html[data-reduced-motion="true"] .platform-group-switcher-trigger:hover,
-html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platform-group-switcher-trigger-caret {
-  transform: none;
 }
 
 .platform-group-switcher-dropdown {
@@ -978,6 +982,11 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   transition: all 0.2s;
   border: 1px solid transparent;
   white-space: nowrap;
+  /* Reset the platform button theme so unqualified variants never render as native gray controls. */
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  color: inherit;
 }
 
 .btn.icon-only {
@@ -1018,6 +1027,26 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 .btn-secondary:hover:not(:disabled) {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.btn-outline {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+.btn-outline:disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border-color: var(--border-light);
+  box-shadow: none;
 }
 
 .btn-success {
@@ -1080,7 +1109,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   background: var(--bg-secondary);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   box-shadow: var(--shadow-sm);
 }
 
@@ -1169,7 +1199,37 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   min-width: 0;
 }
 
+.codex-speed-control {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.codex-speed-control-hint {
+  flex-basis: 100%;
+  max-width: 340px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.codex-account-card .codex-card-bottom > .codex-speed-control {
+  justify-self: end;
+}
+
+.codex-launch-preview-summary-controls > .codex-speed-control {
+  margin-right: 12px;
+  align-self: center;
+  flex-shrink: 0;
+}
+
 .codex-speed-trigger {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
   height: 22px;
   display: inline-flex;
   align-items: center;
@@ -1201,7 +1261,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
 }
 
-.codex-speed-trigger.fast {
+.codex-speed-trigger:is(.fast, .ultrafast) {
   color: #7a4b00;
   border-color: rgba(217, 119, 6, 0.24);
   background: linear-gradient(180deg, rgba(255, 250, 241, 0.98), rgba(252, 240, 220, 0.94));
@@ -1210,8 +1270,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
     inset 0 1px 0 rgba(255, 255, 255, 0.68);
 }
 
-.codex-speed-trigger.fast:hover:not(:disabled),
-.codex-speed-trigger.fast.open {
+.codex-speed-trigger:is(.fast, .ultrafast):hover:not(:disabled),
+.codex-speed-trigger:is(.fast, .ultrafast).open {
   border-color: rgba(217, 119, 6, 0.42);
   background: linear-gradient(180deg, rgba(255, 247, 232, 1), rgba(250, 232, 204, 0.96));
 }
@@ -1233,13 +1293,16 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 .codex-speed-menu {
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--bg-card) 90%, var(--bg-secondary));
-  backdrop-filter: blur(12px);
+  /* Dropdowns are solid surfaces; translucent card tokens let the page bleed through. */
+  background: var(--bg-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow:
     0 12px 28px rgba(15, 23, 42, 0.12),
     0 1px 0 rgba(255, 255, 255, 0.72) inset;
   padding: 6px;
-  overflow: hidden;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 
 .codex-speed-menu-title {
@@ -1262,6 +1325,12 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .codex-speed-option {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
   width: 100%;
   min-height: 42px;
   border: 1px solid transparent;
@@ -1289,6 +1358,11 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
 .codex-speed-option:hover {
   background: color-mix(in srgb, var(--primary) 6%, var(--bg-secondary));
+}
+
+.codex-speed-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .codex-speed-option.active {
@@ -1335,7 +1409,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   line-height: 1.2;
 }
 
-[data-theme="dark"] .codex-speed-trigger.fast {
+[data-theme="dark"] .codex-speed-trigger:is(.fast, .ultrafast) {
   color: #fbbf24;
   border-color: rgba(251, 191, 36, 0.28);
   background: rgba(251, 191, 36, 0.12);
@@ -1429,6 +1503,57 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   gap: 4px;
   /* padding removed */
   background: transparent;
+}
+
+/* A failed refresh can still leave usable cached quota data on screen. */
+.quota-cache-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 2px 0 8px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-secondary));
+  color: color-mix(in srgb, var(--warning-strong) 82%, var(--text-primary));
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.quota-cache-warning > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.quota-cache-warning-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quota-cache-warning-title,
+.quota-cache-warning-time {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.quota-cache-warning-title {
+  font-weight: 600;
+}
+
+.quota-cache-warning-time {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.quota-cache-warning.table {
+  margin-bottom: 6px;
+  padding: 6px 8px;
 }
 
 .quota-header {
@@ -1606,7 +1731,9 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
    Modal
    ============================================ */
 
-.modal-overlay {
+/* 基类用 :where() 降到零优先级：组件自己的 .xxx-modal / .xxx-overlay 单类规则
+   永远能覆盖这里的默认值，不再依赖打包后的 CSS 加载顺序（同优先级互相覆盖）。 */
+:where(.modal-overlay) {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.6);
@@ -1615,12 +1742,16 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 兜底：弹框再高也要能滚动到全部内容；safe center 在溢出时自动改为顶部对齐，
+     避免居中导致顶部（标题/关闭按钮）无法滚到。 */
+  align-items: safe center;
+  overflow-y: auto;
   z-index: 10000;
   -webkit-app-region: no-drag;
   animation: fadeIn 0.2s ease-out;
 }
 
-.modal {
+:where(.modal) {
   background: var(--bg-surface);
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1637,7 +1768,9 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   animation: scaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.modal.modal-lg {
+/* 尺寸工具类同样降到零优先级：弹框自己的类（如 .modal.platform-account-add-modal）
+   永远优先，避免工具类和组件类互相覆盖、结果取决于加载顺序。 */
+:where(.modal-lg) {
   max-width: 720px;
 }
 
@@ -1942,7 +2075,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
 .platform-layout-bulk-header-right {
   display: grid;
-  grid-template-columns: max-content max-content max-content 32px;
+  /* 启用 / 侧边栏 / 仪表盘 / 菜单栏 + 编辑列 */
+  grid-template-columns: max-content max-content max-content max-content 32px;
   align-items: center;
   justify-content: end;
   gap: 10px;
@@ -1961,7 +2095,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--text-secondary);
 }
 
@@ -2122,7 +2256,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   margin-left: auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: max-content max-content max-content 32px;
+  /* 与表头保持相同列顺序：启用 / 侧边栏 / 仪表盘 / 菜单栏 + 编辑 */
+  grid-template-columns: max-content max-content max-content max-content 32px;
   align-items: center;
   justify-content: end;
   gap: 10px;
@@ -2130,7 +2265,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 }
 
 .platform-layout-controls-grid.is-child-grid {
-  grid-template-columns: max-content max-content 32px 32px;
+  /* 启用 / 默认平台 / 菜单栏显示 + 编辑、删除两个图标按钮 */
+  grid-template-columns: max-content max-content max-content 32px 32px;
   gap: 8px;
   opacity: 0.95;
 }
@@ -2187,6 +2323,16 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
 .platform-layout-toggle.is-disabled input {
   pointer-events: none;
+}
+
+.platform-layout-enable-placeholder {
+  visibility: hidden;
+}
+
+.platform-layout-checkbox-placeholder {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
 }
 
 .platform-layout-toggle input[type="checkbox"],
@@ -2648,7 +2794,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 @media (max-width: 1100px) {
   .platform-layout-bulk-header-right,
   .platform-layout-controls-grid {
-    grid-template-columns: max-content max-content max-content 30px;
+    grid-template-columns: max-content max-content max-content max-content 30px;
   }
 }
 
@@ -2670,7 +2816,7 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   .platform-layout-controls-grid {
     width: 100%;
     min-width: 0;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     justify-content: stretch;
   }
 

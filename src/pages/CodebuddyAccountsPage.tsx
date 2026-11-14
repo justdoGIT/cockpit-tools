@@ -1,9 +1,12 @@
-import { useMemo, useCallback, Fragment, useState, useEffect } from 'react';
+import { useAccountsOverviewFilterState } from '../hooks/useAccountsOverviewFilterState';
+import { useMemo, useCallback, Fragment, useState } from 'react';
 import {
   Plus, RefreshCw, Download, Upload, Trash2, X, Globe, KeyRound, Database,
   Copy, Check, RotateCw, LayoutGrid, List, Search,
   Tag, Play, Eye, EyeOff, CircleAlert, ChevronDown,
 } from 'lucide-react';
+import { AccountLastUsed } from '../components/AccountLastUsed';
+import { useUiConfigStore } from '../stores/useUiConfigStore';
 import { useCodebuddyAccountStore } from '../stores/useCodebuddyAccountStore';
 import * as codebuddyService from '../services/codebuddyService';
 import { TagEditModal } from '../components/TagEditModal';
@@ -12,6 +15,7 @@ import { ModalErrorMessage } from '../components/ModalErrorMessage';
 import { MfaQuickCodeSelect } from '../components/MfaQuickCodeSelect';
 import { PaginationControls } from '../components/PaginationControls';
 import { AccountSelectionToolbar } from '../components/AccountSelectionToolbar';
+import { usePlatformAccountGroups } from '../hooks/usePlatformAccountGroups';
 import {
   CB_PACKAGE_CODE,
   CodebuddyAccount,
@@ -42,14 +46,10 @@ import {
   normalizeAccountsOverviewScope,
   readAccountsOverviewFilterPersistenceEnabled,
   readAccountsOverviewFilterStringArray,
-  removeAccountsOverviewFilterField,
-  writeAccountsOverviewFilterField,
 } from '../utils/accountsOverviewFilterPersistence';
-import { CodebuddySessionListPanel } from '../components/codebuddy/CodebuddySessionListPanel';
 import { CodebuddySessionManager } from '../components/codebuddy/CodebuddySessionManager';
 
 const CB_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.codebuddy.flow_notice_collapsed';
-const CB_CURRENT_ACCOUNT_ID_KEY = 'agtools.codebuddy.current_account_id';
 const CB_KNOWN_PLAN_FILTERS = ['FREE', 'TRIAL', 'PRO', 'ENTERPRISE'] as const;
 const CODEBUDDY_FILTER_PERSISTENCE_SCOPE = normalizeAccountsOverviewScope('CodeBuddy');
 const FILTER_TYPES_FIELD = 'filter_types';
@@ -76,8 +76,9 @@ function getQuotaClassByRemainPercent(remainPercent: number | null): string {
 }
 
 export function CodebuddyAccountsPage() {
+  const timeDisplayMode = useUiConfigStore((s) => s.timeDisplayMode);
   const [activeTab, setActiveTab] = useState<PlatformOverviewTab>('overview');
-  const [filterTypes, setFilterTypes] = useState<string[]>(() =>
+  const [filterTypes, setFilterTypes] = useAccountsOverviewFilterState<string[]>(CODEBUDDY_FILTER_PERSISTENCE_SCOPE, FILTER_TYPES_FIELD, () =>
     readAccountsOverviewFilterPersistenceEnabled(CODEBUDDY_FILTER_PERSISTENCE_SCOPE)
       ? readAccountsOverviewFilterStringArray(
           CODEBUDDY_FILTER_PERSISTENCE_SCOPE,
@@ -92,7 +93,6 @@ export function CodebuddyAccountsPage() {
     platformKey: 'CodeBuddy',
     oauthLogPrefix: 'CodebuddyOAuth',
     flowNoticeCollapsedKey: CB_FLOW_NOTICE_COLLAPSED_KEY,
-    currentAccountIdKey: CB_CURRENT_ACCOUNT_ID_KEY,
     exportFilePrefix: 'codebuddy_accounts',
     oauthTabKeys: ['oauth'],
     store: {
@@ -126,7 +126,6 @@ export function CodebuddyAccountsPage() {
   const {
     t, locale, privacyModeEnabled, togglePrivacyMode, maskAccountText,
     viewMode, setViewMode, searchQuery, setSearchQuery,
-    filterPersistenceEnabled, filterPersistenceScope,
     sortDirection, sortBy,
     selected, toggleSelect, toggleSelectAll,
     tagFilter, groupByTag, setGroupByTag, showTagFilter, setShowTagFilter,
@@ -155,13 +154,7 @@ export function CodebuddyAccountsPage() {
     currentAccountId, formatDate, normalizeTag,
   } = page;
 
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_TYPES_FIELD);
-      return;
-    }
-    writeAccountsOverviewFilterField(filterPersistenceScope, FILTER_TYPES_FIELD, filterTypes);
-  }, [filterPersistenceEnabled, filterPersistenceScope, filterTypes]);
+  const grouping = usePlatformAccountGroups('codebuddy', () => toggleSelectAll(Array.from(selected)));
 
   const toggleFilterTypeValue = useCallback((value: string) => {
     setFilterTypes((prev) => {
@@ -239,6 +232,9 @@ export function CodebuddyAccountsPage() {
 
   const filteredAccounts = useMemo(() => {
     let result = [...accounts];
+    if (grouping.activeGroupId) {
+      result = grouping.filterAccountsByGroup(result);
+    }
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       result = result.filter((account) =>
@@ -269,7 +265,7 @@ export function CodebuddyAccountsPage() {
       return sortDirection === 'desc' ? diff : -diff;
     });
     return result;
-  }, [accounts, currentAccountId, searchQuery, filterTypes, isAbnormalAccount, resolvePlanKey, tagFilter, normalizeTag, sortBy, sortDirection]);
+  }, [accounts, grouping.activeGroupId, grouping.filterAccountsByGroup, currentAccountId, searchQuery, filterTypes, isAbnormalAccount, resolvePlanKey, tagFilter, normalizeTag, sortBy, sortDirection]);
 
   const filteredIds = useMemo(() => filteredAccounts.map((account) => account.id), [filteredAccounts]);
   const exportSelectionCount = getScopedSelectedCount(filteredIds);
@@ -345,17 +341,21 @@ export function CodebuddyAccountsPage() {
     const primaryTimeText = formatQuotaDateTime(isBase ? resource.refreshAt : resource.expireAt);
     if (primaryTimeText) {
       return isBase
-        ? t('codebuddy.quotaQuery.updatedAt', '下次刷新时间：{{time}}', { time: primaryTimeText })
+        ? timeDisplayMode === "refresh"
+          ? t('codebuddy.quotaQuery.updatedAt', '下次刷新时间：{{time}}', { time: primaryTimeText })
+          : null
         : t('codebuddy.quotaQuery.expireAt', '到期时间：{{time}}', { time: primaryTimeText });
     }
     const fallbackTimeText = formatQuotaDateTime(isBase ? resource.expireAt : resource.refreshAt);
     if (fallbackTimeText) {
       return isBase
         ? t('codebuddy.quotaQuery.expireAt', '到期时间：{{time}}', { time: fallbackTimeText })
-        : t('codebuddy.quotaQuery.updatedAt', '下次刷新时间：{{time}}', { time: fallbackTimeText });
+        : timeDisplayMode === "refresh"
+          ? t('codebuddy.quotaQuery.updatedAt', '下次刷新时间：{{time}}', { time: fallbackTimeText })
+          : null;
     }
     return null;
-  }, [formatQuotaDateTime, t]);
+  }, [formatQuotaDateTime, t, timeDisplayMode === "refresh"]);
 
   const resolveResourcePackageTitle = useCallback((resource: CodebuddyOfficialQuotaResource, isExtra: boolean) => {
     if (isExtra || resource.packageCode === CB_PACKAGE_CODE.extra) {
@@ -394,7 +394,9 @@ export function CodebuddyAccountsPage() {
           const isExtra = idx === allResources.length - 1;
           const quotaClass = getQuotaClassByRemainPercent(resource.remainPercent);
           const usedPercent = clampPercent(resource.usedPercent);
-          const quotaValueText = `${formatQuotaNumber(resource.used)} / ${formatQuotaNumber(resource.total)}`;
+          const quotaValueText = resource.unlimited
+            ? t('common.shared.quota.unlimited', '无限额度')
+            : `${formatQuotaNumber(resource.used)} / ${formatQuotaNumber(resource.total)}`;
           const timeText = resolveResourceTimeText(resource, isExtra);
           const packageName = resolveResourcePackageTitle(resource, isExtra);
 
@@ -449,10 +451,17 @@ export function CodebuddyAccountsPage() {
     const hasQuotaData =
       model.resources.length > 0 || model.extra.total > 0 || model.extra.remain > 0 || model.extra.used > 0;
     const refreshFailed = !!account.quota_query_last_error?.trim();
-    const shouldShowQuota = hasQuotaData && !refreshFailed;
+    const shouldShowQuota = hasQuotaData;
     const statusText = refreshFailed
       ? t('codebuddy.quotaQuery.failedRefreshCompact', '配额查询失败')
       : t('codebuddy.quotaQuery.empty', '暂无可用配额数据');
+    const cachedWarningText = t(
+      'common.shared.quota.cachedRefreshFailed',
+      '刷新失败，以下为上次成功数据',
+    );
+    const updatedAtText = model.updatedAt != null
+      ? formatQuotaDateTime(model.updatedAt)
+      : null;
     return (
       <>
         <div className="quota-item">
@@ -465,6 +474,21 @@ export function CodebuddyAccountsPage() {
           <div className="quota-header codebuddy-quota-header">
             <span className="quota-name">{t('codebuddy.quotaQuery.sectionTitle', '配额查询')}</span>
           </div>
+          {refreshFailed && hasQuotaData && (
+            <div className={`quota-cache-warning ${variant === 'table' ? 'table' : ''}`} role="status">
+              <CircleAlert size={14} />
+              <div className="quota-cache-warning-content">
+                <span className="quota-cache-warning-title">{cachedWarningText}</span>
+                {timeDisplayMode === "refresh" && updatedAtText && (
+                  <span className="quota-cache-warning-time">
+                    {t('common.shared.quota.lastSuccessfulQuery', '上次成功：{{time}}', {
+                      time: updatedAtText,
+                    })}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
           {shouldShowQuota ? (
             renderResourceQuotaItems(account, variant)
           ) : (
@@ -475,7 +499,7 @@ export function CodebuddyAccountsPage() {
         </div>
       </>
     );
-  }, [renderResourceQuotaItems, renderUsageInfo, t]);
+  }, [formatQuotaDateTime, renderResourceQuotaItems, renderUsageInfo, t]);
 
   const renderGridCards = (items: typeof filteredAccounts, groupKey?: string) =>
     items.map((account) => {
@@ -508,7 +532,13 @@ export function CodebuddyAccountsPage() {
             {renderQuotaQuerySection(account, 'card')}
           </div>
           <div className="card-footer">
-            <span className="card-date">{formatDate(account.created_at)}</span>
+            <AccountLastUsed
+              accountId={account.id}
+              lastSwitchedAt={account.last_switched_at}
+              createdAt={account.created_at}
+              formatDate={formatDate}
+              refreshAt={getCodebuddyOfficialQuotaModel(account).updatedAt}
+            />
             <div className="card-actions">
               <button className="card-action-btn success" onClick={() => handleInjectToVSCode?.(account.id)} disabled={!!injecting}
                 title={t('common.shared.switchAccount', '切换账号')}>
@@ -614,7 +644,7 @@ export function CodebuddyAccountsPage() {
           <MultiSelectFilterDropdown
             options={tierFilterOptions}
             selectedValues={filterTypes}
-            allLabel={`ALL (${tierSummary.all})`}
+            allLabel={t('common.shared.filter.all', '全部 ({{count}})', { count: tierSummary.all })}
             filterLabel={t('common.shared.filterLabel', '筛选')}
             clearLabel={t('accounts.clearFilter', '清空筛选')}
             emptyLabel={t('common.none', '暂无')}
@@ -672,13 +702,16 @@ export function CodebuddyAccountsPage() {
         </div>
       </div>
 
-      {filteredAccounts.length > 0 && (
+      {(accounts.length > 0 || grouping.groups.length > 0) && (
         <AccountSelectionToolbar
           selectedCount={selected.size}
           allSelected={isAllPaginatedSelected}
           disabled={paginatedIds.length === 0}
           onToggleSelectAll={() => toggleSelectAll(paginatedIds)}
           onClearSelection={() => toggleSelectAll(Array.from(selected))}
+          grouping={grouping}
+          accounts={accounts}
+          selectedIds={Array.from(selected)}
           actions={(
             <button
               className="btn btn-danger icon-only"
@@ -712,14 +745,6 @@ export function CodebuddyAccountsPage() {
         </div>
       ) : viewMode === 'grid' ? (
         <div className="grid-view-container">
-          {paginatedAccounts.length > 0 && (
-            <div className="grid-view-header" style={{ marginBottom: '12px', paddingLeft: '4px' }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-color)' }}>
-                <input type="checkbox" checked={isAllPaginatedSelected} onChange={() => toggleSelectAll(paginatedIds)} />
-                {t('common.selectAll', '全选')}
-              </label>
-            </div>
-          )}
           {groupByTag ? (
           <div className="tag-group-list">
             {paginatedGroupedAccounts.map(({ groupKey, items, totalCount }) => (
@@ -790,12 +815,9 @@ export function CodebuddyAccountsPage() {
         onNextPage={pagination.goToNextPage}
       />
 
-      {/* Full session manager is on the sessions tab; keep lightweight list on overview. */}
-      <CodebuddySessionListPanel />
-
       {showAddModal && (
         <div className="modal-overlay">
-            <div className="modal-content ghcp-add-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-content ghcp-add-modal platform-account-add-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>{t('codebuddy.addAccount', '添加 CodeBuddy 账号')}</h2>
               <button className="modal-close" onClick={closeAddModal}><X size={18} /></button>

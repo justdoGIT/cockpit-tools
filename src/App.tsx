@@ -1,3 +1,10 @@
+import { hydrateDurableUiSettings } from './utils/durableUiSettings';
+import { CodexAccountServiceHost } from './components/codex/CodexAccountServiceHost';
+import { AppBackground } from './components/AppBackground';
+import { LinuxWindowTitlebar } from './components/layout/LinuxWindowTitlebar';
+import { CodexPathRecoveryDialog } from './components/codex/CodexPathRecoveryDialog';
+import { recoverLegacyCodexPath } from './utils/codexPathRecoveryEvents';
+import { listenSafely as listen, subscribeTauriEvent } from "./utils/tauriEventListener";
 import {
   Suspense,
   lazy,
@@ -11,21 +18,27 @@ import {
 import './App.css';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { FileText, FolderOpen, RefreshCw, X } from 'lucide-react';
 import { SideNav } from './components/layout/SideNav';
+import { BootReadyMarker, VisibleBootPage } from './components/BootReadyMarker';
 import { GlobalModal } from './components/GlobalModal';
+import { WindowsOperationDialog } from './components/WindowsOperationDialog';
+import { CodexSwitchProgressModal } from './components/CodexSwitchProgressModal';
+import { CodexCliDaemonNotice } from './components/CodexCliDaemonNotice';
+import { CodexInstanceLaunchProgressModal } from './components/CodexInstanceLaunchProgressModal';
+import { CodexPelicanHost } from './components/codex/pelican/CodexPelicanHost';
 import { AnnouncementHost } from './components/AnnouncementCenter';
-import { CodexBatchImportGlobalTask } from './components/CodexBatchImportGlobalTask';
 import { TopCenterPromoBanner } from './components/TopCenterPromoBanner';
 import type { QuickSettingsType } from './components/QuickSettingsPopover';
-import type { Page } from './types/navigation';
+import { requestCodexRequestLogsNavigation } from './utils/codexRequestLogsNavigation';
+import { isMainWindowNavigablePage, type Page } from './types/navigation';
 import type { TopRightAd } from './types/topRightAd';
 import { useAutoRefresh } from './hooks/useAutoRefresh';
+import { useCodexQuotaSync } from './hooks/useCodexQuotaSync';
 import { useEasterEggTrigger } from './hooks/useEasterEggTrigger';
 import { useGlobalModal } from './hooks/useGlobalModal';
 import { changeLanguage, getCurrentLanguage, normalizeLanguage, syncLanguage } from './i18n';
@@ -39,23 +52,32 @@ import { useCursorAccountStore } from './stores/useCursorAccountStore';
 import { useGrokAccountStore } from './stores/useGrokAccountStore';
 import { useCodebuddyAccountStore } from './stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from './stores/useCodebuddyCnAccountStore';
+import { formatQoderError } from './utils/qoderErrors';
 import { useQoderAccountStore } from './stores/useQoderAccountStore';
 import { useTraeAccountStore } from './stores/useTraeAccountStore';
 import { useWorkbuddyAccountStore } from './stores/useWorkbuddyAccountStore';
+import { useMinimaxCodeAccountStore } from './stores/useMinimaxCodeAccountStore';
 import { useZedAccountStore } from './stores/useZedAccountStore';
 import { useSideNavLayoutStore } from './stores/useSideNavLayoutStore';
 import { usePlatformLayoutStore } from './stores/usePlatformLayoutStore';
+import { initializeClassicSidebar } from './utils/classicSidebarStartup';
+import { antigravityAppPathTarget, getAntigravityRuntimeTarget, normalizeAntigravityRuntimeTarget, resolveAntigravityStartupTarget, setAntigravityRuntimeTarget } from './utils/antigravityRuntimeTarget';
 import { useTopRightAdStore } from './stores/useTopRightAdStore';
 import { useSponsorStore } from './stores/useSponsorStore';
 import { useRemoteConfigStore } from './stores/useRemoteConfigStore';
 import type { UpdateCheckResult, UpdateInfo } from './components/UpdateNotification';
+import type {
+  VersionJumpInfo, UpdateRuntimeInfo, UpdateCheckSource,
+  LinuxUpdateProgressPayload, UpdateAction,
+} from './types/updater';
 import type { RemoteUpdatePromptMode } from './types/remoteConfig';
 import type { Update as UpdaterUpdate } from '@tauri-apps/plugin-updater';
 import {
-  parseUpdaterReleaseNotes,
-  resolveUpdaterDownloadUrl,
+  parseUpdaterReleaseNotes, resolveUpdaterDownloadUrl,
 } from './utils/updaterReleaseNotes';
+import { savePendingUpdateNotes } from './services/localUpdateNotes';
 import { FloatingCardWindow } from './pages/FloatingCardWindow';
+import { CodexWakeupConfirmation } from './components/CodexWakeupConfirmation';
 import { initWakeupNotificationListener } from './utils/wakeupNotificationListener';
 import {
   createUpdaterCanceledError,
@@ -66,16 +88,41 @@ import {
   UPDATE_CHECK_RETRY_DELAYS_MS,
   UPDATE_DOWNLOAD_RETRY_DELAYS_MS,
 } from './utils/updaterRetry';
-import { loadWakeupOfficialLsVersionMode } from './utils/wakeupOfficialLsVersion';
+import { initializeAntigravityWakeupState } from './services/antigravityWakeupStateService';
+import { UpdatePromptPolicy } from './utils/updatePromptPolicy';
+import { createUpdaterDownloadProgress } from './utils/updaterDownloadProgress';
 import {
   dispatchExternalProviderImportEvent,
   normalizeExternalProviderImportPayload,
   type ExternalProviderImportPayload,
 } from './utils/externalProviderImport';
 import { runAutoBackupCycle } from './services/scheduledBackupService';
+import {
+  hydrateUserMemory,
+  USER_MEMORY_FLAGS,
+} from './utils/userMemory';
+import {
+  getWorkbuddyAutoCheckinConfigAsync,
+  stageWorkbuddyAutoCheckinLegacyLogs,
+} from './services/workbuddyAutoCheckinService';
+import { getMinimaxCodeAutoCheckinConfigAsync } from './services/minimaxCodeAutoCheckinService';
+import { getTraeAutoCheckinConfigAsync } from './services/traeAutoCheckinService';
 import { prepareCodexLocalAccessForRestart } from './services/codexLocalAccessService';
 import { applyReducedMotion } from './utils/reducedMotion';
+import { initLocalTimeZone } from './utils/localTimeZone';
+import { isCodexInstanceAccountConflict } from './utils/codexInstanceLaunchConflict';
 import {
+  applyWebviewUiScale,
+  isUiScaleResetKey,
+  isUiScaleZoomInKey,
+  isUiScaleZoomOutKey,
+  normalizeUiScale,
+  stepUiScale,
+  UI_SCALE_DEFAULT,
+} from './utils/uiScale';
+import {
+  ACCOUNTS_CHANGED_EVENT,
+  type AccountSyncEventPayload,
   emitActivePlatformFocus,
   resolvePlatformIdFromPage,
 } from './utils/accountSyncEvents';
@@ -130,9 +177,12 @@ const TraeAccountsPage = lazy(() =>
 const WorkbuddyAccountsPage = lazy(() =>
   import('./pages/WorkbuddyAccountsPage').then((module) => ({ default: module.WorkbuddyAccountsPage })),
 );
+const MinimaxCodeAccountsPage = lazy(() =>
+  import('./pages/MinimaxCodeAccountsPage').then((module) => ({ default: module.MinimaxCodeAccountsPage })),
+);
 const ZedAccountsPage = lazy(() =>
   import('./pages/ZedAccountsPage').then((module) => ({ default: module.ZedAccountsPage })),
-);;
+);
 const WakeupTasksPage = lazy(() =>
   import('./pages/WakeupTasksPage').then((module) => ({ default: module.WakeupTasksPage })),
 );
@@ -200,6 +250,7 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
   'trae-cn',
   'trae-solo-cn',
   'workbuddy',
+  'minimaxcode',
   'zed',
   'instances',
   'wakeup',
@@ -217,7 +268,7 @@ const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> 
   wakeup: ['antigravity', 'antigravity-ide'],
   verification: ['antigravity', 'antigravity-ide'],
   codex: ['codex'],
-  'codex-api-service': ['codex'],
+  'codex-api-service': ['codex_api_service', 'codex'],
   'codex-instances': ['codex'],
   claude: ['claude', 'claude-manager'],
   'claude-cli': ['claude', 'claude-manager'],
@@ -236,6 +287,7 @@ const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> 
   'trae-cn': ['trae-cn', 'trae-suite'],
   'trae-solo-cn': ['trae-solo-cn', 'trae-suite'],
   workbuddy: ['workbuddy'],
+  minimaxcode: ['minimaxcode'],
 };
 
 function normalizePromoTarget(value: string): string {
@@ -317,6 +369,7 @@ function normalizeStoredActivePage(value: string | null): Page | null {
 
 /** 启动页偏好：`last` 表示恢复上次页面，其它为具体 Page id */
 function normalizeStartupPagePreference(value: string | null | undefined): 'last' | Page {
+  if (resolveAntigravityStartupTarget(value)) return 'overview';
   const normalized = value?.trim().toLowerCase();
   if (!normalized || normalized === 'last') {
     return 'last';
@@ -338,6 +391,7 @@ interface GeneralConfigLanguage {
 interface GeneralConfig extends GeneralConfigTheme, GeneralConfigLanguage {
   opencode_app_path: string;
   antigravity_app_path: string;
+  antigravity_legacy_app_path: string;
   codex_app_path: string;
   codex_launch_on_switch: boolean;
   top_right_ad_visible?: boolean;
@@ -359,6 +413,11 @@ interface GeneralConfig extends GeneralConfigTheme, GeneralConfigLanguage {
   trae_cn_app_scan_roots: string;
   trae_solo_cn_app_scan_roots: string;
   workbuddy_app_path: string;
+  minimax_code_app_path: string;
+  minimax_code_auto_refresh_minutes: number;
+  minimax_code_region: string;
+  minimax_code_quota_alert_enabled: boolean;
+  minimax_code_quota_alert_threshold: number;
   zed_app_path: string;
 }
 
@@ -383,7 +442,8 @@ type AppPathMissingDetail = {
   retry?:
     | { kind: 'default'; runtimeTarget?: string }
     | { kind: 'instance'; instanceId?: string; runtimeTarget?: string }
-    | { kind: 'switchAccount'; accountId?: string; runtimeTarget?: string };
+    | { kind: 'switchAccount'; accountId?: string; runtimeTarget?: string }
+    | { kind: 'codexCommand'; command: 'switch_codex_account' | 'codex_local_access_activate'; args: Record<string, unknown>; runtimeTarget?: undefined; instanceId?: undefined; accountId?: undefined };
 };
 
 type AppLaunchCandidate = {
@@ -399,9 +459,6 @@ function isClaudeWindowsAppLaunchTarget(value: string): boolean {
   return trimmed.startsWith('shell:appsfolder\\') || trimmed.startsWith('shell:appsfolder/');
 }
 
-const WAKEUP_ENABLED_KEY = 'agtools.wakeup.enabled';
-const TASKS_STORAGE_KEY = 'agtools.wakeup.tasks';
-const WAKEUP_FORCE_DISABLE_MIGRATION_KEY = 'agtools.wakeup.migration.force_disable_0_8_14';
 
 function isTraePlatformApp(app: string): app is 'trae' | 'trae_solo' | 'trae_cn' | 'trae_solo_cn' {
   return app === 'trae' || app === 'trae_solo' || app === 'trae_cn' || app === 'trae_solo_cn';
@@ -474,38 +531,8 @@ type QuotaAlertPlatform =
   | 'qoder'
   | 'trae'
   | 'workbuddy'
+  | 'minimaxcode'
   | 'zed';
-type UpdateCheckSource = 'auto' | 'manual';
-type UpdateActionState = 'hidden' | 'available' | 'downloading' | 'installing' | 'ready';
-
-type UpdateRuntimeInfo = {
-  platform: string;
-  linux_install_kind: string;
-  linux_managed_install_supported: boolean;
-  updater_target?: string | null;
-};
-
-type LinuxUpdateProgressPhase =
-  | 'download_started'
-  | 'downloading'
-  | 'downloaded'
-  | 'auth_required'
-  | 'installing'
-  | 'completed';
-
-type LinuxUpdateProgressPayload = {
-  version: string;
-  phase: LinuxUpdateProgressPhase;
-  progress?: number | null;
-};
-
-type UpdateAction = {
-  state: UpdateActionState;
-  version: string | null;
-  progress: number;
-  requiresInstall: boolean;
-};
-
 function buildExternalImportDedupeKey(payload: {
   providerId: string;
   page: string;
@@ -584,6 +611,8 @@ function normalizeQuotaAlertPlatform(platform: string | undefined): QuotaAlertPl
     case 'trae-solo-cn':
     case 'trae_solo_cn':
       return 'trae';
+    case 'minimaxcode':
+      return 'minimaxcode';
     case 'zed':
       return 'zed';
     default:
@@ -618,6 +647,8 @@ function getQuotaAlertPlatformLabel(
       return t('nav.qoder', 'Qoder');
     case 'trae':
       return t('nav.trae', 'Trae');
+    case 'minimaxcode':
+      return t('nav.minimaxcode', 'MiniMax Code');
     case 'zed':
       return t('nav.zed', 'Zed');
     default:
@@ -651,6 +682,8 @@ function getQuotaAlertTargetPage(platform: QuotaAlertPlatform): Page {
       return 'trae';
     case 'workbuddy':
       return 'workbuddy';
+    case 'minimaxcode':
+      return 'minimaxcode';
     case 'zed':
       return 'zed';
     default:
@@ -684,6 +717,8 @@ function getQuotaAlertQuickSettingsType(platform: QuotaAlertPlatform): QuickSett
       return 'trae';
     case 'workbuddy':
       return 'workbuddy';
+    case 'minimaxcode':
+      return 'minimaxcode';
     case 'zed':
       return 'zed';
     default:
@@ -723,6 +758,7 @@ function isWindowsPlatform(): boolean {
 
 function MainApp() {
   const { t } = useTranslation();
+  const isLinux = /^linux\b/i.test(navigator.platform);
   const sideNavLayoutMode = useSideNavLayoutStore((state) => state.mode);
   const sideNavClassicCollapsed = useSideNavLayoutStore((state) => state.classicCollapsed);
   const sideNavClassicFirstSyncDone = useSideNavLayoutStore((state) => state.classicFirstSyncDone);
@@ -738,6 +774,40 @@ function MainApp() {
     } catch {}
     return 'dashboard';
   });
+  const isCodexSuitePage = page === 'codex' || page === 'codex-api-service';
+  const [codexSuiteKeepAlive, setCodexSuiteKeepAlive] = useState(isCodexSuitePage);
+  const shouldMountCodexSuite = isCodexSuitePage || codexSuiteKeepAlive;
+
+  useEffect(() => {
+    if (isCodexSuitePage) {
+      setCodexSuiteKeepAlive(true);
+    }
+  }, [isCodexSuitePage]);
+
+  useEffect(() => {
+    const ensureMounted = () => setCodexSuiteKeepAlive(true);
+    window.addEventListener('codex-suite-ensure-mounted', ensureMounted);
+    return () => {
+      window.removeEventListener('codex-suite-ensure-mounted', ensureMounted);
+    };
+  }, []);
+
+  useEffect(() => {
+    void import('./services/mfaRecoveryService')
+      .then(({ startMfaRecovery }) => startMfaRecovery())
+      .then(() => import('./services/apiKeyFunVault'))
+      .then(({ initializeApiKeyFunVault }) => initializeApiKeyFunVault())
+      .catch(() => console.warn('[Storage] Could not initialize saved credentials'));
+    void hydrateUserMemory().then((memory) => {
+      const store = useSideNavLayoutStore.getState();
+      if (
+        memory.dismissed[USER_MEMORY_FLAGS.classicSwitchPrompt] ||
+        store.hideClassicSwitchPrompt
+      ) {
+        store.setHideClassicSwitchPrompt(true);
+      }
+    }).catch(error => console.warn('[User memory]', error));
+  }, []);
 
   useEffect(() => {
     try {
@@ -763,6 +833,8 @@ function MainApp() {
           return;
         }
         const preferred = normalizeStartupPagePreference(config.startup_page);
+        const antigravityTarget = resolveAntigravityStartupTarget(config.startup_page);
+        if (antigravityTarget) setAntigravityRuntimeTarget(antigravityTarget);
         if (preferred !== 'last') {
           setPage(preferred);
         }
@@ -774,6 +846,11 @@ function MainApp() {
     return () => {
       disposed = true;
     };
+  }, []);
+
+  // 冷启动：根据用户配置自动恢复 Codex 代理接管状态
+  useEffect(() => {
+    void useCodexAccountStore.getState().restoreActiveTakeoverIfNeeded();
   }, []);
 
   // 主窗口切到某平台页（如 Grok）时，同步悬浮窗/菜单栏当前平台，避免一直停在默认 antigravity
@@ -790,33 +867,28 @@ function MainApp() {
   }, [page]);
   const [showUpdateNotification, setShowUpdateNotification] = useState(false);
   const [updateNotificationKey, setUpdateNotificationKey] = useState(0);
-  const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [closeDialogTrayVisible, setCloseDialogTrayVisible] = useState<boolean | null>(null);
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [showPlatformLayoutModal, setShowPlatformLayoutModal] = useState(false);
   const [platformLayoutRequestedGroupId, setPlatformLayoutRequestedGroupId] = useState<string | null>(null);
   const [showBreakout, setShowBreakout] = useState(false);
   const [hasBreakoutSession, setHasBreakoutSession] = useState(false);
   const [appPathMissing, setAppPathMissing] = useState<AppPathMissingDetail | null>(null);
+  const antigravityRecoveryTarget = normalizeAntigravityRuntimeTarget(appPathMissing?.retry?.runtimeTarget);
+  const antigravityRecoveryApp = antigravityAppPathTarget(antigravityRecoveryTarget);
   const [appPathSetting, setAppPathSetting] = useState(false);
   const [appPathDetecting, setAppPathDetecting] = useState(false);
   const [appPathDraft, setAppPathDraft] = useState('');
   const [appLaunchCandidates, setAppLaunchCandidates] = useState<AppLaunchCandidate[]>([]);
   const [appPathActionError, setAppPathActionError] = useState('');
   const [appPathScanError, setAppPathScanError] = useState('');
-  const [appPathCodexLaunchOnSwitch, setAppPathCodexLaunchOnSwitch] = useState(true);
-  const [appPathCodexLaunchSetting, setAppPathCodexLaunchSetting] = useState(false);
-  const [versionJumpInfo, setVersionJumpInfo] = useState<{
-    previous_version: string;
-    current_version: string;
-    release_notes: string;
-    release_notes_zh: string;
-  } | null>(null);
+  const [versionJumpInfo, setVersionJumpInfo] = useState<VersionJumpInfo | null>(null);
   const [showVersionJumpNotification, setShowVersionJumpNotification] = useState(false);
   const [updateRuntimeInfo, setUpdateRuntimeInfo] = useState<UpdateRuntimeInfo | null>(null);
   const [updateRuntimeInfoLoaded, setUpdateRuntimeInfoLoaded] = useState(false);
   const [updateNotificationInfo, setUpdateNotificationInfo] = useState<UpdateInfo | null>(null);
   const [updateNotificationChecking, setUpdateNotificationChecking] = useState(false);
-  const [updateRemindersEnabled, setUpdateRemindersEnabled] = useState(true);
+  const [updateRemindersEnabled, setUpdateRemindersEnabled] = useState(false);
   const [updateSkipError, setUpdateSkipError] = useState('');
   const [silentUpdateVersion, setSilentUpdateVersion] = useState<string | null>(null);
   const [updateAction, setUpdateAction] = useState<UpdateAction>({
@@ -832,9 +904,10 @@ function MainApp() {
   const activeUpdateDownloadRef = useRef<UpdaterUpdate | null>(null);
   const updateCancelRequestedRef = useRef(false);
   const updateDownloadTaskIdRef = useRef(0);
-  const updateDownloadOwnerRef = useRef<'none' | 'shared' | 'silent'>('none');
+  const updateDownloadOwnerRef = useRef<'none' | 'shared'>('none');
+  const updateCheckInFlightRef = useRef(false);
   const updateCheckRequestIdRef = useRef(0);
-  const autoPromptedUpdateVersionsRef = useRef<Set<string>>(new Set());
+  const updatePromptPolicyRef = useRef(new UpdatePromptPolicy());
   const externalImportHandledAtRef = useRef<Map<string, number>>(new Map());
   const { showModal, closeModal } = useGlobalModal();
   const topRightAdState = useTopRightAdStore((state) => state.state);
@@ -983,6 +1056,7 @@ function MainApp() {
   
   // 启用自动刷新 hook
   useAutoRefresh();
+  useCodexQuotaSync();
 
   // 初始化唤醒通知监听器
   useEffect(() => {
@@ -1008,6 +1082,7 @@ function MainApp() {
     };
 
     void syncLanguageFromConfig();
+    void initLocalTimeZone();
     window.addEventListener('config-updated', syncLanguageFromConfig);
     return () => {
       disposed = true;
@@ -1033,6 +1108,96 @@ function MainApp() {
     window.addEventListener('keydown', handleRefreshShortcut, true);
     return () => {
       window.removeEventListener('keydown', handleRefreshShortcut, true);
+    };
+  }, []);
+
+  // ⌘+/⌘-（Windows/Linux: Ctrl+/Ctrl-）步进界面缩放；⌘0 / Ctrl+0 重置。
+  useEffect(() => {
+    let disposed = false;
+    let currentScale = UI_SCALE_DEFAULT;
+    let saveTimer: number | null = null;
+    let pendingScale: number | null = null;
+    let saveQueue: Promise<void> = Promise.resolve();
+
+    const loadCurrentScale = async () => {
+      try {
+        const config = await invoke<{ ui_scale?: number }>('get_general_config');
+        if (disposed) return;
+        currentScale = normalizeUiScale(config.ui_scale);
+      } catch (error) {
+        console.error('Failed to load UI scale for shortcuts:', error);
+      }
+    };
+
+    const persistScale = (scale: number) => {
+      pendingScale = scale;
+      if (saveTimer !== null) {
+        window.clearTimeout(saveTimer);
+      }
+      saveTimer = window.setTimeout(() => {
+        saveTimer = null;
+        const toSave = pendingScale;
+        pendingScale = null;
+        if (toSave == null) return;
+        saveQueue = saveQueue
+          .catch(() => undefined)
+          .then(async () => {
+            if (disposed) return;
+            try {
+              await invoke('patch_general_config', {
+                updates: { ui_scale: toSave },
+              });
+              window.dispatchEvent(new Event('config-updated'));
+            } catch (error) {
+              console.error('Failed to save UI scale:', error);
+            }
+          });
+      }, 250);
+    };
+
+    const handleZoomShortcut = (event: KeyboardEvent) => {
+      const hasMainModifier = event.metaKey || event.ctrlKey;
+      if (!hasMainModifier || event.altKey) {
+        return;
+      }
+
+      const zoomIn = isUiScaleZoomInKey(event);
+      const zoomOut = isUiScaleZoomOutKey(event);
+      const reset = isUiScaleResetKey(event);
+      if (!zoomIn && !zoomOut && !reset) {
+        return;
+      }
+      // 重置不需要连发；放大缩小允许按住连按。
+      if (reset && event.repeat) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const nextScale = reset
+        ? UI_SCALE_DEFAULT
+        : stepUiScale(currentScale, zoomIn ? 1 : -1);
+      if (nextScale === currentScale) {
+        return;
+      }
+      currentScale = nextScale;
+      void applyWebviewUiScale(nextScale).catch((error) => {
+        console.error('Failed to apply UI scale shortcut:', error);
+      });
+      persistScale(nextScale);
+    };
+
+    void loadCurrentScale();
+    window.addEventListener('keydown', handleZoomShortcut, true);
+    window.addEventListener('config-updated', loadCurrentScale);
+    return () => {
+      disposed = true;
+      window.removeEventListener('keydown', handleZoomShortcut, true);
+      window.removeEventListener('config-updated', loadCurrentScale);
+      if (saveTimer !== null) {
+        window.clearTimeout(saveTimer);
+      }
     };
   }, []);
 
@@ -1133,6 +1298,17 @@ function MainApp() {
   }, [fetchSponsorModuleState, fetchTopRightAdState]);
 
   useEffect(() => {
+    const handleSponsorRoutesUpdated = () => {
+      void useCodexAccountStore.getState().fetchAccounts();
+      void useClaudeAccountStore.getState().fetchAccounts();
+    };
+    window.addEventListener('sponsor-routes-updated', handleSponsorRoutesUpdated);
+    return () => {
+      window.removeEventListener('sponsor-routes-updated', handleSponsorRoutesUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
     if (sponsorModuleInitialized && page === 'api-relay' && !sponsorEntryVisible) {
       setPage('dashboard');
     }
@@ -1142,8 +1318,15 @@ function MainApp() {
     if (sideNavLayoutMode !== 'classic' || sideNavClassicFirstSyncDone) {
       return;
     }
-    syncSidebarEntriesFromDashboard();
-    markSideNavClassicFirstSyncDone();
+    let current = true;
+    void hydrateDurableUiSettings().then(() => initializeClassicSidebar({
+      isCurrent: () => current
+        && useSideNavLayoutStore.getState().mode === 'classic'
+        && !useSideNavLayoutStore.getState().classicFirstSyncDone,
+      initialize: syncSidebarEntriesFromDashboard,
+      markInitialized: markSideNavClassicFirstSyncDone,
+    })).catch(error => console.warn('[Sidebar] failed to read saved preferences:', error));
+    return () => { current = false; };
   }, [
     sideNavLayoutMode,
     sideNavClassicFirstSyncDone,
@@ -1151,7 +1334,8 @@ function MainApp() {
     markSideNavClassicFirstSyncDone,
   ]);
 
-  const openUpdateNotificationDetails = useCallback(() => {
+  const openUpdateNotificationDetails = useCallback((source: UpdateCheckSource = 'manual') => {
+    if (source === 'manual') updatePromptPolicyRef.current.openManual();
     setUpdateSkipError('');
     setUpdateNotificationKey(Date.now());
     setShowUpdateNotification(true);
@@ -1165,6 +1349,7 @@ function MainApp() {
   }, [openUpdateNotificationDetails]);
 
   const closeUpdateNotification = useCallback(() => {
+    updatePromptPolicyRef.current.close();
     setShowUpdateNotification(false);
     setUpdateSkipError('');
     if (updateAction.state === 'hidden') {
@@ -1183,13 +1368,23 @@ function MainApp() {
     version: string,
     mode: RemoteUpdatePromptMode,
   ) => {
-    if (mode !== 'popup' || autoPromptedUpdateVersionsRef.current.has(version)) {
-      return;
+    if (!updatePromptPolicyRef.current.openAutomatic(version, mode)) {
+      return false;
     }
-    autoPromptedUpdateVersionsRef.current.add(version);
-    openUpdateNotificationDetails();
+    openUpdateNotificationDetails('auto');
     writeUpdateLog('info', `远端更新策略已自动打开更新弹框: version=${version}`);
+    return true;
   }, [openUpdateNotificationDetails, writeUpdateLog]);
+
+  const applyUpdateReminderPreference = useCallback((enabled: boolean, revision?: number) => {
+    const policy = updatePromptPolicyRef.current;
+    if (!policy.applyPreference(enabled, revision)) return;
+    setUpdateRemindersEnabled(policy.enabled);
+    if (policy.shouldCloseAutomaticPrompt()) {
+      policy.close();
+      setShowUpdateNotification(false);
+    }
+  }, []);
 
   const prepareCodexLocalAccessBeforeRelaunch = useCallback(async () => {
     setUpdateRetryStatus(
@@ -1232,8 +1427,7 @@ function MainApp() {
       current_version: currentVersion,
       latest_version: update.version,
       download_url: resolveUpdaterDownloadUrl(update.version, update.rawJson),
-      release_notes: releaseNotes,
-      release_notes_zh: releaseNotesZh,
+      release_notes: releaseNotes, release_notes_zh: releaseNotesZh,
     };
   }, []);
 
@@ -1310,6 +1504,7 @@ function MainApp() {
 
   useEffect(() => {
     let cancelled = false;
+    const preferenceRevision = updatePromptPolicyRef.current.revision;
     invoke<{
       auto_check?: boolean;
       check_interval_hours?: number;
@@ -1322,26 +1517,26 @@ function MainApp() {
         if (cancelled) {
           return;
         }
-        setUpdateRemindersEnabled(settings?.remind_on_update ?? true);
+        applyUpdateReminderPreference(settings?.remind_on_update ?? true, preferenceRevision);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyUpdateReminderPreference]);
 
   useEffect(() => {
     const handleUpdateReminderChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ enabled?: boolean }>).detail;
       if (typeof detail?.enabled === 'boolean') {
-        setUpdateRemindersEnabled(detail.enabled);
+        applyUpdateReminderPreference(detail.enabled);
       }
     };
     window.addEventListener('update-reminder-changed', handleUpdateReminderChanged as EventListener);
     return () => {
       window.removeEventListener('update-reminder-changed', handleUpdateReminderChanged as EventListener);
     };
-  }, []);
+  }, [applyUpdateReminderPreference]);
 
   const isLinuxManagedUpdate = updateRuntimeInfo?.platform === 'linux'
     && updateRuntimeInfo.linux_managed_install_supported;
@@ -1430,6 +1625,7 @@ function MainApp() {
       if (updateCheckRequestIdRef.current !== requestId) {
         return;
       }
+      updatePromptPolicyRef.current.close();
       setShowUpdateNotification(false);
       setUpdateNotificationInfo(null);
       handleUpdateCheckResult({
@@ -1447,6 +1643,7 @@ function MainApp() {
         'warn',
         `交互式更新检查失败，关闭弹窗: error=${sanitizeUpdaterErrorMessage(error)}`,
       );
+      updatePromptPolicyRef.current.close();
       setShowUpdateNotification(false);
       setUpdateNotificationInfo(null);
       handleUpdateCheckResult({
@@ -1616,9 +1813,18 @@ function MainApp() {
     writeUpdateLog,
   ]);
 
-  const runSharedUpdateDownload = useCallback(async (expectedVersion: string) => {
-    const taskId = Date.now();
-    updateDownloadTaskIdRef.current = taskId;
+  const runSharedUpdateDownload = useCallback(async (
+    expectedVersion: string,
+    initialUpdate?: UpdaterUpdate,
+  ) => {
+    if (updateDownloadOwnerRef.current !== 'none' || pendingSilentUpdateRef.current) {
+      if (initialUpdate !== activeUpdateDownloadRef.current && initialUpdate !== pendingSilentUpdateRef.current) {
+        await closeUpdaterHandle(initialUpdate);
+      }
+      writeUpdateLog('info', `复用已有更新任务，跳过重复下载: version=${expectedVersion}`);
+      return;
+    }
+    const taskId = ++updateDownloadTaskIdRef.current;
     updateCancelRequestedRef.current = false;
     updateDownloadOwnerRef.current = 'shared';
     setUpdateRetryStatus('');
@@ -1642,63 +1848,35 @@ function MainApp() {
           }
 
           let candidate: UpdaterUpdate | null = null;
+          let acceptingProgress = true;
           try {
-            candidate = await runUpdaterCheck();
+            candidate = attempt === 1 && initialUpdate ? initialUpdate : await runUpdaterCheck();
             if (!candidate) {
               throw new Error('No update available from updater plugin');
+            }
+            if (updateCancelRequestedRef.current || updateDownloadTaskIdRef.current !== taskId) {
+              throw createUpdaterCanceledError();
             }
             activeUpdateDownloadRef.current = candidate;
 
             const candidateVersion = candidate.version;
-            const { releaseNotes, releaseNotesZh } = parseUpdaterReleaseNotes(candidate.body);
-            await invoke('save_pending_update_notes', {
-              version: candidateVersion,
-              releaseNotes,
-              releaseNotesZh,
-            }).catch((error) => {
-              console.error('[App] Failed to cache shared update notes:', error);
-              writeUpdateLog(
-                'warn',
-                `缓存统一更新说明失败: version=${candidateVersion}, error=${sanitizeUpdaterErrorMessage(error)}`,
-              );
-            });
-
-            let downloaded = 0;
-            let contentLength = 0;
+            savePendingUpdateNotes(candidateVersion, candidate.body);
+            const trackProgress = createUpdaterDownloadProgress();
             await candidate.download((event) => {
-              if (updateCancelRequestedRef.current || updateDownloadTaskIdRef.current !== taskId) {
-                throw createUpdaterCanceledError();
+              if (!acceptingProgress || updateCancelRequestedRef.current
+                || updateDownloadTaskIdRef.current !== taskId
+                || activeUpdateDownloadRef.current !== candidate) {
+                return;
               }
+              const progress = trackProgress(event);
               setUpdateAction((prev) => {
-                if (prev.state !== 'downloading') {
+                if (!acceptingProgress || prev.state !== 'downloading' || updateDownloadTaskIdRef.current !== taskId) {
                   return prev;
                 }
-
-                if (event.event === 'Started') {
-                  contentLength = event.data.contentLength ?? 0;
-                  return {
-                    ...prev,
-                    version: candidateVersion,
-                    progress: 0,
-                  };
-                }
-
-                if (event.event === 'Progress') {
-                  downloaded += event.data.chunkLength;
-                  const nextProgress = contentLength > 0
-                    ? Math.min(100, Math.round((downloaded / contentLength) * 100))
-                    : Math.min(95, prev.progress + 1);
-                  return {
-                    ...prev,
-                    version: candidateVersion,
-                    progress: nextProgress,
-                  };
-                }
-
                 return {
                   ...prev,
                   version: candidateVersion,
-                  progress: 100,
+                  progress,
                 };
               });
             });
@@ -1709,6 +1887,7 @@ function MainApp() {
 
             return candidate;
           } catch (error) {
+            acceptingProgress = false;
             if (candidate) {
               await closeUpdaterHandle(candidate);
             }
@@ -1722,6 +1901,9 @@ function MainApp() {
           delaysMs: UPDATE_DOWNLOAD_RETRY_DELAYS_MS,
           shouldRetry: isRetryableUpdaterError,
           onRetry: ({ retryIndex, totalRetries, delayMs, error }) => {
+            if (updateCancelRequestedRef.current || updateDownloadTaskIdRef.current !== taskId) {
+              throw createUpdaterCanceledError();
+            }
             const compactError = sanitizeUpdaterErrorMessage(error);
             setUpdateRetryStatus(
               t('update_notification.downloadRetrying', {
@@ -1734,7 +1916,7 @@ function MainApp() {
               `统一更新下载失败，准备重试(${retryIndex}/${totalRetries})，delay=${delayMs}ms，error=${compactError}`,
             );
             setUpdateAction((prev) => {
-              if (prev.state !== 'downloading') {
+              if (prev.state !== 'downloading' || updateDownloadTaskIdRef.current !== taskId) {
                 return prev;
               }
               return {
@@ -1770,6 +1952,7 @@ function MainApp() {
     } catch (error) {
       if (isUpdaterCanceledError(error) || updateCancelRequestedRef.current || updateDownloadTaskIdRef.current !== taskId) {
         writeUpdateLog('info', `统一更新下载已取消: version=${expectedVersion}`);
+        if (updateDownloadTaskIdRef.current !== taskId) return;
         setUpdateRetryStatus(t('update_notification.updateCancelled', '已取消更新'));
         setUpdateDownloadError('');
         setUpdateErrorDetails('');
@@ -1841,6 +2024,7 @@ function MainApp() {
   }, [closeUpdaterHandle, updateAction.state, updateAction.version, writeUpdateLog]);
 
   const handleUpdatePrimaryAction = useCallback(async () => {
+    updatePromptPolicyRef.current.openManual();
     if (updateAction.state === 'downloading') {
       openUpdateNotificationDetails();
       return;
@@ -1942,6 +2126,7 @@ function MainApp() {
         }
         return prev;
       });
+      updatePromptPolicyRef.current.close();
       setShowUpdateNotification(false);
       setUpdateNotificationInfo(null);
       setUpdateRetryStatus('');
@@ -2002,10 +2187,8 @@ function MainApp() {
     };
 
     const applyUiScale = async (rawScale?: number) => {
-      const scale = typeof rawScale === 'number' && Number.isFinite(rawScale) ? rawScale : 1;
-      const normalizedScale = Math.min(2, Math.max(0.8, scale));
       try {
-        await getCurrentWebview().setZoom(normalizedScale);
+        await applyWebviewUiScale(rawScale);
       } catch (error) {
         console.error('Failed to apply UI scale:', error);
       }
@@ -2068,29 +2251,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    const syncWakeupStateOnStartup = async () => {
-      let officialLsVersionMode = loadWakeupOfficialLsVersionMode();
-      try {
-        // 一次性迁移：升级到该版本后先将唤醒总开关置为关闭，用户仍可手动再开启
-        if (localStorage.getItem(WAKEUP_FORCE_DISABLE_MIGRATION_KEY) !== '1') {
-          localStorage.setItem(WAKEUP_ENABLED_KEY, 'false');
-          localStorage.setItem(WAKEUP_FORCE_DISABLE_MIGRATION_KEY, '1');
-        }
-        const enabled = localStorage.getItem(WAKEUP_ENABLED_KEY) === 'true';
-        const tasksRaw = localStorage.getItem(TASKS_STORAGE_KEY);
-        const tasks = tasksRaw ? JSON.parse(tasksRaw) : [];
-        officialLsVersionMode = loadWakeupOfficialLsVersionMode();
-        await invoke('wakeup_sync_state', {
-          enabled,
-          tasks,
-          officialLsVersionMode,
-          runStartupTasks: true,
-        });
-      } catch (error) {
-        console.error('唤醒任务状态同步失败:', error);
-      }
-    };
-    void syncWakeupStateOnStartup();
+    void initializeAntigravityWakeupState().catch((error) => {
+      console.error('唤醒任务状态初始化失败:', error);
+    });
   }, []);
 
   useEffect(() => {
@@ -2131,6 +2294,14 @@ function MainApp() {
     };
   }, []);
 
+  // 启动时把可读的旧 WebView 签到配置交给后台调度器。
+  useEffect(() => {
+    void getWorkbuddyAutoCheckinConfigAsync();
+    void stageWorkbuddyAutoCheckinLegacyLogs().catch(() => {});
+    void getMinimaxCodeAutoCheckinConfigAsync();
+    void getTraeAutoCheckinConfigAsync();
+  }, []);
+
   // Check for updates on startup
   useEffect(() => {
     if (!updateRuntimeInfoLoaded) {
@@ -2138,15 +2309,16 @@ function MainApp() {
     }
 
     const UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
-    let updateCheckInFlight = false;
     let intervalId: number | undefined;
 
     const checkUpdates = async (trigger: 'startup' | 'hourly') => {
-      if (updateCheckInFlight) {
-        writeUpdateLog('info', `${trigger === 'startup' ? '启动' : '每小时轮询'}更新检查跳过：上一次尚未结束`);
+      if (updateCheckInFlightRef.current
+        || updateDownloadOwnerRef.current !== 'none'
+        || pendingSilentUpdateRef.current) {
+        writeUpdateLog('info', `${trigger === 'startup' ? '启动' : '每小时轮询'}更新检查跳过：已有检查、下载或待安装更新`);
         return;
       }
-      updateCheckInFlight = true;
+      updateCheckInFlightRef.current = true;
       const triggerLabel = trigger === 'startup' ? '启动' : '每小时轮询';
       const updateFlowStartedAt = performance.now();
       try {
@@ -2155,6 +2327,7 @@ function MainApp() {
         writeUpdateLog('info', `${triggerLabel}触发自动更新检查流程`);
 
         const settingsInvokeStartedAt = performance.now();
+        const preferenceRevision = updatePromptPolicyRef.current.revision;
         const settings = await invoke<{
           auto_check?: boolean;
           check_interval_hours?: number;
@@ -2167,12 +2340,10 @@ function MainApp() {
           `[StartupPerf][UpdateCheck] get_update_settings completed in ${settingsInvokeElapsed.toFixed(2)}ms`,
         );
         const autoInstall = settings?.auto_install ?? false;
-        const remindOnUpdate = settings?.remind_on_update ?? true;
+        applyUpdateReminderPreference(settings?.remind_on_update ?? true, preferenceRevision);
         const skippedVersion = (settings?.skipped_version ?? '').trim();
         const remoteConfigState = await fetchRemoteConfigState(false);
         const updatePromptMode = remoteConfigState.updatePromptMode;
-        const shouldAutoOpenUpdatePrompt = updatePromptMode === 'popup';
-        setUpdateRemindersEnabled(remindOnUpdate);
         writeUpdateLog(
           'info',
           `读取更新设置: auto_install=${autoInstall}, update_prompt_mode=${updatePromptMode}；启动始终执行更新检查`,
@@ -2208,6 +2379,10 @@ function MainApp() {
             console.log(
               `[StartupPerf][UpdateCheck] silent runUpdaterCheck completed in ${(performance.now() - silentCheckStartedAt).toFixed(2)}ms; hasUpdate=${Boolean(update)}`,
             );
+            if (updateDownloadOwnerRef.current !== 'none' || pendingSilentUpdateRef.current) {
+              await closeUpdaterHandle(update);
+              return;
+            }
             if (update) {
               if (skippedVersion && update.version === skippedVersion) {
                 console.log('[App] Update skipped by user, ignoring:', update.version);
@@ -2226,167 +2401,29 @@ function MainApp() {
                 });
               } else {
                 preparedUpdateInfo = await prepareUpdateNotificationInfo(update);
-                if (remindOnUpdate || shouldAutoOpenUpdatePrompt) {
-                  setUpdateNotificationInfo(preparedUpdateInfo);
-                  handleUpdateCheckResult({
-                    source: 'auto',
-                    status: 'has_update',
-                    currentVersion: preparedUpdateInfo.current_version,
-                    latestVersion: preparedUpdateInfo.latest_version,
-                  });
+                if (updateDownloadOwnerRef.current !== 'none' || pendingSilentUpdateRef.current) {
+                  await closeUpdaterHandle(update);
+                  return;
                 }
+                setUpdateNotificationInfo(preparedUpdateInfo);
+                handleUpdateCheckResult({
+                  source: 'auto',
+                  status: 'has_update',
+                  currentVersion: preparedUpdateInfo.current_version,
+                  latestVersion: preparedUpdateInfo.latest_version,
+                });
                 openAutomaticUpdatePrompt(update.version, updatePromptMode);
                 console.log('[App] Update found, downloading silently with retry...');
                 writeUpdateLog('info', `检测到新版本，开始静默下载: version=${update.version}`);
-                updateDownloadOwnerRef.current = 'silent';
-                setUpdateRetryStatus('');
-                setUpdateDownloadError('');
-                setUpdateErrorDetails('');
-                setUpdateAction((prev) => {
-                  if (prev.state === 'ready' && prev.version === update.version) {
-                    return prev;
-                  }
-                  return {
-                    state: 'downloading',
-                    version: update.version,
-                    progress: 0,
-                    requiresInstall: true,
-                  };
-                });
-                await invoke('save_pending_update_notes', {
-                  version: update.version,
-                  releaseNotes: preparedUpdateInfo.release_notes,
-                  releaseNotesZh: preparedUpdateInfo.release_notes_zh,
-                }).catch((error) => {
-                  console.error('[App] Failed to cache silent update notes:', error);
-                  writeUpdateLog(
-                    'warn',
-                    `缓存待安装更新说明失败: version=${update.version}, error=${sanitizeUpdaterErrorMessage(error)}`,
-                  );
-                });
                 const silentDownloadStartedAt = performance.now();
-                const downloadedUpdate = await retryWithBackoff(
-                  async (attempt) => {
-                    let candidate: UpdaterUpdate | null = null;
-                    try {
-                      if (attempt === 1) {
-                        candidate = update;
-                      } else {
-                        candidate = await runUpdaterCheck();
-                      }
-
-                      if (!candidate) {
-                        throw new Error('No update available from updater plugin');
-                      }
-
-                      let downloaded = 0;
-                      let contentLength = 0;
-                      const candidateVersion = candidate.version;
-                      await candidate.download((event) => {
-                        setUpdateAction((prev) => {
-                          if (prev.state !== 'downloading') {
-                            return prev;
-                          }
-
-                          if (event.event === 'Started') {
-                            contentLength = event.data.contentLength ?? 0;
-                            return {
-                              ...prev,
-                              version: candidateVersion,
-                              progress: 0,
-                            };
-                          }
-
-                          if (event.event === 'Progress') {
-                            downloaded += event.data.chunkLength;
-                            const nextProgress = contentLength > 0
-                              ? Math.min(100, Math.round((downloaded / contentLength) * 100))
-                              : Math.min(95, prev.progress + 1);
-                            return {
-                              ...prev,
-                              version: candidateVersion,
-                              progress: nextProgress,
-                            };
-                          }
-
-                          return {
-                            ...prev,
-                            version: candidateVersion,
-                            progress: 100,
-                          };
-                        });
-                      });
-                      return candidate;
-                    } catch (error) {
-                      if (candidate) {
-                        await candidate.close().catch(() => {});
-                      }
-                      throw error;
-                    }
-                  },
-                  {
-                    delaysMs: UPDATE_DOWNLOAD_RETRY_DELAYS_MS,
-                    shouldRetry: isRetryableUpdaterError,
-                    onRetry: ({ retryIndex, totalRetries, delayMs, error }) => {
-                      const compactError = sanitizeUpdaterErrorMessage(error);
-                      setUpdateRetryStatus(
-                        t('update_notification.downloadRetrying', {
-                          attempt: retryIndex,
-                          total: totalRetries,
-                        }),
-                      );
-                      console.warn(
-                        `[App] Silent update download failed, retrying (${retryIndex}/${totalRetries}) in ${delayMs}ms:`,
-                        error,
-                      );
-                      writeUpdateLog(
-                        'warn',
-                        `静默更新下载失败，准备重试(${retryIndex}/${totalRetries})，delay=${delayMs}ms，error=${compactError}`,
-                      );
-                      setUpdateAction((prev) => {
-                        if (prev.state !== 'downloading') {
-                          return prev;
-                        }
-                        return {
-                          ...prev,
-                          progress: 0,
-                        };
-                      });
-                    },
-                  },
-                );
+                await runSharedUpdateDownload(update.version, update);
                 console.log(
-                  `[StartupPerf][UpdateCheck] silent update download completed in ${(performance.now() - silentDownloadStartedAt).toFixed(2)}ms; version=${downloadedUpdate.version}`,
+                  `[StartupPerf][UpdateCheck] silent update download finished in ${(performance.now() - silentDownloadStartedAt).toFixed(2)}ms; version=${update.version}`,
                 );
-
-                if (pendingSilentUpdateRef.current) {
-                  await pendingSilentUpdateRef.current.close();
-                }
-                pendingSilentUpdateRef.current = downloadedUpdate;
-                console.log('[App] Silent download complete, waiting for restart to install.');
-                writeUpdateLog(
-                  'info',
-                  `静默更新下载完成，等待用户重启应用生效: version=${downloadedUpdate.version}`,
-                );
-                updateDownloadOwnerRef.current = 'none';
-                setUpdateRetryStatus('');
-                setUpdateDownloadError('');
-                setUpdateErrorDetails('');
-                setSilentUpdateVersion(downloadedUpdate.version);
-                setUpdateAction({
-                  state: 'ready',
-                  version: downloadedUpdate.version,
-                  progress: 100,
-                  requiresInstall: true,
-                });
-                if (remindOnUpdate) {
-                  writeUpdateLog('info', `静默更新已在左上角显示待重启入口: version=${downloadedUpdate.version}`);
-                }
               }
             } else {
               console.log('[App] No update available.');
               writeUpdateLog('info', '更新检查完成：当前已是最新版本');
-              updateDownloadOwnerRef.current = 'none';
               setUpdateRetryStatus('');
               setUpdateDownloadError('');
               setUpdateErrorDetails('');
@@ -2404,12 +2441,12 @@ function MainApp() {
             }
           } catch (err) {
             console.error('[App] Silent update failed:', err);
-            updateDownloadOwnerRef.current = 'none';
+            if (updateDownloadOwnerRef.current !== 'none' || pendingSilentUpdateRef.current) return;
             writeUpdateLog(
               'error',
               `静默更新失败，保留左上角更新入口: error=${sanitizeUpdaterErrorMessage(err)}`,
             );
-            if (!remindOnUpdate) {
+            if (!updatePromptPolicyRef.current.enabled) {
               setUpdateRetryStatus('');
               setUpdateDownloadError('');
               setUpdateErrorDetails('');
@@ -2425,7 +2462,7 @@ function MainApp() {
                 return prev;
               });
             }
-            if (preparedUpdateInfo && remindOnUpdate) {
+            if (preparedUpdateInfo && updatePromptPolicyRef.current.enabled) {
               setUpdateNotificationInfo(preparedUpdateInfo);
               setUpdateAction({
                 state: 'available',
@@ -2468,6 +2505,10 @@ function MainApp() {
             console.log(
               `[StartupPerf][UpdateCheck] manual runUpdaterCheck completed in ${(performance.now() - manualCheckStartedAt).toFixed(2)}ms; hasUpdate=${Boolean(update)}`,
             );
+            if (updateDownloadOwnerRef.current !== 'none' || pendingSilentUpdateRef.current) {
+              await closeUpdaterHandle(update);
+              return;
+            }
 
             if (update) {
               if (skippedVersion && update.version === skippedVersion) {
@@ -2487,19 +2528,21 @@ function MainApp() {
                 });
               } else {
                 const info = await prepareUpdateNotificationInfo(update);
-                if (remindOnUpdate || shouldAutoOpenUpdatePrompt) {
-                  setUpdateNotificationInfo(info);
+                if (updateDownloadOwnerRef.current !== 'none' || pendingSilentUpdateRef.current) {
+                  await closeUpdaterHandle(update);
+                  return;
                 }
+                setUpdateNotificationInfo(info);
                 handleUpdateCheckResult({
                   source: 'auto',
                   status: 'has_update',
                   currentVersion: info.current_version,
                   latestVersion: info.latest_version,
                 });
-                openAutomaticUpdatePrompt(update.version, updatePromptMode);
+                const openedPrompt = openAutomaticUpdatePrompt(update.version, updatePromptMode);
                 writeUpdateLog(
                   'info',
-                  shouldAutoOpenUpdatePrompt
+                  openedPrompt
                     ? `检测到新版本，已按远端策略打开更新弹框: version=${update.version}`
                     : `检测到新版本，已在左上角显示更新入口: version=${update.version}`,
                 );
@@ -2549,7 +2592,7 @@ function MainApp() {
         );
         writeUpdateLog('error', `更新检查流程异常中断: error=${sanitizeUpdaterErrorMessage(error)}`);
       } finally {
-        updateCheckInFlight = false;
+        updateCheckInFlightRef.current = false;
       }
     };
 
@@ -2563,12 +2606,14 @@ function MainApp() {
       }
     };
   }, [
+    applyUpdateReminderPreference,
     closeUpdaterHandle,
     fetchRemoteConfigState,
     handleUpdateCheckResult,
     isLinuxManagedUpdate,
     openAutomaticUpdatePrompt,
     prepareUpdateNotificationInfo,
+    runSharedUpdateDownload,
     runUpdaterCheck,
     updateRuntimeInfo?.linux_install_kind,
     updateRuntimeInfoLoaded,
@@ -2582,12 +2627,7 @@ function MainApp() {
       try {
         console.log('[StartupPerf][VersionJump] detection started');
         const versionJumpInvokeStartedAt = performance.now();
-        const jumpInfo = await invoke<{
-          previous_version: string;
-          current_version: string;
-          release_notes: string;
-          release_notes_zh: string;
-        } | null>('check_version_jump');
+        const jumpInfo = await invoke<VersionJumpInfo | null>('check_version_jump');
         console.log(
           `[StartupPerf][VersionJump] check_version_jump completed in ${(performance.now() - versionJumpInvokeStartedAt).toFixed(2)}ms; hasJump=${Boolean(jumpInfo)}`,
         );
@@ -2763,6 +2803,9 @@ function MainApp() {
                     } else if (platform === 'workbuddy') {
                       await useWorkbuddyAccountStore.getState().switchAccount(targetAccountId);
                       setPage('workbuddy');
+                    } else if (platform === 'minimaxcode') {
+                      await useMinimaxCodeAccountStore.getState().switchAccount(targetAccountId);
+                      setPage('minimaxcode');
                     } else if (platform === 'zed') {
                       await useZedAccountStore.getState().switchAccount(targetAccountId);
                       setPage('zed');
@@ -2814,23 +2857,7 @@ function MainApp() {
     const handleWakeupResult = (payload: WakeupTaskResultPayload) => {
       if (!payload || typeof payload.taskId !== 'string') return;
 
-      // 更新任务的最后运行时间
-      const tasksRaw = localStorage.getItem(TASKS_STORAGE_KEY);
-      if (tasksRaw) {
-        try {
-          const tasks = JSON.parse(tasksRaw) as Array<{ id: string; lastRunAt?: number }>;
-          const nextTasks = tasks.map((task) =>
-            task.id === payload.taskId ? { ...task, lastRunAt: payload.lastRunAt } : task
-          );
-          localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(nextTasks));
-        } catch (error) {
-          console.error('更新唤醒任务时间失败:', error);
-        }
-      }
-
-      // 历史记录已由后端写入文件，这里只需通知前端刷新
       window.dispatchEvent(new CustomEvent('wakeup-task-result', { detail: payload }));
-      window.dispatchEvent(new Event('wakeup-tasks-updated'));
     };
 
     listen<WakeupTaskResultPayload>('wakeup://task-result', (event) => {
@@ -2849,8 +2876,9 @@ function MainApp() {
   useEffect(() => {
     const handleUpdateRequest = (event: Event) => {
       const detail = (event as CustomEvent<{ source?: UpdateCheckSource }>).detail;
-      const source: UpdateCheckSource = detail?.source === 'manual' ? 'manual' : 'auto';
-      void runModalUpdateCheck(source);
+      // Automatic checks use the background flow and its local-preference gate.
+      if (detail?.source !== 'manual') return;
+      void runModalUpdateCheck('manual');
     };
     window.addEventListener('update-check-requested', handleUpdateRequest as EventListener);
     return () => {
@@ -3005,7 +3033,9 @@ function MainApp() {
       try {
         await Promise.all(
           refreshTasks.map(({ command, errorMessage }) =>
-            invoke(command).catch((error) => {
+            invoke(command, command === 'refresh_current_quota'
+              ? { runtimeTarget: getAntigravityRuntimeTarget() }
+              : undefined).catch((error) => {
               console.error(errorMessage, error);
             }),
           ),
@@ -3027,9 +3057,12 @@ function MainApp() {
     const handlePayload = (payload: unknown) => {
       if (!payload || typeof payload !== 'object') return;
       const detail = payload as AppPathMissingDetail;
+      if (detail.app === 'codex') {
+        recoverLegacyCodexPath(detail.retry);
+        return;
+      }
       if (
         detail.app !== 'antigravity' &&
-        detail.app !== 'codex' &&
         detail.app !== 'claude' &&
         detail.app !== 'vscode' &&
         detail.app !== 'windsurf' &&
@@ -3073,8 +3106,6 @@ function MainApp() {
       setAppPathDetecting(false);
       setAppPathActionError('');
       setAppPathScanError('');
-      setAppPathCodexLaunchOnSwitch(true);
-      setAppPathCodexLaunchSetting(false);
       return () => {
         active = false;
       };
@@ -3110,6 +3141,8 @@ function MainApp() {
                 ? config.workbuddy_app_path
               : appPathMissing.app === 'zed'
                 ? config.zed_app_path
+              : antigravityRecoveryApp === 'antigravity_legacy'
+                ? config.antigravity_legacy_app_path
               : config.antigravity_app_path;
         if (active) {
           const normalizedPath = currentPath || '';
@@ -3118,7 +3151,6 @@ function MainApp() {
             appPathMissing.retry?.kind === 'instance' &&
             isClaudeWindowsAppLaunchTarget(normalizedPath);
           setAppPathDraft(shouldClearClaudeDefaultTarget ? '' : normalizedPath);
-          setAppPathCodexLaunchOnSwitch(config.codex_launch_on_switch ?? true);
         }
       } catch (error) {
         console.error('Failed to load app path config:', error);
@@ -3127,7 +3159,7 @@ function MainApp() {
     return () => {
       active = false;
     };
-  }, [appPathMissing]);
+  }, [appPathMissing, antigravityRecoveryApp]);
 
   const handlePickMissingAppPath = async () => {
     if (appPathSetting) return;
@@ -3173,13 +3205,16 @@ function MainApp() {
       const app = appPathMissing.app;
       const retry = appPathMissing.retry;
       const antigravityInstanceStartCommand =
-        app === 'antigravity' && retry?.runtimeTarget !== 'antigravity_ide'
+        antigravityRecoveryApp === 'antigravity_legacy'
           ? 'antigravity_legacy_start_instance'
           : 'start_instance';
-      await invoke('set_app_path', { app, path });
+      await invoke('set_app_path', { app: app === 'antigravity' ? antigravityRecoveryApp : app, path });
       if (retry?.kind === 'switchAccount' && retry.accountId && app === 'zed') {
         await useZedAccountStore.getState().switchAccount(retry.accountId);
         setPage('zed');
+      } else if (retry?.kind === 'switchAccount' && retry.accountId && app === 'qoder') {
+        await useQoderAccountStore.getState().switchAccount(retry.accountId);
+        setPage('qoder');
       } else if (retry?.kind === 'switchAccount' && retry.accountId && app === 'claude') {
         await useClaudeAccountStore.getState().switchAccount(retry.accountId);
         await useClaudeAccountStore.getState().fetchCurrentAccountId();
@@ -3191,7 +3226,7 @@ function MainApp() {
         });
         await Promise.allSettled([
           useAccountStore.getState().fetchAccounts(),
-          useAccountStore.getState().fetchCurrentAccount(),
+          useAccountStore.getState().fetchCurrentAccount(antigravityRecoveryTarget),
         ]);
       } else if (retry?.kind === 'instance' && retry.instanceId) {
         if (app === 'codex') {
@@ -3253,20 +3288,20 @@ function MainApp() {
       setAppPathMissing(null);
       setAppPathSetting(false);
     } catch (error) {
+      if (isCodexInstanceAccountConflict(error)) {
+        setAppPathMissing(null);
+        setAppPathSetting(false);
+        return;
+      }
       console.error('设置应用路径失败:', error);
-      setAppPathActionError(String(error));
+      setAppPathActionError(appPathMissing.app === 'qoder' ? formatQoderError(error) : String(error));
       setAppPathSetting(false);
     }
   };
 
   const handleResetMissingAppPath = async () => {
     if (!appPathMissing || appPathSetting || appPathDetecting) return;
-    const scanApp =
-      appPathMissing.app === 'antigravity' && appPathMissing.retry?.runtimeTarget !== 'antigravity_ide'
-        ? 'antigravity_legacy'
-        : appPathMissing.app === 'antigravity' && appPathMissing.retry?.runtimeTarget === 'antigravity_ide'
-          ? 'antigravity_ide'
-          : appPathMissing.app;
+    const scanApp = appPathMissing.app === 'antigravity' ? antigravityRecoveryApp : appPathMissing.app;
 
     if (isWindowsPlatform()) {
       setAppPathDetecting(true);
@@ -3292,11 +3327,7 @@ function MainApp() {
         }
         if (candidates.length === 0) {
           setAppPathScanError(
-            t(
-              'appPath.missing.scanEmptyGeneric',
-              '未检测到正在运行的 {{app}}，请先启动应用后重试，或手动选择路径。',
-              { app: appPathMissingAppName },
-            ),
+            t('appPath.missing.scanEmptyGeneric', { app: appPathMissingAppName }),
           );
         }
       } catch (error) {
@@ -3323,26 +3354,6 @@ function MainApp() {
     }
   };
 
-  const handleToggleCodexLaunchInMissingPath = async (enabled: boolean) => {
-    if (!appPathMissing || appPathMissing.app !== 'codex') return;
-    if (appPathSetting || appPathDetecting || appPathCodexLaunchSetting) return;
-    setAppPathCodexLaunchSetting(true);
-    setAppPathActionError('');
-    setAppPathScanError('');
-    try {
-      await invoke('set_codex_launch_on_switch', { enabled });
-      setAppPathCodexLaunchOnSwitch(enabled);
-      if (!enabled) {
-        setAppPathMissing(null);
-      }
-    } catch (error) {
-      console.error('更新 Codex 自动启动配置失败:', error);
-      setAppPathActionError(String(error));
-    } finally {
-      setAppPathCodexLaunchSetting(false);
-    }
-  };
-
   const handleSelectAppLaunchCandidate = (candidate: AppLaunchCandidate) => {
     if (
       appPathMissing?.app === 'claude' &&
@@ -3360,8 +3371,8 @@ function MainApp() {
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
 
-    listen('window:close_requested', () => {
-      setShowCloseDialog(true);
+    listen<boolean>('window:close_requested', ({ payload }) => {
+      setCloseDialogTrayVisible(payload);
     }).then((fn) => { unlisten = fn; });
 
     return () => {
@@ -3377,15 +3388,10 @@ function MainApp() {
       .then((target) => {
         if (!target) return;
         const page = String(target);
-        if (
-          page === 'overview' ||
-          page === 'codex' ||
-          page === 'codex-api-service' ||
-          page === 'settings' ||
-          page === 'dashboard' ||
-          page === 'manual'
-        ) {
-          setPage(page as Page);
+        if (requestCodexRequestLogsNavigation(page)) {
+          setPage('codex-api-service');
+        } else if (isMainWindowNavigablePage(page)) {
+          setPage(page);
         }
       })
       .catch(() => {
@@ -3398,33 +3404,10 @@ function MainApp() {
 
         listen<string>('tray:navigate', (event) => {
           const target = String(event.payload || '');
-          switch (target) {
-            case 'overview':
-            case 'api-relay':
-            case 'codex':
-            case 'codex-api-service':
-            case 'claude':
-            case 'claude-cli':
-            case 'github-copilot':
-            case 'windsurf':
-            case 'kiro':
-            case 'cursor':
-            case 'grok':
-            case 'codebuddy':
-            case 'codebuddy-cn':
-            case 'qoder':
-            case 'trae':
-            case 'trae-solo':
-            case 'trae-cn':
-            case 'trae-solo-cn':
-            case 'workbuddy':
-            case 'zed':
-            case 'manual':
-            case 'settings':
-              setPage(target as Page);
-              break;
-            default:
-              break;
+          if (requestCodexRequestLogsNavigation(target)) {
+            setPage('codex-api-service');
+          } else if (isMainWindowNavigablePage(target)) {
+            setPage(target);
           }
         }).then((fn) => { unlisten = fn; });
 
@@ -3434,6 +3417,15 @@ function MainApp() {
       }
     };
   }, []);
+
+  useEffect(() => subscribeTauriEvent('cursor:index-recovered', () => {
+    void useCursorAccountStore.getState().fetchAccounts();
+  }), []);
+  useEffect(() => subscribeTauriEvent<AccountSyncEventPayload>(ACCOUNTS_CHANGED_EVENT, ({ payload }) => {
+    if (payload?.platformId === 'antigravity' && payload.reason === 'wakeup-quota-refresh') {
+      void useAccountStore.getState().fetchAccounts();
+    }
+  }), []);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -3516,7 +3508,6 @@ function MainApp() {
     </div>
   );
 
-  const appPathMissingRuntimeTarget = appPathMissing?.retry?.runtimeTarget;
   const appPathMissingAppName = appPathMissing
     ? appPathMissing.app === 'codex'
       ? 'Codex'
@@ -3539,8 +3530,8 @@ function MainApp() {
               : isTraePlatformApp(appPathMissing.app)
                 ? 'Trae'
               : appPathMissing.app === 'workbuddy'
-                ? 'WorkBuddy'
-              : appPathMissing.app === 'antigravity' && appPathMissingRuntimeTarget === 'antigravity_ide'
+                ? t('workbuddy.desktopEdition')
+              : appPathMissing.app === 'antigravity' && antigravityRecoveryTarget === 'antigravity_ide'
                 ? 'Antigravity IDE'
                 : 'Antigravity'
     : '';
@@ -3568,7 +3559,7 @@ function MainApp() {
                 ? t('quickSettings.trae.appPath', 'Trae 路径')
               : t('quickSettings.antigravity.appPath', '启动路径')
     : t('quickSettings.antigravity.appPath', '启动路径');
-  const appPathMissingBusy = appPathSetting || appPathDetecting || appPathCodexLaunchSetting;
+  const appPathMissingBusy = appPathSetting || appPathDetecting;
   const claudeMultiInstanceNeedsExe =
     appPathMissing?.app === 'claude' && appPathMissing.retry?.kind === 'instance';
   const shouldRenderUpdateNotification = showUpdateNotification
@@ -3576,8 +3567,9 @@ function MainApp() {
 
   return (
     <div
-      className={`app-container${isWindowsPlatform() ? ' app-container-windows' : ''}${sideNavLayoutMode === 'classic' ? ' app-container-side-nav-classic' : ''}${sideNavLayoutMode === 'classic' && sideNavClassicCollapsed ? ' app-container-side-nav-classic-collapsed' : ''}`}
+      className={`app-container${isWindowsPlatform() ? ' app-container-windows' : ''}${isLinux ? ' app-container-linux' : ''}${sideNavLayoutMode === 'classic' ? ' app-container-side-nav-classic' : ''}${sideNavLayoutMode === 'classic' && sideNavClassicCollapsed ? ' app-container-side-nav-classic-collapsed' : ''}`}
     >
+      <AppBackground />
       {/* 更新通知：活跃状态时保持挂载，关闭后继续保留当前更新状态 */}
       {shouldRenderUpdateNotification && (
         <div style={showUpdateNotification ? undefined : { display: 'none' }}>
@@ -3585,6 +3577,7 @@ function MainApp() {
           <UpdateNotification
             key={updateNotificationKey}
             updateInfo={updateNotificationInfo}
+            visible={showUpdateNotification}
             checking={updateNotificationChecking}
             onRestartUpdate={handleApplyPendingUpdate}
             actionState={updateAction.state}
@@ -3617,11 +3610,17 @@ function MainApp() {
         </Suspense>
       )}
       <GlobalModal />
+      <CodexSwitchProgressModal />
+      <CodexCliDaemonNotice />
+      <CodexWakeupConfirmation />
+      <CodexInstanceLaunchProgressModal />
+      <CodexPelicanHost />
+      <WindowsOperationDialog />
 
       {/* 关闭确认对话框 */}
-      {showCloseDialog && (
+      {closeDialogTrayVisible !== null && (
         <Suspense fallback={null}>
-          <CloseConfirmDialog onClose={() => setShowCloseDialog(false)} />
+          <CloseConfirmDialog trayVisible={closeDialogTrayVisible} onClose={() => setCloseDialogTrayVisible(null)} />
         </Suspense>
       )}
 
@@ -3666,31 +3665,6 @@ function MainApp() {
                   </p>
                 ) : null}
               </div>
-
-              {appPathMissing.app === 'codex' ? (
-                <div className="qs-section">
-                  <div className="qs-row">
-                    <div className="qs-row-label">
-                      {t('settings.general.codexLaunchOnSwitch', '切换 Codex 时自动启动 Codex App')}
-                    </div>
-                    <label className="qs-switch">
-                      <input
-                        type="checkbox"
-                        checked={appPathCodexLaunchOnSwitch}
-                        disabled={appPathMissingBusy}
-                        onChange={(e) => handleToggleCodexLaunchInMissingPath(e.target.checked)}
-                      />
-                      <span className="qs-switch-slider" />
-                    </label>
-                  </div>
-                  <p className="app-path-missing-hint">
-                    {t(
-                      'appPath.missing.codexLaunchHint',
-                      '关闭后仅执行切号与登录覆盖，不再尝试启动 Codex App，也不会再次要求设置启动路径。'
-                    )}
-                  </p>
-                </div>
-              ) : null}
 
               <div className="qs-section">
                 <div className="qs-section-header">
@@ -3834,12 +3808,9 @@ function MainApp() {
         </div>
       )}
       
-      {/* 顶部固定拖拽区域 */}
-      <div
-        className="drag-region"
-        data-tauri-drag-region
-        onMouseDown={handleDragStart}
-      />
+      {isLinux ? <LinuxWindowTitlebar /> : (
+        <div className="drag-region" data-tauri-drag-region onMouseDown={handleDragStart} />
+      )}
 
       {/* 左侧悬浮导航 */}
       <SideNav
@@ -3858,7 +3829,6 @@ function MainApp() {
       />
 
       <AnnouncementHost onNavigate={setPage} />
-      <CodexBatchImportGlobalTask onOpenCodex={() => setPage('codex')} />
 
       {sideNavLayoutMode !== 'classic' && (
         <button
@@ -3888,52 +3858,125 @@ function MainApp() {
 
       <div className="main-wrapper">
         {topRightAdVisible && visibleTopCenterPromoAds.length > 0 ? (
-          <div className="app-global-promo-layer" aria-hidden={false}>
-            <TopCenterPromoBanner ads={visibleTopCenterPromoAds} reserveWhenEmpty={false} />
-          </div>
+          <TopCenterPromoBanner ads={visibleTopCenterPromoAds} />
         ) : null}
         {/* overview 现在是合并后的账号总览页面 */}
         <Suspense fallback={suspenseFallback}>
-          {page === 'dashboard' && (
+          <VisibleBootPage when={page === 'dashboard'}>
             <DashboardPage
               onNavigate={setPage}
               onOpenPlatformLayout={openPlatformLayoutModal}
               onEasterEggTriggerClick={handleBreakoutEntryTriggerClick}
             />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'api-relay'}>
+            <ApiKeyFunPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'overview'}>
+            <AccountsPage onNavigate={setPage} />
+          </VisibleBootPage>
+          {/* Codex suite: keep both pages mounted after first visit to avoid empty flash when switching. */}
+          {shouldMountCodexSuite && (
+            <Suspense fallback={page === 'codex' ? suspenseFallback : null}>
+              <div
+                className="app-page-keep-alive"
+                hidden={page !== 'codex'}
+                aria-hidden={page !== 'codex'}
+              >
+                <CodexAccountsPage />
+                {page === 'codex' ? <BootReadyMarker /> : null}
+              </div>
+            </Suspense>
           )}
-          {page === 'api-relay' && <ApiKeyFunPage />}
-          {page === 'overview' && <AccountsPage onNavigate={setPage} />}
-          {page === 'codex' && <CodexAccountsPage />}
-          {page === 'claude' && <ClaudeAccountsPage subPlatform="desktop" />}
-          {page === 'claude-cli' && <ClaudeAccountsPage subPlatform="cli" />}
-          {page === 'codex-api-service' && <CodexApiServicePage />}
-          {page === 'github-copilot' && <GitHubCopilotAccountsPage />}
-          {page === 'windsurf' && <WindsurfAccountsPage />}
-          {page === 'kiro' && <KiroAccountsPage />}
-          {page === 'cursor' && <CursorAccountsPage />}
-          {page === 'grok' && <GrokAccountsPage />}
-          {page === 'codebuddy' && <CodebuddyAccountsPage />}
-          {page === 'codebuddy-cn' && <CodebuddyCnAccountsPage />}
-          {page === 'qoder' && <QoderAccountsPage />}
-          {page === 'zcode' && <ZcodeAccountsPage />}
-          {page === 'trae' && <TraeAccountsPage platformId="trae" />}
-          {page === 'trae-solo' && <TraeAccountsPage platformId="trae_solo" />}
-          {page === 'trae-cn' && <TraeAccountsPage platformId="trae_cn" />}
-          {page === 'trae-solo-cn' && <TraeAccountsPage platformId="trae_solo_cn" />}
-          {page === 'workbuddy' && <WorkbuddyAccountsPage />}
-          {page === 'zed' && <ZedAccountsPage />}
-          {page === 'instances' && <InstancesPage onNavigate={setPage} />}
-          {page === 'wakeup' && <WakeupTasksPage onNavigate={setPage} />}
-          {page === 'verification' && <WakeupVerificationPage onNavigate={setPage} />}
-          {page === '2fa' && <TwoFactorAuthPage />}
-          {page === 'manual' && (
+          {shouldMountCodexSuite && (
+            <Suspense fallback={page === 'codex-api-service' ? suspenseFallback : null}>
+              <div
+                className="app-page-keep-alive"
+                hidden={page !== 'codex-api-service'}
+                aria-hidden={page !== 'codex-api-service'}
+              >
+                <CodexApiServicePage />
+                {page === 'codex-api-service' ? <BootReadyMarker /> : null}
+              </div>
+            </Suspense>
+          )}
+          <VisibleBootPage when={page === 'claude'}>
+            <ClaudeAccountsPage subPlatform="desktop" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'claude-cli'}>
+            <ClaudeAccountsPage subPlatform="cli" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'github-copilot'}>
+            <GitHubCopilotAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'windsurf'}>
+            <WindsurfAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'kiro'}>
+            <KiroAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'cursor'}>
+            <CursorAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'grok'}>
+            <GrokAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'codebuddy'}>
+            <CodebuddyAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'codebuddy-cn'}>
+            <CodebuddyCnAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'qoder'}>
+            <QoderAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'zcode'}>
+            <ZcodeAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'trae'}>
+            <TraeAccountsPage platformId="trae" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'trae-solo'}>
+            <TraeAccountsPage platformId="trae_solo" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'trae-cn'}>
+            <TraeAccountsPage platformId="trae_cn" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'trae-solo-cn'}>
+            <TraeAccountsPage platformId="trae_solo_cn" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'workbuddy'}>
+            <WorkbuddyAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'minimaxcode'}>
+            <MinimaxCodeAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'zed'}>
+            <ZedAccountsPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'instances'}>
+            <InstancesPage onNavigate={setPage} />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'wakeup'}>
+            <WakeupTasksPage onNavigate={setPage} />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'verification'}>
+            <WakeupVerificationPage onNavigate={setPage} />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === '2fa'}>
+            <TwoFactorAuthPage />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'manual'}>
             <ManualPage
               onNavigate={setPage}
               onOpenPlatformLayout={openPlatformLayoutModal}
             />
-          )}
-          {page === 'settings' && <SettingsPage />}
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'settings'}>
+            <SettingsPage />
+          </VisibleBootPage>
         </Suspense>
+        <CodexAccountServiceHost activePage={page === 'codex' || page === 'codex-api-service'} />
       </div>
     </div>
   );
@@ -3941,11 +3984,11 @@ function MainApp() {
 
 function App() {
   const windowLabel = getCurrentWindow().label;
-  if (windowLabel === 'floating-card' || windowLabel.startsWith('instance-floating-card-')) {
-    return <FloatingCardWindow />;
-  }
-
-  return <MainApp />;
+  const floating = windowLabel === 'floating-card' || windowLabel.startsWith('instance-floating-card-');
+  return <>
+    {floating ? <FloatingCardWindow /> : <MainApp />}
+    <CodexPathRecoveryDialog />
+  </>;
 }
 
 export default App;

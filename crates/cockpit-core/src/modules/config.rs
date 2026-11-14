@@ -22,12 +22,6 @@ const SERVER_STATUS_FILE: &str = "server.json";
 const USER_CONFIG_FILE: &str = "config.json";
 const USER_CONFIG_LOCK_FILE: &str = "config.json.lock";
 
-/// 数据目录名
-const DATA_DIR: &str = ".antigravity_cockpit";
-const DEV_DATA_DIR: &str = ".antigravity_cockpit_dev";
-const DATA_DIR_ENV: &str = "COCKPIT_TOOLS_DATA_DIR";
-const PROFILE_ENV: &str = "COCKPIT_TOOLS_PROFILE";
-
 /// 服务状态（写入共享文件供其他客户端读取）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerStatus {
@@ -89,9 +83,15 @@ pub struct UserConfig {
     /// Codex 自动刷新间隔（分钟），-1 表示禁用
     #[serde(default = "default_codex_auto_refresh")]
     pub codex_auto_refresh_minutes: i32,
+    /// OAuth 套餐范围；旧配置默认全部，显式空数组关闭套餐额度轮询。
+    #[serde(default = "default_codex_auto_refresh_plan_types")]
+    pub codex_auto_refresh_plan_types: Vec<String>,
     /// Codex 切号时是否同步覆盖 WSL 配置 (Windows Only)
     #[serde(default = "default_codex_sync_wsl")]
     pub codex_sync_wsl: bool,
+    /// 是否启用 Codex 客户端中的 API 服务额度显示注入
+    #[serde(default = "default_codex_app_ui_injection_enabled")]
+    pub codex_app_ui_injection_enabled: bool,
     /// Codex WSL 配置目录 (Windows Only)
     #[serde(default = "default_codex_wsl_config_dir")]
     pub codex_wsl_config_dir: String,
@@ -212,6 +212,9 @@ pub struct UserConfig {
     /// CodeBuddy 启动路径（为空则使用默认路径）
     #[serde(default = "default_codebuddy_app_path")]
     pub codebuddy_app_path: String,
+    /// 切换 CodeBuddy 账号时是否在本机账号间合并本地会话
+    #[serde(default = "default_codebuddy_share_sessions_on_switch")]
+    pub codebuddy_share_sessions_on_switch: bool,
     /// CodeBuddy CN 启动路径（为空则使用默认路径）
     #[serde(default = "default_codebuddy_cn_app_path")]
     pub codebuddy_cn_app_path: String,
@@ -239,6 +242,9 @@ pub struct UserConfig {
     /// WorkBuddy 启动路径（为空则使用默认路径）
     #[serde(default = "default_workbuddy_app_path")]
     pub workbuddy_app_path: String,
+    /// 切换 WorkBuddy 账号时是否在本机账号间合并本地会话
+    #[serde(default = "default_workbuddy_share_sessions_on_switch")]
+    pub workbuddy_share_sessions_on_switch: bool,
     /// 切换 Codex 时是否自动重启 OpenCode
     #[serde(default = "default_opencode_sync_on_switch")]
     pub opencode_sync_on_switch: bool,
@@ -251,6 +257,12 @@ pub struct UserConfig {
     /// 切换 GitHub Copilot 时是否覆盖 OpenCode 登录信息
     #[serde(default = "default_ghcp_opencode_auth_overwrite_on_switch")]
     pub ghcp_opencode_auth_overwrite_on_switch: bool,
+    /// 切换 Grok 时是否自动重启 OpenCode
+    #[serde(default = "default_grok_opencode_sync_on_switch")]
+    pub grok_opencode_sync_on_switch: bool,
+    /// 切换 Grok 时是否覆盖 OpenCode 登录信息
+    #[serde(default = "default_grok_opencode_auth_overwrite_on_switch")]
+    pub grok_opencode_auth_overwrite_on_switch: bool,
     /// 切换 GitHub Copilot 时是否自动启动 GitHub Copilot
     #[serde(default = "default_ghcp_launch_on_switch")]
     pub ghcp_launch_on_switch: bool,
@@ -260,6 +272,12 @@ pub struct UserConfig {
     /// 切换 Codex 时是否自动启动/重启 Codex App
     #[serde(default = "default_codex_launch_on_switch")]
     pub codex_launch_on_switch: bool,
+    /// 启动时是否自动恢复 Codex 代理接管状态
+    #[serde(default = "default_codex_auto_restore_takeover_on_launch")]
+    pub codex_auto_restore_takeover_on_launch: bool,
+    /// OAuth 切号时保留经过本地集成记录验证的外部桥接（默认关闭）。
+    #[serde(default)]
+    pub codex_preserve_verified_external_bridge: bool,
     /// Antigravity 切号是否启用“本地落盘 + 扩展无感”且不重启
     #[serde(default = "default_antigravity_dual_switch_no_restart_enabled")]
     pub antigravity_dual_switch_no_restart_enabled: bool,
@@ -284,10 +302,10 @@ pub struct UserConfig {
     /// 是否启用 Codex 自动切号
     #[serde(default = "default_codex_auto_switch_enabled")]
     pub codex_auto_switch_enabled: bool,
-    /// Codex primary_window 自动切号阈值（百分比）
+    /// Codex 短周期自动切号阈值；缺少时长时用于 primary_window（百分比）
     #[serde(default = "default_codex_auto_switch_primary_threshold")]
     pub codex_auto_switch_primary_threshold: i32,
-    /// Codex secondary_window 自动切号阈值（百分比）
+    /// Codex 周额度自动切号阈值；缺少时长时用于 secondary_window（百分比）
     #[serde(default = "default_codex_auto_switch_secondary_threshold")]
     pub codex_auto_switch_secondary_threshold: i32,
     /// Codex 自动切号账号范围模式：all_accounts | selected_accounts
@@ -314,10 +332,10 @@ pub struct UserConfig {
     /// Zed 配额预警阈值（百分比）
     #[serde(default = "default_zed_quota_alert_threshold")]
     pub zed_quota_alert_threshold: i32,
-    /// Codex primary_window 配额预警阈值（百分比）
+    /// Codex 短周期预警阈值；缺少时长时用于 primary_window（百分比）
     #[serde(default = "default_codex_quota_alert_primary_threshold")]
     pub codex_quota_alert_primary_threshold: i32,
-    /// Codex secondary_window 配额预警阈值（百分比）
+    /// Codex 周额度预警阈值；缺少时长时用于 secondary_window（百分比）
     #[serde(default = "default_codex_quota_alert_secondary_threshold")]
     pub codex_quota_alert_secondary_threshold: i32,
     /// 是否启用 GitHub Copilot 配额预警通知
@@ -470,8 +488,15 @@ fn default_auto_refresh() -> i32 {
 fn default_codex_auto_refresh() -> i32 {
     10
 } // 默认 10 分钟
+fn default_codex_auto_refresh_plan_types() -> Vec<String> {
+    ["free", "go", "plus", "pro", "team", "business", "enterprise", "edu_k12", "unknown"]
+        .into_iter().map(str::to_string).collect()
+}
 fn default_codex_sync_wsl() -> bool {
     false
+}
+fn default_codex_app_ui_injection_enabled() -> bool {
+    true
 }
 fn default_codex_wsl_config_dir() -> String {
     String::new()
@@ -594,6 +619,9 @@ fn default_cursor_app_path() -> String {
 fn default_codebuddy_app_path() -> String {
     String::new()
 }
+fn default_codebuddy_share_sessions_on_switch() -> bool {
+    false
+}
 fn default_codebuddy_cn_app_path() -> String {
     String::new()
 }
@@ -609,6 +637,9 @@ fn default_trae_app_scan_roots() -> String {
 fn default_workbuddy_app_path() -> String {
     String::new()
 }
+fn default_workbuddy_share_sessions_on_switch() -> bool {
+    false
+}
 fn default_opencode_sync_on_switch() -> bool {
     false
 }
@@ -621,6 +652,12 @@ fn default_ghcp_opencode_sync_on_switch() -> bool {
 fn default_ghcp_opencode_auth_overwrite_on_switch() -> bool {
     false
 }
+fn default_grok_opencode_sync_on_switch() -> bool {
+    false
+}
+fn default_grok_opencode_auth_overwrite_on_switch() -> bool {
+    false
+}
 fn default_ghcp_launch_on_switch() -> bool {
     true
 }
@@ -628,6 +665,9 @@ fn default_openclaw_auth_overwrite_on_switch() -> bool {
     false
 }
 fn default_codex_launch_on_switch() -> bool {
+    true
+}
+fn default_codex_auto_restore_takeover_on_launch() -> bool {
     true
 }
 fn default_antigravity_dual_switch_no_restart_enabled() -> bool {
@@ -763,7 +803,9 @@ impl Default for UserConfig {
             ui_scale: default_ui_scale(),
             auto_refresh_minutes: default_auto_refresh(),
             codex_auto_refresh_minutes: default_codex_auto_refresh(),
+            codex_auto_refresh_plan_types: default_codex_auto_refresh_plan_types(),
             codex_sync_wsl: default_codex_sync_wsl(),
+            codex_app_ui_injection_enabled: default_codex_app_ui_injection_enabled(),
             codex_wsl_config_dir: default_codex_wsl_config_dir(),
             zed_auto_refresh_minutes: default_zed_auto_refresh(),
             ghcp_auto_refresh_minutes: default_ghcp_auto_refresh(),
@@ -806,6 +848,7 @@ impl Default for UserConfig {
             kiro_app_path: default_kiro_app_path(),
             cursor_app_path: default_cursor_app_path(),
             codebuddy_app_path: default_codebuddy_app_path(),
+            codebuddy_share_sessions_on_switch: default_codebuddy_share_sessions_on_switch(),
             codebuddy_cn_app_path: default_codebuddy_cn_app_path(),
             qoder_app_path: default_qoder_app_path(),
             trae_app_path: default_trae_app_path(),
@@ -817,14 +860,21 @@ impl Default for UserConfig {
             trae_cn_app_scan_roots: default_trae_app_scan_roots(),
             trae_solo_cn_app_scan_roots: default_trae_app_scan_roots(),
             workbuddy_app_path: default_workbuddy_app_path(),
+            workbuddy_share_sessions_on_switch: default_workbuddy_share_sessions_on_switch(),
             opencode_sync_on_switch: default_opencode_sync_on_switch(),
             opencode_auth_overwrite_on_switch: default_opencode_auth_overwrite_on_switch(),
             ghcp_opencode_sync_on_switch: default_ghcp_opencode_sync_on_switch(),
             ghcp_opencode_auth_overwrite_on_switch: default_ghcp_opencode_auth_overwrite_on_switch(
             ),
+            grok_opencode_sync_on_switch: default_grok_opencode_sync_on_switch(),
+            grok_opencode_auth_overwrite_on_switch: default_grok_opencode_auth_overwrite_on_switch(
+            ),
             ghcp_launch_on_switch: default_ghcp_launch_on_switch(),
             openclaw_auth_overwrite_on_switch: default_openclaw_auth_overwrite_on_switch(),
             codex_launch_on_switch: default_codex_launch_on_switch(),
+            codex_auto_restore_takeover_on_launch:
+                default_codex_auto_restore_takeover_on_launch(),
+            codex_preserve_verified_external_bridge: false,
             antigravity_dual_switch_no_restart_enabled:
                 default_antigravity_dual_switch_no_restart_enabled(),
             auto_switch_enabled: default_auto_switch_enabled(),
@@ -1002,26 +1052,12 @@ pub fn sync_global_proxy_env(config: &UserConfig) {
 
 /// 获取数据目录路径
 pub fn get_data_dir() -> Result<PathBuf, String> {
-    if let Ok(raw) = std::env::var(DATA_DIR_ENV) {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-
-    let home = dirs::home_dir().ok_or("无法获取 Home 目录")?;
-    let dir_name = std::env::var(PROFILE_ENV)
-        .map(|value| value.trim().eq_ignore_ascii_case("dev"))
-        .unwrap_or(false)
-        .then_some(DEV_DATA_DIR)
-        .unwrap_or(DATA_DIR);
-    Ok(home.join(dir_name))
+    crate::modules::data_paths::resolve_data_dir()
 }
 
 /// 获取共享目录路径（供其他模块使用）
-/// 与 get_data_dir 相同，但不返回 Result
 pub fn get_shared_dir() -> PathBuf {
-    get_data_dir().unwrap_or_else(|_| PathBuf::from(DATA_DIR))
+    get_data_dir().unwrap_or_else(|_| crate::modules::data_paths::fallback_data_dir())
 }
 
 /// 获取服务状态文件路径
@@ -1413,6 +1449,12 @@ pub fn load_user_config() -> Result<UserConfig, String> {
                 json!(default_codex_auto_switch_selected_account_ids()),
             );
         }
+        if !obj.contains_key("codex_auto_restore_takeover_on_launch") {
+            obj.insert(
+                "codex_auto_restore_takeover_on_launch".to_string(),
+                json!(default_codex_auto_restore_takeover_on_launch()),
+            );
+        }
         let codex_legacy_threshold = obj
             .get("codex_quota_alert_threshold")
             .and_then(|v| v.as_i64())
@@ -1777,6 +1819,20 @@ pub fn init_server_status(actual_port: u16) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_refresh_scope_legacy_defaults_and_explicit_empty_round_trip() {
+        let defaults = UserConfig::default();
+        let expected = vec!["free", "go", "plus", "pro", "team", "business", "enterprise", "edu_k12", "unknown"];
+        assert_eq!(defaults.codex_auto_refresh_plan_types, expected);
+        let mut legacy = serde_json::to_value(defaults).unwrap();
+        legacy.as_object_mut().unwrap().remove("codex_auto_refresh_plan_types");
+        let mut restored: UserConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.codex_auto_refresh_plan_types, expected);
+        restored.codex_auto_refresh_plan_types.clear();
+        let empty: UserConfig = serde_json::from_value(serde_json::to_value(restored).unwrap()).unwrap();
+        assert!(empty.codex_auto_refresh_plan_types.is_empty());
+    }
+
     use super::{patch_runtime_state, RuntimeState, UserConfig};
     use std::fs;
     use std::path::Path;
@@ -1816,6 +1872,22 @@ mod tests {
     fn openclaw_auth_overwrite_default_is_disabled() {
         let cfg = UserConfig::default();
         assert!(!cfg.openclaw_auth_overwrite_on_switch);
+    }
+
+    #[test]
+    fn codex_api_service_quota_display_defaults_to_enabled() {
+        let default_cfg = UserConfig::default();
+        assert!(default_cfg.codex_app_ui_injection_enabled);
+
+        let upgraded_cfg: UserConfig =
+            serde_json::from_value(serde_json::json!({})).expect("旧配置反序列化应成功");
+        assert!(upgraded_cfg.codex_app_ui_injection_enabled);
+
+        let disabled_cfg: UserConfig = serde_json::from_value(serde_json::json!({
+            "codex_app_ui_injection_enabled": false
+        }))
+        .expect("显式关闭配置反序列化应成功");
+        assert!(!disabled_cfg.codex_app_ui_injection_enabled);
     }
 
     #[test]

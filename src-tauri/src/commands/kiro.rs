@@ -1,8 +1,11 @@
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
-use crate::models::kiro::{KiroAccount, KiroOAuthStartResponse};
+use crate::models::kiro::{KiroAccount, KiroOAuthLoginStartOptions, KiroOAuthStartResponse};
 use crate::modules::{kiro_account, kiro_oauth, logger};
+
+#[path = "kiro_import_refresh.rs"]
+mod import_refresh;
 
 async fn refresh_kiro_account_after_login(account: KiroAccount) -> KiroAccount {
     let account_id = account.id.clone();
@@ -19,8 +22,10 @@ async fn refresh_kiro_account_after_login(account: KiroAccount) -> KiroAccount {
 }
 
 #[tauri::command]
-pub fn list_kiro_accounts() -> Result<Vec<KiroAccount>, String> {
-    kiro_account::list_accounts_checked()
+pub async fn list_kiro_accounts() -> Result<Vec<KiroAccount>, String> {
+    tauri::async_runtime::spawn_blocking(kiro_account::list_accounts_checked)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -34,8 +39,19 @@ pub fn delete_kiro_accounts(account_ids: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn import_kiro_from_json(json_content: String) -> Result<Vec<KiroAccount>, String> {
-    kiro_account::import_from_json(&json_content)
+pub async fn import_kiro_from_json(
+    app: AppHandle,
+    json_content: String,
+) -> Result<Vec<KiroAccount>, String> {
+    let accounts =
+        tauri::async_runtime::spawn_blocking(move || kiro_account::import_from_json(&json_content))
+            .await
+            .map_err(|error| error.to_string())??;
+    import_refresh::schedule(
+        app,
+        accounts.iter().map(|account| account.id.clone()).collect(),
+    );
+    Ok(accounts)
 }
 
 #[tauri::command]
@@ -113,9 +129,11 @@ pub async fn refresh_all_kiro_tokens(app: AppHandle) -> Result<i32, String> {
 }
 
 #[tauri::command]
-pub async fn kiro_oauth_login_start() -> Result<KiroOAuthStartResponse, String> {
+pub async fn kiro_oauth_login_start(
+    options: Option<KiroOAuthLoginStartOptions>,
+) -> Result<KiroOAuthStartResponse, String> {
     logger::log_info("Kiro OAuth start 命令触发");
-    kiro_oauth::start_login().await
+    kiro_oauth::start_login(options).await
 }
 
 #[tauri::command]
@@ -190,6 +208,7 @@ pub async fn inject_kiro_to_vscode(app: AppHandle, account_id: String) -> Result
     let account = kiro_account::load_account(&account_id)
         .ok_or_else(|| format!("Kiro account not found: {}", account_id))?;
 
+
     if let Err(err) = crate::modules::kiro_instance::update_default_settings(
         Some(Some(account_id.clone())),
         None,
@@ -223,6 +242,7 @@ pub async fn inject_kiro_to_vscode(app: AppHandle, account_id: String) -> Result
             }
         }
     };
+
 
     let _ = crate::modules::tray::update_tray_menu(&app);
 

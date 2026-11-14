@@ -4,6 +4,11 @@ export interface Account {
     name?: string;
     tags?: string[];
     notes?: string;
+    two_factor_secret?: string;
+    account_password?: string;
+    phone_number?: string;
+    mail_url?: string;
+    pending_oauth?: boolean;
     token: TokenData;
     quota?: QuotaData;
     quota_error?: QuotaErrorInfo;
@@ -13,6 +18,15 @@ export interface Account {
     protected_models?: string[];
     created_at: number;
     last_used: number;
+  last_switched_at?: number | null;
+}
+
+export interface AccountNoteUpdate {
+    note?: string;
+    twoFactorSecret?: string;
+    accountPassword?: string;
+    phoneNumber?: string;
+    mailUrl?: string;
 }
 
 export interface TokenData {
@@ -30,10 +44,14 @@ export interface TokenData {
 export interface QuotaData {
     models: ModelQuota[];
     last_updated: number;
+    quota_summary_stale?: boolean;
+    quota_summary_updated_at?: number;
     is_forbidden?: boolean;
     subscription_tier?: string;
     credits?: CreditInfo[];
     tier_id?: string;
+    is_gcp_tos?: boolean;
+    project_id?: string;
 }
 
 export interface CreditInfo {
@@ -45,6 +63,8 @@ export interface CreditInfo {
 export interface QuotaErrorInfo {
     code?: number;
     message: string;
+    reason?: string;
+    validation_url?: string;
     timestamp: number;
 }
 

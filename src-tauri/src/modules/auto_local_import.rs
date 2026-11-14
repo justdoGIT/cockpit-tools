@@ -15,8 +15,8 @@ use crate::models::workbuddy::WorkbuddyOAuthCompletePayload;
 use crate::modules::{
     claude_account, codebuddy_account, codebuddy_cn_account, codebuddy_cn_oauth, codebuddy_oauth,
     codex_account, config, cursor_account, github_copilot_account, github_copilot_instance, import,
-    kiro_account, kiro_oauth, logger, qoder_account, trae_account, windsurf_account, windsurf_oauth,
-    workbuddy_account, workbuddy_oauth, zed_account,
+    kiro_account, kiro_oauth, logger, minimax_code_account, qoder_account, trae_account,
+    windsurf_account, windsurf_oauth, workbuddy_account, workbuddy_oauth, zed_account,
 };
 use serde::Serialize;
 
@@ -103,9 +103,9 @@ enum WatchMode {
 
 fn identity_log_tag(identity: &str) -> String {
     // 避免日志写入完整邮箱/token 前缀。
-    let digest = identity
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(33).wrapping_add(u32::from(b)));
+    let digest = identity.bytes().fold(0u32, |acc, b| {
+        acc.wrapping_mul(33).wrapping_add(u32::from(b))
+    });
     format!("{:08x}", digest)
 }
 
@@ -126,11 +126,9 @@ fn identity_key(parts: &[Option<String>]) -> Option<String> {
 }
 
 fn read_vscdb_string_item(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT value FROM ItemTable WHERE key = ?1",
-        [key],
-        |row| row.get::<_, String>(0),
-    )
+    conn.query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |row| {
+        row.get::<_, String>(0)
+    })
     .ok()
     .map(|value| value.trim().to_string())
     .filter(|value| !value.is_empty())
@@ -139,12 +137,11 @@ fn read_vscdb_string_item(conn: &Connection, key: &str) -> Option<String> {
 fn peek_antigravity_identity() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
-        let credential = crate::modules::antigravity_credential::read_antigravity_system_credential()
-            .ok()
-            .flatten()?;
-        return identity_key(&[Some(
-            credential.refresh_token.chars().take(24).collect(),
-        )]);
+        let credential =
+            crate::modules::antigravity_credential::read_antigravity_system_credential()
+                .ok()
+                .flatten()?;
+        return identity_key(&[Some(credential.refresh_token.chars().take(24).collect())]);
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -224,10 +221,7 @@ fn peek_github_copilot_identity() -> Option<String> {
         return None;
     }
     let conn = Connection::open(&db_path).ok()?;
-    identity_key(&[read_vscdb_string_item(
-        &conn,
-        "github.copilot-github",
-    )])
+    identity_key(&[read_vscdb_string_item(&conn, "github.copilot-github")])
 }
 
 fn peek_kiro_identity() -> Option<String> {
@@ -248,7 +242,9 @@ fn peek_kiro_identity() -> Option<String> {
 }
 
 fn peek_codebuddy_identity() -> Option<String> {
-    let payload = codebuddy_account::import_payload_from_local().ok().flatten()?;
+    let payload = codebuddy_account::import_payload_from_local()
+        .ok()
+        .flatten()?;
     identity_key(&[
         Some(payload.email),
         payload.uid,
@@ -257,7 +253,9 @@ fn peek_codebuddy_identity() -> Option<String> {
 }
 
 fn peek_codebuddy_cn_identity() -> Option<String> {
-    let payload = codebuddy_cn_account::import_payload_from_local().ok().flatten()?;
+    let payload = codebuddy_cn_account::import_payload_from_local()
+        .ok()
+        .flatten()?;
     identity_key(&[
         Some(payload.email),
         payload.uid,
@@ -266,7 +264,20 @@ fn peek_codebuddy_cn_identity() -> Option<String> {
 }
 
 fn peek_workbuddy_identity() -> Option<String> {
-    let payload = workbuddy_account::import_payload_from_local().ok().flatten()?;
+    let payload = workbuddy_account::import_payload_from_local()
+        .ok()
+        .flatten()?;
+    identity_key(&[
+        Some(payload.email),
+        payload.uid,
+        token_prefix(&payload.access_token),
+    ])
+}
+
+fn peek_minimax_code_identity() -> Option<String> {
+    let payload = minimax_code_account::import_payload_from_local()
+        .ok()
+        .and_then(|payloads| payloads.into_iter().next())?;
     identity_key(&[
         Some(payload.email),
         payload.uid,
@@ -275,27 +286,7 @@ fn peek_workbuddy_identity() -> Option<String> {
 }
 
 fn peek_qoder_identity() -> Option<String> {
-    let db_path = qoder_account::get_default_qoder_state_db_path()?;
-    if !db_path.exists() {
-        return None;
-    }
-    let user_info = crate::modules::vscode_inject::read_qoder_secret_storage_value_by_db_path(
-        &db_path,
-        "secret://aicoding.auth.userInfo",
-    )
-    .ok()
-    .flatten()?;
-    let parsed: Value = serde_json::from_str(&user_info).unwrap_or(Value::String(user_info));
-    let email = parsed
-        .get("email")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let user_id = parsed
-        .get("id")
-        .or_else(|| parsed.get("userId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    identity_key(&[email, user_id])
+    qoder_account::local_identity_key()
 }
 
 fn peek_trae_identity(platform: trae_account::TraePlatformKind) -> Option<String> {
@@ -310,7 +301,9 @@ fn peek_trae_identity(platform: trae_account::TraePlatformKind) -> Option<String
 }
 
 fn peek_zed_identity() -> Option<String> {
-    let credentials = zed_account::read_credentials_from_keychain().ok().flatten()?;
+    let credentials = zed_account::read_credentials_from_keychain()
+        .ok()
+        .flatten()?;
     identity_key(&[Some(credentials.user_id)])
 }
 
@@ -384,10 +377,13 @@ async fn enrich_codebuddy_payload(
 
 fn import_antigravity() -> ImportFuture {
     Box::pin(async {
-        import::import_from_local_logic()
-            .await
-            .map(|_| true)
-            .map_err(|error| error.to_string())
+        // The macOS watcher peeks at the database and must import that same
+        // identity without prompting for Keychain access in the background.
+        #[cfg(target_os = "macos")]
+        let imported = import::import_from_local_state_db_logic().await;
+        #[cfg(not(target_os = "macos"))]
+        let imported = import::import_from_local_logic().await;
+        imported.map(|_| true)
     })
 }
 
@@ -437,9 +433,8 @@ fn import_kiro() -> ImportFuture {
 
 fn import_codebuddy() -> ImportFuture {
     Box::pin(async {
-        let local_payload = codebuddy_account::import_payload_from_local()?.ok_or_else(|| {
-            "未在本机 CodeBuddy 客户端中找到登录信息".to_string()
-        })?;
+        let local_payload = codebuddy_account::import_payload_from_local()?
+            .ok_or_else(|| "未在本机 CodeBuddy 客户端中找到登录信息".to_string())?;
         let access_token = local_payload.access_token.clone();
         let payload = enrich_codebuddy_payload(
             local_payload,
@@ -453,9 +448,8 @@ fn import_codebuddy() -> ImportFuture {
 
 fn import_codebuddy_cn() -> ImportFuture {
     Box::pin(async {
-        let local_payload = codebuddy_cn_account::import_payload_from_local()?.ok_or_else(|| {
-            "未在本机 CodeBuddy CN 客户端中找到登录信息".to_string()
-        })?;
+        let local_payload = codebuddy_cn_account::import_payload_from_local()?
+            .ok_or_else(|| "未在本机 CodeBuddy CN 客户端中找到登录信息".to_string())?;
         let access_token = local_payload.access_token.clone();
         let payload = enrich_codebuddy_payload(
             local_payload,
@@ -514,9 +508,12 @@ async fn enrich_workbuddy_payload(
 
 fn import_workbuddy() -> ImportFuture {
     Box::pin(async {
-        let local_payload = workbuddy_account::import_payload_from_local()?.ok_or_else(|| {
-            "未在本机 WorkBuddy 客户端中找到登录信息".to_string()
-        })?;
+        let local_payload = tauri::async_runtime::spawn_blocking(
+            workbuddy_account::import_payload_from_local_prepared,
+        )
+        .await
+        .map_err(|error| format!("WorkBuddy 本机导入后台任务失败: {}", error))??
+        .ok_or_else(|| "未在本机 WorkBuddy 客户端中找到登录信息".to_string())?;
         let access_token = local_payload.access_token.clone();
         let payload = enrich_workbuddy_payload(
             local_payload,
@@ -528,11 +525,34 @@ fn import_workbuddy() -> ImportFuture {
     })
 }
 
+fn import_minimax_code() -> ImportFuture {
+    Box::pin(async {
+        let payloads = tauri::async_runtime::spawn_blocking(
+            minimax_code_account::import_payload_from_local,
+        )
+        .await
+        .map_err(|error| format!("MiniMax Code 本机导入后台任务失败: {}", error))??;
+        if payloads.is_empty() {
+            return Err("未在本机 MiniMax Code 客户端中找到登录信息".to_string());
+        }
+        let mut imported_any = false;
+        for payload in payloads {
+            minimax_code_account::upsert_account(payload)?;
+            imported_any = true;
+        }
+        Ok(imported_any)
+    })
+}
+
 fn import_qoder() -> ImportFuture {
     Box::pin(async {
-        qoder_account::import_from_local()
-            .map(|account| account.is_some())
-            .map_err(|error| error.to_string())
+        tauri::async_runtime::spawn_blocking(|| {
+            let imported = qoder_account::import_from_local()?;
+            if imported.is_some() {
+                qoder_account::reconcile_current_account()?;
+            }
+            Ok(imported.is_some())
+        }).await.map_err(|error| error.to_string())?
     })
 }
 
@@ -605,6 +625,11 @@ fn platform_watchers() -> Vec<PlatformWatcher> {
             import_account: import_workbuddy,
         },
         PlatformWatcher {
+            platform: "minimaxcode",
+            peek_identity: peek_minimax_code_identity,
+            import_account: import_minimax_code,
+        },
+        PlatformWatcher {
             platform: "qoder",
             peek_identity: peek_qoder_identity,
             import_account: import_qoder,
@@ -662,6 +687,10 @@ fn collect_peek_decisions(mode: WatchMode) -> (u32, Vec<PeekDecision>) {
     let mut pending = Vec::new();
 
     for watcher in platform_watchers() {
+        let platform = if watcher.platform == "antigravity" { "antigravity_ide" } else { watcher.platform };
+        if mode == WatchMode::PollOnChange && !crate::modules::tray_layout::is_platform_enabled(platform) {
+            continue;
+        }
         let current_identity = (watcher.peek_identity)();
         let Some(current_identity) = current_identity else {
             if let Ok(mut state) = LAST_IDENTITIES.lock() {
@@ -722,10 +751,7 @@ async fn run_watch_cycle_with_mode(
     let (scanned, pending) = match tokio::time::timeout(IDENTITY_SCAN_TIMEOUT, task).await {
         Ok(Ok(result)) => result,
         Ok(Err(err)) => {
-            logger::log_warn(&format!(
-                "[AutoLocalImport] 后台本机身份扫描失败: {}",
-                err
-            ));
+            logger::log_warn(&format!("[AutoLocalImport] 后台本机身份扫描失败: {}", err));
             return AutoLocalImportScanResult::default();
         }
         Err(err) => {

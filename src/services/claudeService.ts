@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { withClaudeProfileErrors } from './claudeProfileErrors';
 import type {
   ClaudeAccount,
   ClaudeDesktopGatewayConnectionMode,
@@ -77,6 +78,18 @@ export async function deleteClaudeAccount(accountId: string): Promise<void> {
 
 export async function deleteClaudeAccounts(accountIds: string[]): Promise<void> {
   return await invoke('delete_claude_accounts', { accountIds });
+}
+
+export async function uninstallClaudeDesktopLoginComponent(): Promise<void> {
+  return await invoke('claude_uninstall_desktop_login_component');
+}
+
+export async function getClaudeDesktopLoginComponentStorage(): Promise<{ sizeBytes: number }> {
+  const raw = await invoke<{ sizeBytes?: number; size_bytes?: number }>(
+    'claude_get_desktop_login_component_storage',
+  );
+  const sizeBytes = Number(raw.sizeBytes ?? raw.size_bytes ?? 0);
+  return { sizeBytes: Number.isFinite(sizeBytes) && sizeBytes >= 0 ? sizeBytes : 0 };
 }
 
 export async function importClaudeFromJson(jsonContent: string): Promise<ClaudeAccount[]> {
@@ -286,7 +299,11 @@ export async function getClaudeAccountsIndexPath(): Promise<string> {
 }
 
 export async function switchClaudeAccount(accountId: string): Promise<string> {
-  return await invoke('switch_claude_account', { accountId });
+  return await withClaudeProfileErrors(() => invoke('switch_claude_account', { accountId }));
+}
+
+export async function applyClaudeCliAccountToUserConfig(accountId: string): Promise<void> {
+  return invoke('claude_apply_cli_account_to_user_config', { accountId });
 }
 
 export async function getClaudeCliLaunchCommand(

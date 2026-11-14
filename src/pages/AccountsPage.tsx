@@ -1,76 +1,58 @@
+import { useDurableUiSetting } from '../hooks/useDurableUiSetting';
+import { useLocalHistory, type LocalHistoryRead } from '../hooks/useLocalHistory';
+import { useAccountsOverviewFilterState } from '../hooks/useAccountsOverviewFilterState'
+import { useAccountFormLoad } from '../hooks/useAccountFormLoad'
+import { previewDurableUiSetting, readDurableUiSetting, saveDurableUiSetting } from '../utils/durableUiSettings';
+import { loadSavedMfaRecords, subscribeMfaVault, upsertSavedMfaRecord } from '../services/mfaRecoveryService'
 import { useState, useEffect, useMemo, useRef, useCallback, Fragment, MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Plus,
   RefreshCw,
   Upload,
   Trash2,
-  Rocket,
   X,
   Globe,
-  KeyRound,
-  Database,
-  Plug,
-  Copy,
   Check,
-  LayoutGrid,
-  List,
-  Search,
+  Copy,
   Lock,
   AlertTriangle,
   CircleAlert,
   Play,
   RotateCw,
-  History,
-  ArrowDownWideNarrow,
-  ArrowUp,
-  ArrowDown,
-  Wrench,
-  Rows3,
   GripVertical,
   Eye,
   EyeOff,
   Tag,
-  BookOpen,
-  FileUp,
+  FileText,
   ExternalLink,
-  FolderOpen,
-  FolderPlus,
-  ChevronRight,
-  LogOut,
-  Pencil
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { AccountLastUsed } from '../components/AccountLastUsed'
 import { useAccountStore } from '../stores/useAccountStore'
 import * as accountService from '../services/accountService'
 import { Account } from '../types/account'
 import { Page } from '../types/navigation'
 import {
   getAntigravityTierBadge,
-  getQuotaClass,
-  formatResetTimeDisplay,
 } from '../utils/account'
+import { formatGoogleValidationUrl } from '../utils/googleValidationUrl'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
-import { openUrl } from '@tauri-apps/plugin-opener'
-import { TagEditModal } from '../components/TagEditModal'
-import { ExportJsonModal } from '../components/ExportJsonModal'
-import { PaginationControls } from '../components/PaginationControls'
-import { SingleSelectFilterDropdown } from '../components/SingleSelectFilterDropdown'
-import { AccountGroupModal, AddToGroupModal } from '../components/AccountGroupModal'
-import { GroupAccountPickerModal } from '../components/GroupAccountPickerModal'
-import { ModalErrorMessage, useModalErrorState } from '../components/ModalErrorMessage'
-import { MfaQuickCodeSelect } from '../components/MfaQuickCodeSelect'
+import { useModalErrorState } from '../components/ModalErrorMessage'
+import { formatAntigravitySwitchError } from '../utils/antigravitySwitchError'
 import { useEscClose } from '../hooks/useEscClose'
+import { useMfaCountdown } from '../hooks/useMfaCountdown'
+import { useEnterConfirm } from '../hooks/useEnterConfirm'
+import { AntigravityGcpTosBadge } from '../components/AntigravityGcpTosBadge'
+import { AntigravityQuotaSection } from '../components/AntigravityQuotaSection'
 import {
-  AccountGroup,
-  getAccountGroups,
-  assignAccountsToGroup,
-  removeAccountsFromGroup,
-  deleteGroup,
-  renameGroup,
+  removeAccountIdsFromAllGroups,
 } from '../services/accountGroupService'
+import {
+  assignAccountsToPlatformGroup,
+} from '../services/platformGroupService'
+import { usePlatformAccountGroups } from '../hooks/usePlatformAccountGroups'
 import {
   GroupSettings,
   DisplayGroup,
@@ -79,8 +61,11 @@ import {
   calculateGroupQuota,
   updateGroupOrder
 } from '../services/groupService'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import {
+  getAntigravityModelQuotaDisplayItems,
   getAntigravityQuotaDisplayItems,
+  isAccountNeedsReauth,
 } from '../presentation/platformAccountPresentation'
 import {
   ANTIGRAVITY_RESET_SORT_PREFIX,
@@ -89,11 +74,12 @@ import {
   normalizeAntigravitySortBy,
   normalizeAntigravitySortDirection,
 } from '../utils/antigravityAccountSort'
-import { OverviewTabsHeader } from '../components/OverviewTabsHeader'
+import {
+  mergeIdListsPreferExisting,
+  subscribeUserMemory,
+} from '../utils/userMemory'
 import styles from '../styles/CompactView.module.css'
-import { FileCorruptedModal, parseFileCorruptedError, type FileCorruptedError } from '../components/FileCorruptedModal'
-import { AccountSelectionToolbar } from '../components/AccountSelectionToolbar'
-import { QuickSettingsPopover } from '../components/QuickSettingsPopover'
+import { parseFileCorruptedError, type FileCorruptedError } from '../components/FileCorruptedModal'
 import {
   isPrivacyModeEnabledByDefault,
   maskSensitiveValue,
@@ -101,8 +87,7 @@ import {
   PRIVACY_MODE_CHANGED_EVENT
 } from '../utils/privacy'
 import { useExportJsonModal } from '../hooks/useExportJsonModal'
-import { MultiSelectFilterDropdown, type MultiSelectFilterOption } from '../components/MultiSelectFilterDropdown'
-import { AccountTagFilterDropdown } from '../components/AccountTagFilterDropdown'
+import type { MultiSelectFilterOption } from '../components/MultiSelectFilterDropdown'
 import {
   buildPaginatedGroups,
   buildPaginationPageSizeStorageKey,
@@ -118,11 +103,10 @@ import {
   normalizeAccountTag,
   type AccountFilterType,
 } from '../utils/accountFilters'
-import { loadWakeupOfficialLsVersionMode } from '../utils/wakeupOfficialLsVersion'
+import { formatWakeupRuntimeError } from '../utils/wakeupRuntimeError'
 import {
   buildValidAccountsFilterOption,
   splitValidityFilterValues,
-  VALID_ACCOUNTS_FILTER_VALUE,
 } from '../utils/accountValidityFilter'
 import {
   FEATURE_UNLOCK_CHANGED_EVENT,
@@ -135,139 +119,68 @@ import {
   normalizeAntigravityExternalImportToken,
 } from '../utils/externalProviderImport'
 import {
-  ACCOUNTS_OVERVIEW_FILTER_PERSISTENCE_CHANGED_EVENT,
-  type AccountsOverviewFilterPersistenceChangedDetail,
-  normalizeAccountsOverviewScope,
   readAccountsOverviewFilterField,
   readAccountsOverviewFilterPersistenceEnabled,
   readAccountsOverviewFilterStringArray,
-  removeAccountsOverviewFilterField,
-  writeAccountsOverviewFilterField,
+  resolveAccountSortMode,
 } from '../utils/accountsOverviewFilterPersistence'
 import { useAntigravityRuntimeTarget } from '../hooks/useAntigravityRuntimeTarget'
+import { useRememberMfaQuery } from '../hooks/useRememberMfaQuery'
+import {
+  getMfaOtpToken,
+  parseMfaCredentialInput,
+  type MfaRecord,
+} from '../utils/mfaVault'
+import { findFirstMailVerificationCode } from '../utils/mailVerificationCode'
+import { AccountsOverviewView } from "./AccountsOverviewView";
+import { getLocalOffsetMinutes } from '../utils/localTimeZone';
+import {
+  ANTIGRAVITY_ACCOUNT_NOTE_MAX_LENGTH,
+  ANTIGRAVITY_FILTER_FIELD_FILTER_TYPES,
+  ANTIGRAVITY_FILTER_FIELD_GROUP_BY_TAG,
+  ANTIGRAVITY_FILTER_FIELD_SORT_BY,
+  ANTIGRAVITY_FILTER_FIELD_SORT_DIRECTION,
+  ANTIGRAVITY_FILTER_FIELD_TAG_FILTER,
+  ANTIGRAVITY_FILTER_FIELD_VIEW_MODE,
+  ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
+  ANTIGRAVITY_TOKEN_BATCH_EXAMPLE,
+  ANTIGRAVITY_TOKEN_SINGLE_EXAMPLE,
+  DEFAULT_FILTER_TYPES,
+  DEFAULT_TAG_FILTER,
+  EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM,
+  buildAntigravityAccountNoteForm,
+  buildAntigravityAccountNoteUpdate,
+  buildVerificationHistoryMaps,
+  formatAntigravityMailPreviewTime,
+  formatMfaRecordOption,
+  getAntigravityAccountNoteTitle,
+  hasAntigravityAccountNoteDetails,
+  hasAntigravityAccountNoteFormDetails,
+  isPendingAntigravityAccount,
+  ANTIGRAVITY_CUSTOM_SORT_ACTIVE_KEY,
+  readAntigravityCustomSortOrder,
+  writeAntigravityCustomSortActive,
+  writeAntigravityCustomSortOrder,
+  type AccountsFilterType,
+  type AntigravityAccountNoteFormState,
+  type AntigravityAccountNoteMailPreviewState,
+  type ExtensionImportProgressPayload,
+  type VerificationHistoryBatch,
+  type ViewMode,
+} from './antigravityAccountOverviewModel';
+
 
 interface AccountsPageProps {
   onNavigate?: (page: Page) => void
 }
 
-type AntigravitySwitchHistoryItem = accountService.AntigravitySwitchHistoryItem
-type AccountsFilterType = AccountFilterType | typeof VALID_ACCOUNTS_FILTER_VALUE
 
-type ViewMode = 'grid' | 'list' | 'compact'
+export type { AccountsFilterType } from './antigravityAccountOverviewModel';
 
-interface VerificationDetailRecord {
-  status: string
-  lastMessage?: string | null
-  lastErrorCode?: number | null
-  validationUrl?: string | null
-  appealUrl?: string | null
-}
+const readVerificationHistory = (retry: boolean): Promise<LocalHistoryRead<VerificationHistoryBatch>> =>
+  invoke('wakeup_verification_load_history', { retry })
 
-interface VerificationHistoryRecord {
-  accountId: string
-  status: string
-  lastMessage?: string | null
-  lastErrorCode?: number | null
-  validationUrl?: string | null
-  appealUrl?: string | null
-}
-
-interface VerificationHistoryBatch {
-  batchId: string
-  verifiedAt: number
-  records?: VerificationHistoryRecord[]
-}
-
-const buildVerificationHistoryMaps = (batches: VerificationHistoryBatch[] = []) => {
-  const sorted = [...batches].sort((a, b) => b.verifiedAt - a.verifiedAt)
-  const statusMap: Record<string, string> = {}
-  const detailMap: Record<string, VerificationDetailRecord> = {}
-
-  for (const batch of sorted) {
-    for (const record of batch.records || []) {
-      if (!(record.accountId in statusMap)) {
-        statusMap[record.accountId] = record.status
-        detailMap[record.accountId] = {
-          status: record.status,
-          lastMessage: record.lastMessage,
-          lastErrorCode: record.lastErrorCode,
-          validationUrl: record.validationUrl,
-          appealUrl: record.appealUrl,
-        }
-      }
-    }
-  }
-
-  return { statusMap, detailMap }
-}
-
-interface ExtensionImportProgressPayload {
-  phase?: string
-  current?: number
-  total?: number
-  email?: string
-}
-
-const ANTIGRAVITY_TOKEN_SINGLE_EXAMPLE = `{"refresh_token":"1//0gAbCdEf..."}`
-const ANTIGRAVITY_TOKEN_BATCH_EXAMPLE = `[
-  {"refresh_token":"1//0gTokenA..."},
-  {"refreshToken":"1//0gTokenB..."}
-]`
-const ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE = normalizeAccountsOverviewScope('antigravity')
-const ANTIGRAVITY_FILTER_FIELD_VIEW_MODE = 'view_mode'
-const ANTIGRAVITY_FILTER_FIELD_SORT_BY = 'sort_by'
-const ANTIGRAVITY_FILTER_FIELD_SORT_DIRECTION = 'sort_direction'
-const ANTIGRAVITY_FILTER_FIELD_FILTER_TYPES = 'filter_types'
-const ANTIGRAVITY_FILTER_FIELD_TAG_FILTER = 'tag_filter'
-const ANTIGRAVITY_FILTER_FIELD_GROUP_BY_TAG = 'group_by_tag'
-const ANTIGRAVITY_FILTER_FIELD_ACTIVE_GROUP_ID = 'active_group_id'
-
-const DEFAULT_FILTER_TYPES: AccountsFilterType[] = []
-const DEFAULT_TAG_FILTER: string[] = []
-
-const ANTIGRAVITY_CUSTOM_SORT_ORDER_KEY = 'agtools.antigravity.accounts.custom_sort_order.v1'
-const ANTIGRAVITY_CUSTOM_SORT_ACTIVE_KEY = 'agtools.antigravity.accounts.custom_sort_active.v1'
-
-function readAntigravityCustomSortOrder(): string[] {
-  try {
-    const raw = localStorage.getItem(ANTIGRAVITY_CUSTOM_SORT_ORDER_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (item): item is string =>
-        typeof item === 'string' && item.trim().length > 0
-    )
-  } catch {
-    return []
-  }
-}
-
-function writeAntigravityCustomSortOrder(accountIds: string[]): void {
-  try {
-    localStorage.setItem(ANTIGRAVITY_CUSTOM_SORT_ORDER_KEY, JSON.stringify(accountIds))
-  } catch {
-    // ignore persistence failures
-  }
-}
-
-function readAntigravityCustomSortActive(): boolean {
-  try {
-    return localStorage.getItem(ANTIGRAVITY_CUSTOM_SORT_ACTIVE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function writeAntigravityCustomSortActive(active: boolean): void {
-  try {
-    localStorage.setItem(ANTIGRAVITY_CUSTOM_SORT_ACTIVE_KEY, active ? '1' : '0')
-  } catch {
-    // ignore persistence failures
-  }
-}
-
-export function AccountsPage({ onNavigate }: AccountsPageProps) {
+export function useAccountsPageController({ onNavigate }: AccountsPageProps) {
   const { t, i18n } = useTranslation()
   const antigravityRuntimeTarget = useAntigravityRuntimeTarget()
   const locale = i18n.language || 'zh-CN'
@@ -284,48 +197,74 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     refreshAllQuotas,
     startOAuthLogin,
     switchAccount,
-    updateAccountTags
+    updateAccountTags,
+    updateAccountNotes
   } = useAccountStore()
   const currentAccount = currentAccountsByTarget[antigravityRuntimeTarget] ?? null
 
-  const formatSwitchError = useCallback((error: unknown) => String(error), [])
+  const formatSwitchError = useCallback((error: unknown) => formatAntigravitySwitchError(t, error), [t])
 
   // ─── 验证状态标记 ────────────────────────────────────────────────────
   // 优先读 disabled_reason（新版后端写入），没有则回退到验证历史（向后兼容）
-  const [verificationStatusMap, setVerificationStatusMap] = useState<Record<string, string>>({})
-  const [verificationDetailMap, setVerificationDetailMap] = useState<Record<string, VerificationDetailRecord>>({})
-
-  const loadVerificationHistory = useCallback(async () => {
-    const requestId = verificationHistoryRequestIdRef.current + 1
-    verificationHistoryRequestIdRef.current = requestId
-
-    try {
-      const batches = await invoke<VerificationHistoryBatch[]>('wakeup_verification_load_history')
-      if (verificationHistoryRequestIdRef.current !== requestId) {
-        return
-      }
-      const { statusMap, detailMap } = buildVerificationHistoryMaps(batches || [])
-      setVerificationStatusMap(statusMap)
-      setVerificationDetailMap(detailMap)
-    } catch (error) {
-      if (verificationHistoryRequestIdRef.current !== requestId) {
-        return
-      }
-      console.error('Failed to load verification history:', error)
-    }
-  }, [])
+  const { records: verificationBatches, refresh: loadVerificationHistory } = useLocalHistory(readVerificationHistory)
+  const { statusMap: verificationStatusMap, detailMap: verificationDetailMap } = useMemo(
+    () => buildVerificationHistoryMaps(verificationBatches), [verificationBatches],
+  )
 
   const getVerificationBadge = useCallback((account: Account) => {
     // 优先从 disabled_reason 读（新版），回退到验证历史（旧数据兼容）
     const reason = account.disabled_reason || verificationStatusMap[account.id]
-    if (reason === 'verification_required') {
-      return { label: t('wakeup.errorUi.verificationRequiredTitle', 'Need Verify'), className: 'is-warning' }
-    }
     if (reason === 'tos_violation') {
       return { label: t('wakeup.errorUi.tosViolationTitle', 'TOS'), className: 'is-tos-violation' }
     }
+    if (reason === 'verification_required' || isAccountNeedsReauth(account, verificationStatusMap)) {
+      return { label: t('accounts.status.needsReauth', '需网页验证'), className: 'is-warning' }
+    }
     return null
   }, [verificationStatusMap, t])
+
+  const resolveValidationUrl = useCallback((account: Account) => {
+    let rawUrl: string | null = null
+    if (account.quota_error?.validation_url) {
+      rawUrl = account.quota_error.validation_url
+    } else {
+      const vDetail = verificationDetailMap[account.id]
+      if (vDetail?.validationUrl) {
+        rawUrl = vDetail.validationUrl
+      } else if (account.quota_error?.message) {
+        const match = account.quota_error.message.match(/https?:\/\/[^\s"'\)]+/)
+        if (match) rawUrl = match[0]
+      }
+    }
+    if (!rawUrl) return null
+    return formatGoogleValidationUrl(rawUrl, account.email)
+  }, [verificationDetailMap])
+
+  const [copiedValidationUrlAccountId, setCopiedValidationUrlAccountId] = useState<string | null>(null)
+  const copiedValidationUrlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleCopyValidationUrl = useCallback(async (accountId: string, url: string) => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopiedValidationUrlAccountId(accountId)
+      if (copiedValidationUrlTimerRef.current) {
+        clearTimeout(copiedValidationUrlTimerRef.current)
+      }
+      copiedValidationUrlTimerRef.current = setTimeout(() => {
+        setCopiedValidationUrlAccountId(null)
+      }, 2000)
+    } catch (err) {
+      console.error('Failed to copy validation URL:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (copiedValidationUrlTimerRef.current) {
+        clearTimeout(copiedValidationUrlTimerRef.current)
+      }
+    }
+  }, [])
 
   // 文件损坏错误状态
   const [fileCorruptedError, setFileCorruptedError] = useState<FileCorruptedError | null>(null)
@@ -343,15 +282,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   const initialFilterPersistenceEnabled = readAccountsOverviewFilterPersistenceEnabled(
     ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
   )
-  const [filterPersistenceEnabled, setFilterPersistenceEnabled] = useState<boolean>(
-    initialFilterPersistenceEnabled,
-  )
 
-  // View mode
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    if (!initialFilterPersistenceEnabled) {
-      return 'grid'
-    }
+  // View mode — always remember layout independently of filter-memory switch (#1200)
+  const [viewMode, setViewMode] = useAccountsOverviewFilterState<ViewMode>(ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE, ANTIGRAVITY_FILTER_FIELD_VIEW_MODE, () => {
     const saved = readAccountsOverviewFilterField<unknown>(
       ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
       ANTIGRAVITY_FILTER_FIELD_VIEW_MODE,
@@ -360,7 +293,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     return saved === 'grid' || saved === 'list' || saved === 'compact'
       ? saved
       : 'grid'
-  })
+  }, true)
   const [privacyModeEnabled, setPrivacyModeEnabled] = useState<boolean>(() =>
     isPrivacyModeEnabledByDefault()
   )
@@ -384,7 +317,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
 
   // 筛选
   const [searchQuery, setSearchQuery] = useState('')
-  const [filterTypes, setFilterTypes] = useState<AccountsFilterType[]>(() => {
+  const [filterTypes, setFilterTypes] = useAccountsOverviewFilterState<AccountsFilterType[]>(ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE, ANTIGRAVITY_FILTER_FIELD_FILTER_TYPES, () => {
     if (initialFilterPersistenceEnabled) {
       const saved = readAccountsOverviewFilterField<unknown>(
         ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
@@ -400,7 +333,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     }
     return DEFAULT_FILTER_TYPES
   })
-  const [tagFilter, setTagFilter] = useState<string[]>(() => {
+  const [tagFilter, setTagFilter] = useAccountsOverviewFilterState<string[]>(ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE, ANTIGRAVITY_FILTER_FIELD_TAG_FILTER, () => {
     if (initialFilterPersistenceEnabled) {
       const saved = readAccountsOverviewFilterField<unknown>(
         ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
@@ -416,7 +349,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     }
     return DEFAULT_TAG_FILTER
   })
-  const [groupByTag, setGroupByTag] = useState<boolean>(() =>
+  const [groupByTag, setGroupByTag] = useAccountsOverviewFilterState<boolean>(ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE, ANTIGRAVITY_FILTER_FIELD_GROUP_BY_TAG, () =>
     initialFilterPersistenceEnabled
       ? Boolean(
           readAccountsOverviewFilterField<unknown>(
@@ -457,17 +390,42 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     text: string
     tone?: 'error'
   } | null>(null)
+  const [includeExportSensitiveNotes, setIncludeExportSensitiveNotes] = useState(false)
+  const includeExportSensitiveNotesRef = useRef(false)
+  const exportAccountIdsRef = useRef<string[]>([])
+  const exportSensitiveRefreshSeqRef = useRef(0)
   const [showSwitchHistoryModal, setShowSwitchHistoryModal] = useState(false)
-  const [switchHistoryLoading, setSwitchHistoryLoading] = useState(false)
   const [switchHistoryClearing, setSwitchHistoryClearing] = useState(false)
   const [switchHistoryClearConfirmOpen, setSwitchHistoryClearConfirmOpen] = useState(false)
-  const [switchHistory, setSwitchHistory] = useState<AntigravitySwitchHistoryItem[]>([])
+  const {
+    records: switchHistory, loading: switchHistoryLoading, error: switchHistoryError,
+    migrationPending: switchHistoryMigrating, refresh: refreshSwitchHistory, cleared: clearVisibleSwitchHistory,
+  } = useLocalHistory(accountService.loadAntigravitySwitchHistory, undefined, undefined, showSwitchHistoryModal)
   const [antigravitySeamlessSwitchUnlocked, setAntigravitySeamlessSwitchUnlocked] = useState(
     isAntigravitySeamlessSwitchFeatureUnlocked,
   )
   const exportModal = useExportJsonModal({
     exportFilePrefix: 'accounts_export',
-    exportJsonByIds: accountService.exportAccounts,
+    exportJsonByIds: async (ids) => {
+      const raw = await accountService.exportAccounts(ids)
+      if (includeExportSensitiveNotesRef.current) return raw
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        const strip = (value: unknown): unknown => {
+          if (Array.isArray(value)) return value.map(strip)
+          if (!value || typeof value !== 'object') return value
+          const copy = { ...(value as Record<string, unknown>) }
+          delete copy.two_factor_secret
+          delete copy.account_password
+          delete copy.phone_number
+          delete copy.mail_url
+          return copy
+        }
+        return JSON.stringify(strip(parsed), null, 2)
+      } catch {
+        return raw
+      }
+    },
     onError: (error) => {
       setMessage({
         text: t('messages.exportFailed', { error: String(error) }),
@@ -496,17 +454,6 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     set: setDeleteConfirmError,
   } = useModalErrorState()
   const [deleting, setDeleting] = useState(false)
-  const [groupDeleteConfirm, setGroupDeleteConfirm] = useState<{
-    id: string
-    name: string
-  } | null>(null)
-  const {
-    message: groupDeleteError,
-    scrollKey: groupDeleteErrorScrollKey,
-    set: setGroupDeleteError,
-  } = useModalErrorState()
-  const [deletingGroup, setDeletingGroup] = useState(false)
-  const [removingGroupAccountIds, setRemovingGroupAccountIds] = useState<Set<string>>(new Set())
   const [tagDeleteConfirm, setTagDeleteConfirm] = useState<{
     tag: string
     count: number
@@ -526,53 +473,137 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   // 标签编辑弹窗
   const [showTagModal, setShowTagModal] = useState<string | null>(null)
 
+  // 账号备注弹窗
+  const [editingAccountNoteId, setEditingAccountNoteId] = useState<string | null>(null)
+  const [oauthAccountNoteMode, setOauthAccountNoteMode] = useState(false)
+  const [pendingOAuthAccount, setPendingOAuthAccount] = useState<Account | null>(null)
+  const [pendingOAuthEmailInput, setPendingOAuthEmailInput] = useState('')
+  const [savingPendingOAuthAccount, setSavingPendingOAuthAccount] = useState(false)
+  const [pendingOAuthEmailError, setPendingOAuthEmailError] = useState<string | null>(null)
+  const [oauthAccountNoteForm, setOauthAccountNoteForm] = useState<AntigravityAccountNoteFormState>(
+    EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM,
+  )
+  const [editingAccountNoteForm, setEditingAccountNoteForm] = useState<AntigravityAccountNoteFormState>(
+    EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM,
+  )
+  const [savingAccountNote, setSavingAccountNote] = useState(false)
+  const [accountNoteSecretVisible, setAccountNoteSecretVisible] = useState(true)
+  const [accountNotePasswordVisible, setAccountNotePasswordVisible] = useState(true)
+  const [accountNoteCopiedKey, setAccountNoteCopiedKey] = useState<string | null>(null)
+  const [accountNoteFieldError, setAccountNoteFieldError] = useState<string | null>(null)
+  const [savedMfaRecords, setSavedMfaRecords] = useState<MfaRecord[]>([])
+  useEffect(() => subscribeMfaVault(() => setSavedMfaRecords(loadSavedMfaRecords())), [])
+  const [accountNoteMfaPickerOpen, setAccountNoteMfaPickerOpen] = useState(false)
+  const [accountNoteMailPreview, setAccountNoteMailPreview] = useState<AntigravityAccountNoteMailPreviewState | null>(null)
+  const [accountNoteMailPreviewLoading, setAccountNoteMailPreviewLoading] = useState(false)
+  const [accountNoteMailPreviewError, setAccountNoteMailPreviewError] = useState<string | null>(null)
+  const accountNoteMailPreviewSeqRef = useRef(0)
+  const accountNoteMailPreviewSnapshotRef = useRef<{ mailUrl: string; code: string } | null>(null)
+  const {
+    message: accountNoteError,
+    scrollKey: accountNoteErrorScrollKey,
+    set: setAccountNoteError,
+  } = useModalErrorState()
+  const editingAccountNoteAccount = useMemo(
+    () => accounts.find((account) => account.id === editingAccountNoteId) || null,
+    [accounts, editingAccountNoteId]
+  )
+  const activeAccountNoteForm = oauthAccountNoteMode || pendingOAuthAccount ? oauthAccountNoteForm : editingAccountNoteForm
+  const activeAccountNoteEmail = oauthAccountNoteMode
+    ? pendingOAuthAccount?.email ?? pendingOAuthEmailInput.trim()
+    : editingAccountNoteAccount?.email ?? ''
+
+  const openPendingOAuthAccount = useCallback((account: Account) => {
+    setPendingOAuthAccount(account)
+    setOauthAccountNoteMode(false)
+    setEditingAccountNoteId(null)
+    setEditingAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
+    setAccountNoteError(null)
+    setShowAddModal(true)
+    setAddTab('oauth')
+    setOauthAccountNoteForm(buildAntigravityAccountNoteForm(account))
+    setPendingOAuthEmailInput(account.email)
+    setAddStatus('idle')
+    setAddMessage('')
+  }, [setAccountNoteError])
+
+  const resetAccountNoteMailPreview = useCallback(() => {
+    accountNoteMailPreviewSeqRef.current += 1
+    accountNoteMailPreviewSnapshotRef.current = null
+    setAccountNoteMailPreview(null)
+    setAccountNoteMailPreviewError(null)
+    setAccountNoteMailPreviewLoading(false)
+  }, [])
+
+  const fetchAccountNoteMailPreviewForUrl = useCallback(async (rawUrl: string) => {
+    const mailUrl = rawUrl.trim()
+    accountNoteMailPreviewSeqRef.current += 1
+    const requestSeq = accountNoteMailPreviewSeqRef.current
+    setAccountNoteMailPreview(null)
+    setAccountNoteMailPreviewError(null)
+    if (!mailUrl) {
+      accountNoteMailPreviewSnapshotRef.current = null
+      setAccountNoteMailPreviewLoading(false)
+      return
+    }
+    setAccountNoteMailPreviewLoading(true)
+    try {
+      const response = await accountService.fetchAccountNoteMailUrl(mailUrl)
+      if (accountNoteMailPreviewSeqRef.current !== requestSeq) return
+      const preview = findFirstMailVerificationCode(response.body)
+      if (!preview) {
+        setAccountNoteMailPreviewError(t('accounts.accountNote.mailPreviewNoCode', '未匹配到连续 6 位验证码'))
+        return
+      }
+      const previous = accountNoteMailPreviewSnapshotRef.current
+      const status = previous?.mailUrl === mailUrl
+        ? previous.code === preview.code ? 'unchanged' : 'changed'
+        : 'initial'
+      accountNoteMailPreviewSnapshotRef.current = { mailUrl, code: preview.code }
+      setAccountNoteMailPreview({ ...preview, fetchedAt: Date.now(), truncated: response.truncated, status })
+    } catch (error) {
+      if (accountNoteMailPreviewSeqRef.current !== requestSeq) return
+      const rawError = String(error).replace(/^Error:\s*/, '')
+      const httpError = rawError.match(/^MAIL_PREVIEW_HTTP_FAILED:(\d+)$/)
+      const detail = rawError === 'MAIL_URL_EMPTY'
+        ? t('accounts.accountNote.mailPreviewUrlRequired', '请输入邮件地址')
+        : rawError === 'MAIL_URL_INVALID'
+          ? t('accounts.accountNote.mailPreviewUrlInvalid', '邮件地址格式无效，请输入完整的 http:// 或 https:// 地址')
+          : rawError === 'MAIL_URL_UNSUPPORTED_SCHEME'
+            ? t('accounts.accountNote.mailPreviewUnsupportedProtocol', '邮件地址仅支持 http 或 https 协议')
+            : httpError
+              ? t('accounts.accountNote.mailPreviewHttpFailed', { defaultValue: '邮件地址请求失败：HTTP {{status}}', status: httpError[1] })
+              : rawError.replace(/^MAIL_PREVIEW_[A-Z_]+:\s*/, '')
+      setAccountNoteMailPreviewError(t('accounts.accountNote.mailPreviewFetchFailed', { defaultValue: '读取邮件失败：{{error}}', error: detail }))
+    } finally {
+      if (accountNoteMailPreviewSeqRef.current === requestSeq) setAccountNoteMailPreviewLoading(false)
+    }
+  }, [t])
+
+  const mfaTimeRemaining = useMfaCountdown(
+    Boolean(editingAccountNoteAccount || oauthAccountNoteMode) &&
+      activeAccountNoteForm.twoFactorSecret.trim().length > 0,
+  )
+
   const [displayGroups, setDisplayGroups] = useState<DisplayGroup[]>([])
   const [displayGroupsLoaded, setDisplayGroupsLoaded] = useState(false)
 
-  // ─── 账号分组（文件夹）────────────────────────────────────
-  const [accountGroups, setAccountGroups] = useState<AccountGroup[]>([])
-  const [activeGroupId, setActiveGroupId] = useState<string | null>(() => {
-    if (!initialFilterPersistenceEnabled) {
-      return null
-    }
-    const saved = readAccountsOverviewFilterField<string | null>(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_ACTIVE_GROUP_ID,
-      null,
-    )
-    return typeof saved === 'string' && saved.trim() ? saved : null
-  })
+  // ─── 账号分组 ──────────────────────────────────────────
+  const grouping = usePlatformAccountGroups('antigravity', () => setSelected(new Set()))
   const [addTargetGroupId, setAddTargetGroupId] = useState<string | null>(null)
-  const [showAccountGroupModal, setShowAccountGroupModal] = useState(false)
-  const [showAddToGroupModal, setShowAddToGroupModal] = useState(false)
-  const [groupAccountPickerGroupId, setGroupAccountPickerGroupId] = useState<string | null>(null)
-  const [groupQuickAddGroupId, setGroupQuickAddGroupId] = useState<string | null>(null)
-
-  const reloadAccountGroups = useCallback(async () => {
-    setAccountGroups(await getAccountGroups())
-  }, [])
-
-  useEffect(() => {
-    reloadAccountGroups()
-  }, [reloadAccountGroups])
-
-  const activeGroup = useMemo(() => {
-    if (!activeGroupId) return null
-    return accountGroups.find((g) => g.id === activeGroupId) || null
-  }, [accountGroups, activeGroupId])
 
   const addTargetGroup = useMemo(() => {
     if (!addTargetGroupId) return null
-    return accountGroups.find((group) => group.id === addTargetGroupId) || null
-  }, [accountGroups, addTargetGroupId])
+    return grouping.groups.find((group) => group.id === addTargetGroupId) || null
+  }, [grouping.groups, addTargetGroupId])
 
   const resolveValidAccountGroupId = useCallback(
     (groupId?: string | null) => {
       const normalized = groupId?.trim()
       if (!normalized) return null
-      return accountGroups.some((group) => group.id === normalized) ? normalized : null
+      return grouping.groups.some((group) => group.id === normalized) ? normalized : null
     },
-    [accountGroups],
+    [grouping.groups],
   )
 
   const assignAccountsToAddTargetGroup = useCallback(
@@ -592,38 +623,12 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       )
       if (accountIds.length === 0) return
 
-      await assignAccountsToGroup(resolvedGroupId, accountIds)
-      await reloadAccountGroups()
+      await assignAccountsToPlatformGroup('antigravity', resolvedGroupId, accountIds)
+      await grouping.reloadGroups()
     },
-    [addTargetGroupId, reloadAccountGroups, resolveValidAccountGroupId],
+    [addTargetGroupId, grouping, resolveValidAccountGroupId],
   )
-
-  const groupAccountPickerGroup = useMemo(() => {
-    if (!groupAccountPickerGroupId) return null
-    return accountGroups.find((group) => group.id === groupAccountPickerGroupId) || null
-  }, [accountGroups, groupAccountPickerGroupId])
-
-  const groupQuickAddGroup = useMemo(() => {
-    if (!groupQuickAddGroupId) return null
-    return accountGroups.find((group) => group.id === groupQuickAddGroupId) || null
-  }, [accountGroups, groupQuickAddGroupId])
-
-  // 离开已删除的分组
-  useEffect(() => {
-    if (activeGroupId && !accountGroups.find((g) => g.id === activeGroupId)) {
-      setActiveGroupId(null)
-    }
-  }, [accountGroups, activeGroupId])
-
-  useEffect(() => {
-    if (groupQuickAddGroupId && !accountGroups.find((group) => group.id === groupQuickAddGroupId)) {
-      setGroupQuickAddGroupId(null)
-    }
-  }, [accountGroups, groupQuickAddGroupId])
-  const [sortBy, setSortBy] = useState<string>(() => {
-    if (readAntigravityCustomSortActive()) {
-      return 'custom'
-    }
+  const [rememberedSortBy, setSortBy] = useAccountsOverviewFilterState<string>(ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE, ANTIGRAVITY_FILTER_FIELD_SORT_BY, () => {
     if (!initialFilterPersistenceEnabled) {
       return DEFAULT_ANTIGRAVITY_SORT_BY
     }
@@ -635,7 +640,12 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       ) as string,
     )
   })
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>(() => {
+  const sortBy = resolveAccountSortMode(
+    rememberedSortBy,
+    useDurableUiSetting(ANTIGRAVITY_CUSTOM_SORT_ACTIVE_KEY),
+    DEFAULT_ANTIGRAVITY_SORT_BY,
+  )
+  const [sortDirection, setSortDirection] = useAccountsOverviewFilterState<'asc' | 'desc'>(ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE, ANTIGRAVITY_FILTER_FIELD_SORT_DIRECTION, () => {
     if (!initialFilterPersistenceEnabled) {
       return 'desc'
     }
@@ -682,8 +692,8 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   const addTabRef = useRef(addTab)
   const oauthUrlRef = useRef(oauthUrl)
   const addStatusRef = useRef(addStatus)
+  const oauthAccountNoteFormRef = useRef(oauthAccountNoteForm)
   const addTargetGroupIdRef = useRef<string | null>(null)
-  const verificationHistoryRequestIdRef = useRef(0)
   const colorPickerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -691,8 +701,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     addTabRef.current = addTab
     oauthUrlRef.current = oauthUrl
     addStatusRef.current = addStatus
+    oauthAccountNoteFormRef.current = oauthAccountNoteForm
     addTargetGroupIdRef.current = addTargetGroupId
-  }, [showAddModal, addTab, oauthUrl, addStatus, addTargetGroupId])
+  }, [showAddModal, addTab, oauthUrl, addStatus, oauthAccountNoteForm, addTargetGroupId])
 
   useEffect(() => {
     const handleFeatureUnlockChanged = (event: Event) => {
@@ -805,17 +816,6 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       ),
     )
 
-    const savedActiveGroupId = readAccountsOverviewFilterField<string | null>(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_ACTIVE_GROUP_ID,
-      null,
-    )
-    setActiveGroupId(
-      typeof savedActiveGroupId === 'string' && savedActiveGroupId.trim()
-        ? savedActiveGroupId
-        : null,
-    )
-
     setSortBy(
       normalizeAntigravitySortBy(
         readAccountsOverviewFilterField<unknown>(
@@ -842,7 +842,6 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     setFilterTypes([])
     setTagFilter([])
     setGroupByTag(false)
-    setActiveGroupId(null)
     setSortBy(DEFAULT_ANTIGRAVITY_SORT_BY)
     setSortDirection('desc')
   }, [])
@@ -852,13 +851,13 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const nextFilterPersistenceEnabled = readAccountsOverviewFilterPersistenceEnabled(
         ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
       )
-      setFilterPersistenceEnabled(nextFilterPersistenceEnabled)
       if (nextFilterPersistenceEnabled) {
         loadPersistedOverviewFilters()
       } else {
         resetOverviewFilters()
       }
       setPrivacyModeEnabled(isPrivacyModeEnabledByDefault())
+      void fetchAccounts()
     }
 
     const handlePrivacyModeChanged = (event: Event) => {
@@ -866,133 +865,21 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       setPrivacyModeEnabled(isEnabled)
     }
 
-    const handleFilterPersistenceChanged = (event: Event) => {
-      const detail = (event as CustomEvent<AccountsOverviewFilterPersistenceChangedDetail>).detail
-      if (!detail || detail.scope !== ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE) {
-        return
-      }
-      setFilterPersistenceEnabled(Boolean(detail.enabled))
-    }
     window.addEventListener('config-updated', handleConfigUpdated)
     window.addEventListener(PRIVACY_MODE_CHANGED_EVENT, handlePrivacyModeChanged as EventListener)
-    window.addEventListener(
-      ACCOUNTS_OVERVIEW_FILTER_PERSISTENCE_CHANGED_EVENT,
-      handleFilterPersistenceChanged as EventListener,
-    )
     return () => {
       window.removeEventListener('config-updated', handleConfigUpdated)
       window.removeEventListener(PRIVACY_MODE_CHANGED_EVENT, handlePrivacyModeChanged as EventListener)
-      window.removeEventListener(
-        ACCOUNTS_OVERVIEW_FILTER_PERSISTENCE_CHANGED_EVENT,
-        handleFilterPersistenceChanged as EventListener,
-      )
     }
-  }, [loadPersistedOverviewFilters, resetOverviewFilters])
+  }, [loadPersistedOverviewFilters, resetOverviewFilters, fetchAccounts])
 
   useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-        ANTIGRAVITY_FILTER_FIELD_VIEW_MODE,
+    return subscribeUserMemory(() => {
+      setCustomSortOrder((prev) =>
+        mergeIdListsPreferExisting(readAntigravityCustomSortOrder(), prev),
       )
-      return
-    }
-    writeAccountsOverviewFilterField(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_VIEW_MODE,
-      viewMode,
-    )
-  }, [filterPersistenceEnabled, viewMode])
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-        ANTIGRAVITY_FILTER_FIELD_SORT_BY,
-      )
-      return
-    }
-    writeAccountsOverviewFilterField(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_SORT_BY,
-      sortBy,
-    )
-  }, [filterPersistenceEnabled, sortBy])
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-        ANTIGRAVITY_FILTER_FIELD_SORT_DIRECTION,
-      )
-      return
-    }
-    writeAccountsOverviewFilterField(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_SORT_DIRECTION,
-      sortDirection,
-    )
-  }, [filterPersistenceEnabled, sortDirection])
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-        ANTIGRAVITY_FILTER_FIELD_FILTER_TYPES,
-      )
-      return
-    }
-    writeAccountsOverviewFilterField(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_FILTER_TYPES,
-      filterTypes,
-    )
-  }, [filterPersistenceEnabled, filterTypes])
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-        ANTIGRAVITY_FILTER_FIELD_TAG_FILTER,
-      )
-      return
-    }
-    writeAccountsOverviewFilterField(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_TAG_FILTER,
-      tagFilter,
-    )
-  }, [filterPersistenceEnabled, tagFilter])
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-        ANTIGRAVITY_FILTER_FIELD_GROUP_BY_TAG,
-      )
-      return
-    }
-    writeAccountsOverviewFilterField(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_GROUP_BY_TAG,
-      groupByTag,
-    )
-  }, [filterPersistenceEnabled, groupByTag])
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-        ANTIGRAVITY_FILTER_FIELD_ACTIVE_GROUP_ID,
-      )
-      return
-    }
-    writeAccountsOverviewFilterField(
-      ANTIGRAVITY_FILTER_PERSISTENCE_SCOPE,
-      ANTIGRAVITY_FILTER_FIELD_ACTIVE_GROUP_ID,
-      activeGroupId,
-    )
-  }, [activeGroupId, filterPersistenceEnabled])
+    })
+  }, [])
 
   // Sync customSortOrder when accounts load or change
   useEffect(() => {
@@ -1000,9 +887,8 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       return
     }
     const accountIds = accounts.map((account) => account.id)
-    const accountIdSet = new Set(accountIds)
     setCustomSortOrder((prev) => {
-      const next = prev.filter((accountId) => accountIdSet.has(accountId))
+      const next = [...prev]
       const seen = new Set(next)
       for (const accountId of accountIds) {
         if (!seen.has(accountId)) {
@@ -1016,31 +902,6 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       return unchanged ? prev : next
     })
   }, [accounts])
-
-  useEffect(() => {
-    writeAntigravityCustomSortOrder(customSortOrder)
-  }, [customSortOrder])
-
-  useEffect(() => {
-    writeAntigravityCustomSortActive(sortBy === 'custom')
-  }, [sortBy])
-
-  useEffect(() => {
-    if (!showCustomSortModal || !draggedCustomSortAccountId) return
-    const handleMouseUp = () => {
-      setDraggedCustomSortAccountId(null)
-      setCustomSortDropTargetId(null)
-    }
-    window.addEventListener('mouseup', handleMouseUp)
-    return () => window.removeEventListener('mouseup', handleMouseUp)
-  }, [showCustomSortModal, draggedCustomSortAccountId])
-
-  useEffect(() => {
-    if (!showCustomSortModal) {
-      setDraggedCustomSortAccountId(null)
-      setCustomSortDropTargetId(null)
-    }
-  }, [showCustomSortModal])
 
   const isCustomSortActive = sortBy === 'custom'
   const customSortAccounts = useMemo(() => {
@@ -1071,6 +932,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     [customSortAccounts]
   )
 
+  const draggedOrder = useRef<string[] | null>(null)
   const moveCustomSortAccount = useCallback(
     (accountId: string, direction: 'up' | 'down') => {
       const currentIndex = customSortAccountIds.indexOf(accountId)
@@ -1082,11 +944,16 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const [moved] = next.splice(currentIndex, 1)
       next.splice(targetIndex, 0, moved)
       setCustomSortOrder(next)
+      writeAntigravityCustomSortOrder(next)
     },
     [customSortAccountIds]
   )
 
   const stopCustomSortDragging = useCallback(() => {
+    if (draggedOrder.current) {
+      writeAntigravityCustomSortOrder(draggedOrder.current)
+      draggedOrder.current = null
+    }
     setDraggedCustomSortAccountId(null)
     setCustomSortDropTargetId(null)
   }, [])
@@ -1118,18 +985,32 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const next = [...customSortAccountIds]
       const [moved] = next.splice(fromIndex, 1)
       next.splice(toIndex, 0, moved)
+      draggedOrder.current = next
       setCustomSortOrder(next)
     },
     [customSortAccountIds, draggedCustomSortAccountId]
   )
 
   const resetCustomSortOrder = useCallback(() => {
-    setCustomSortOrder(accounts.map((account) => account.id))
+    const next = accounts.map((account) => account.id)
+    setCustomSortOrder(next)
+    writeAntigravityCustomSortOrder(next)
   }, [accounts])
+
+  useEffect(() => {
+    if (!showCustomSortModal || !draggedCustomSortAccountId) return
+    window.addEventListener('mouseup', stopCustomSortDragging)
+    return () => window.removeEventListener('mouseup', stopCustomSortDragging)
+  }, [showCustomSortModal, draggedCustomSortAccountId, stopCustomSortDragging])
+
+  useEffect(() => {
+    if (!showCustomSortModal) stopCustomSortDragging()
+  }, [showCustomSortModal, stopCustomSortDragging])
 
   const handleSortByChange = useCallback(
     (value: string) => {
       setSortBy(value)
+      writeAntigravityCustomSortActive(value === 'custom')
       if (value === 'custom') {
         setShowCustomSortModal(true)
       }
@@ -1145,6 +1026,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     if (
       normalizedSortBy === 'overall' ||
       normalizedSortBy === 'created_at' ||
+      normalizedSortBy === 'last_switched_at' ||
       normalizedSortBy === 'default' ||
       normalizedSortBy === 'custom'
     ) {
@@ -1195,7 +1077,8 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const verificationReason = account.disabled_reason || verificationStatusMap[account.id]
       const hasVerificationIssue =
         verificationReason === 'verification_required' || verificationReason === 'tos_violation'
-      return isDisabled || isForbidden || hasWarning || hasVerificationIssue
+      const needsReauth = isAccountNeedsReauth(account, verificationStatusMap)
+      return isDisabled || isForbidden || hasWarning || hasVerificationIssue || needsReauth
     },
     [refreshWarnings, verificationStatusMap]
   )
@@ -1209,21 +1092,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   const filteredAccounts = useMemo(() => {
     let result = [...accounts]
 
-    // 分组过滤（进入分组后只显示该组的账号）
-    if (activeGroup) {
-      const groupAccountSet = new Set(activeGroup.accountIds)
-      result = result.filter((acc) => groupAccountSet.has(acc.id))
-    } else {
-      // 主界面：隐藏所有已被归入文件夹的账号
-      const allGroupedIds = new Set<string>()
-      for (const group of accountGroups) {
-        for (const id of group.accountIds) {
-          allGroupedIds.add(id)
-        }
-      }
-      if (allGroupedIds.size > 0) {
-        result = result.filter((acc) => !allGroupedIds.has(acc.id))
-      }
+    // 分组过滤
+    if (grouping.activeGroupId) {
+      result = grouping.filterAccountsByGroup(result)
     }
 
     // 搜索过滤
@@ -1264,8 +1135,8 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     accountSortComparator,
     verificationStatusMap,
     isAbnormalAccount,
-    activeGroup,
-    accountGroups,
+    grouping.activeGroupId,
+    grouping.filterAccountsByGroup,
   ])
 
   const groupedAccounts = useMemo(() => {
@@ -1317,10 +1188,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     [paginatedIds, selected]
   )
 
-  const hasVisibleAccountGroups = useMemo(
-    () => !activeGroupId && !groupByTag && accountGroups.length > 0,
-    [activeGroupId, groupByTag, accountGroups]
-  )
+  const hasVisibleAccountGroups = false
 
   // 统计数量
   const tierCounts = useMemo(
@@ -1345,56 +1213,40 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     ]
   )
 
-  // 加载显示用分组配置
+  // Display groups are native data; their presentation is a separate preference.
   const loadDisplayGroups = async () => {
     try {
-      const groups = await getDisplayGroups()
-      setDisplayGroups(groups)
-      // Initialize compact mode group order
-      setCompactGroupOrder(groups.map((g) => g.id))
-
-      // Load custom settings from localStorage
-      const savedOrder = localStorage.getItem('compactGroupOrder')
-      const savedColors = localStorage.getItem('compactGroupColors')
-      const savedHidden = localStorage.getItem('compactHiddenGroups')
-
-      if (savedOrder) {
-        try {
-          const order = JSON.parse(savedOrder)
-          // 确保所有分组都在排序中
-          const validOrder = order.filter((id: string) =>
-            groups.some((g) => g.id === id)
-          )
-          const missingGroups = groups
-            .filter((g) => !validOrder.includes(g.id))
-            .map((g) => g.id)
-          setCompactGroupOrder([...validOrder, ...missingGroups])
-        } catch (e) {
-          console.error('Failed to parse saved order:', e)
-        }
-      }
-
-      if (savedColors) {
-        try {
-          setGroupColors(JSON.parse(savedColors))
-        } catch (e) {
-          console.error('Failed to parse saved colors:', e)
-        }
-      }
-
-      if (savedHidden) {
-        try {
-          setHiddenGroups(new Set(JSON.parse(savedHidden)))
-        } catch (e) {
-          console.error('Failed to parse saved hidden groups:', e)
-        }
-      }
+      setDisplayGroups(await getDisplayGroups())
     } catch (e) {
       console.error('Failed to load display groups:', e)
     } finally {
       setDisplayGroupsLoaded(true)
     }
   }
+
+  useEffect(() => {
+    const reload = () => {
+      const parse = (key: 'compactGroupOrder' | 'compactGroupColors' | 'compactHiddenGroups') => {
+        try {
+          return JSON.parse(readDurableUiSetting(key) ?? 'null')
+        } catch {
+          return null
+        }
+      }
+      const order = parse('compactGroupOrder')
+      const ids = displayGroups.map(group => group.id)
+      const validOrder = Array.isArray(order)
+        ? [...new Set(order.filter((id): id is string => typeof id === 'string' && ids.includes(id)))]
+        : []
+      setCompactGroupOrder([...validOrder, ...ids.filter(id => !validOrder.includes(id))])
+      setGroupColors(parse('compactGroupColors') ?? {})
+      const hidden = parse('compactHiddenGroups')
+      setHiddenGroups(new Set(Array.isArray(hidden) ? hidden.filter(id => typeof id === 'string') : []))
+    }
+    reload()
+    window.addEventListener('agtools:compact-groups-changed', reload)
+    return () => window.removeEventListener('agtools:compact-groups-changed', reload)
+  }, [displayGroups])
 
   // 获取按紧凑模式排序后的分组
   const getOrderedDisplayGroups = () => {
@@ -1409,29 +1261,15 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     return groupColors[groupId] ?? fallbackIndex
   }
 
-  // 切换模型显示/隐藏
   const toggleGroupVisibility = (groupId: string) => {
-    setHiddenGroups((prev) => {
-      const next = new Set(prev)
-      if (next.has(groupId)) {
-        next.delete(groupId)
-      } else {
-        next.add(groupId)
-      }
-      // Save to localStorage
-      localStorage.setItem('compactHiddenGroups', JSON.stringify([...next]))
-      return next
-    })
+    const next = new Set(hiddenGroups)
+    if (next.has(groupId)) next.delete(groupId)
+    else next.add(groupId)
+    previewDurableUiSetting('compactHiddenGroups', JSON.stringify([...next]))
   }
 
-  // Set group color
   const setGroupColor = (groupId: string, colorIndex: number) => {
-    setGroupColors((prev) => {
-      const next = { ...prev, [groupId]: colorIndex }
-      // Save to localStorage
-      localStorage.setItem('compactGroupColors', JSON.stringify(next))
-      return next
-    })
+    previewDurableUiSetting('compactGroupColors', JSON.stringify({ ...groupColors, [groupId]: colorIndex }))
     setShowColorPicker(null)
     setColorPickerPos(null)
   }
@@ -1481,10 +1319,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       // Persist order to backend and localStorage
       try {
         await updateGroupOrder(compactGroupOrder)
-        localStorage.setItem(
-          'compactGroupOrder',
-          JSON.stringify(compactGroupOrder)
-        )
+        await saveDurableUiSetting('compactGroupOrder', JSON.stringify(compactGroupOrder))
       } catch (e) {
         console.error('Failed to save group order:', e)
       }
@@ -1496,7 +1331,6 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     fetchAccounts()
     fetchCurrentAccount(antigravityRuntimeTarget)
     loadDisplayGroups()
-    loadVerificationHistory()
 
     let unlisten: UnlistenFn | undefined
 
@@ -1505,7 +1339,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       await fetchCurrentAccount(antigravityRuntimeTarget)
       const latestAccounts = useAccountStore.getState().accounts
       const accountsWithoutQuota = latestAccounts.filter(
-        (acc) => !acc.quota?.models?.length
+        (acc) => !acc.pending_oauth && !acc.quota?.models?.length
       )
       if (accountsWithoutQuota.length > 0) {
         await Promise.allSettled(
@@ -1513,7 +1347,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
         )
         await fetchAccounts()
       }
-      await loadVerificationHistory()
+      loadVerificationHistory()
     }).then((fn) => {
       unlisten = fn
     })
@@ -1562,7 +1396,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       setAddStatus('loading')
       setAddMessage(t('accounts.oauth.authorizing'))
       try {
-        const newAccount = await accountService.completeOAuthLogin()
+        const newAccount = await accountService.completeOAuthLogin(
+          buildAntigravityAccountNoteUpdate(oauthAccountNoteFormRef.current),
+        )
         await fetchAccounts()
         await fetchCurrentAccount(antigravityRuntimeTarget)
         await assignAccountsToAddTargetGroup([newAccount], addTargetGroupIdRef.current)
@@ -1629,7 +1465,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       setRefreshResult((prev) => ({ ...prev, [accountId]: 'error' }))
       setTimeout(() => setRefreshResult((prev) => { const next = { ...prev }; delete next[accountId]; return next }), 2000)
     } finally {
-      await loadVerificationHistory()
+      loadVerificationHistory()
       setRefreshing((prev) => { const next = new Set(prev); next.delete(accountId); return next })
     }
   }
@@ -1637,9 +1473,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   const handleRefreshAll = async () => {
     setRefreshingAll(true)
     try {
-      if (activeGroup) {
+      if (grouping.activeGroup) {
         // 分组内刷新：只刷新该组的账号
-        const groupAccountIds = new Set(activeGroup.accountIds)
+        const groupAccountIds = new Set(grouping.activeGroup.accountIds)
         const groupAccounts = accounts.filter((acc) => groupAccountIds.has(acc.id))
         await Promise.allSettled(
           groupAccounts.map((acc) => refreshQuota(acc.id, antigravityRuntimeTarget))
@@ -1651,7 +1487,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     } catch (e) {
       console.error(e)
     } finally {
-      await loadVerificationHistory()
+      loadVerificationHistory()
       setRefreshingAll(false)
     }
   }
@@ -1663,12 +1499,12 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     const selectedIdSet = new Set(selected)
     const selectedAccounts = accounts.filter((account) => selectedIdSet.has(account.id))
     try {
+      await invoke('wakeup_ensure_runtime_ready')
       const models = await invoke<Array<{ id: string }>>('fetch_available_models')
       const model = models.find((item) => item.id)?.id
       if (!model) {
         throw new Error(t('wakeup.notice.testMissingModel'))
       }
-      const officialLsVersionMode = loadWakeupOfficialLsVersionMode()
       const results = await Promise.allSettled(
         selectedAccounts.map((account) =>
           invoke('trigger_wakeup', {
@@ -1677,7 +1513,6 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
             prompt: undefined,
             maxOutputTokens: 0,
             cancelScopeId: undefined,
-            officialLsVersionMode,
           }),
         ),
       )
@@ -1697,7 +1532,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       setMessage({
         text: t('messages.actionFailed', {
           action: t('wakeup.runTest'),
-          error: String(error).replace(/^Error:\s*/, ''),
+          error: formatWakeupRuntimeError(String(error).replace(/^Error:\s*/, ''), t),
         }),
         tone: 'error',
       })
@@ -1729,6 +1564,11 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     setDeleteConfirmError(null)
     try {
       await deleteAccounts(deleteConfirm.ids)
+      await removeAccountIdsFromAllGroups(deleteConfirm.ids)
+      await grouping.reloadGroups()
+      setCustomSortOrder((prev) =>
+        prev.filter((accountId) => !deleteConfirm.ids.includes(accountId)),
+      )
       setSelected((prev) => {
         if (prev.size === 0) return prev
         const next = new Set(prev)
@@ -1737,6 +1577,8 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       })
       setDeleteConfirm(null)
       setDeleteConfirmError(null)
+      // 删除成功后清掉页顶红色报错（#1160）
+      setMessage(null)
     } catch (error) {
       setDeleteConfirmError(
         t('messages.actionFailed', {
@@ -1760,11 +1602,15 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   }, [])
 
   const openAddModal = useCallback((tab: 'oauth' | 'token' | 'import') => {
-    setAddTargetGroupId(resolveValidAccountGroupId(activeGroupId))
+    setAddTargetGroupId(resolveValidAccountGroupId(grouping.activeGroupId))
     setAddTab(tab)
     setShowAddModal(true)
+    setPendingOAuthAccount(null)
+    setPendingOAuthEmailInput('')
+    setOauthAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
+    setPendingOAuthEmailError(null)
     resetAddModalState()
-  }, [activeGroupId, resetAddModalState, resolveValidAccountGroupId])
+  }, [grouping.activeGroupId, resetAddModalState, resolveValidAccountGroupId])
 
   const consumeExternalProviderImport = useCallback(() => {
     const request = consumeQueuedExternalProviderImportForPlatform('antigravity')
@@ -1810,10 +1656,28 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     setAddTargetGroupId(null)
     resetAddModalState()
     setOauthUrl('')
+    setPendingOAuthAccount(null)
+    setPendingOAuthEmailInput('')
+    setPendingOAuthEmailError(null)
+    setOauthAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
   }
 
   useEscClose(showAddModal, closeAddModal);
   useEscClose(showSwitchHistoryModal, () => setShowSwitchHistoryModal(false));
+  useEscClose(Boolean(deleteConfirm) && !deleting, () => {
+    setDeleteConfirm(null)
+    setDeleteConfirmError(null)
+  });
+  useEnterConfirm(Boolean(deleteConfirm) && !deleting, () => {
+    void confirmDelete()
+  });
+  useEscClose(Boolean(tagDeleteConfirm) && !deletingTag, () => {
+    setTagDeleteConfirm(null)
+    setTagDeleteConfirmError(null)
+  });
+  useEnterConfirm(Boolean(tagDeleteConfirm) && !deletingTag, () => {
+    void confirmDeleteTag()
+  });
 
   const runModalAction = async (
     label: string,
@@ -1842,7 +1706,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
 
   const handleOAuthStart = async () => {
     await runModalAction(t('modals.import.oauthAction'), async () => {
-      const account = await startOAuthLogin()
+      const account = await startOAuthLogin(buildAntigravityAccountNoteUpdate(oauthAccountNoteForm))
       await fetchAccounts()
       await fetchCurrentAccount(antigravityRuntimeTarget)
       await assignAccountsToAddTargetGroup([account])
@@ -1851,7 +1715,77 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
 
   const handleOAuthComplete = async () => {
     await runModalAction(t('modals.import.oauthAction'), async () => {
-      const account = await accountService.completeOAuthLogin()
+      const account = await accountService.completeOAuthLogin(
+        buildAntigravityAccountNoteUpdate(oauthAccountNoteForm),
+      )
+      await fetchAccounts()
+      await fetchCurrentAccount(antigravityRuntimeTarget)
+      await assignAccountsToAddTargetGroup([account])
+    })
+  }
+
+  const handleSavePendingOAuthAccount = async () => {
+    if (savingPendingOAuthAccount) return
+    const email = pendingOAuthEmailInput.trim()
+    setPendingOAuthEmailError(null)
+    if (!email || !email.includes('@')) {
+      setPendingOAuthEmailError(t('codex.pendingAuth.emailRequired', '请输入账号邮箱'))
+      return
+    }
+    const rawSecret = oauthAccountNoteForm.twoFactorSecret.trim()
+    const parsedSecret = rawSecret ? parseMfaCredentialInput(rawSecret) : null
+    if (rawSecret && !parsedSecret) {
+      setAccountNoteFieldError(t('accounts.accountNote.twoFactorSecretInvalid', '2FA 秘钥格式无效，请输入 Base32 secret 或 otpauth:// 链接'))
+      openOAuthAccountNoteModal()
+      return
+    }
+    setSavingPendingOAuthAccount(true)
+    setAddStatus('loading')
+    setAddMessage(t('codex.pendingAuth.saving', '正在保存待授权账号...'))
+    try {
+      const account = await accountService.createPendingOAuthAccount(email, {
+        ...buildAntigravityAccountNoteUpdate(oauthAccountNoteForm),
+        twoFactorSecret: parsedSecret?.secret ?? rawSecret,
+      })
+      setOauthAccountNoteForm((previous) => ({
+        ...previous,
+        twoFactorSecret: parsedSecret?.secret ?? rawSecret,
+      }))
+      await fetchAccounts()
+      await assignAccountsToAddTargetGroup([account])
+      setPendingOAuthAccount(account)
+      setAddStatus('success')
+      setAddMessage(t('codex.pendingAuth.saved', '待授权账号已保存'))
+      window.setTimeout(() => {
+        setShowAddModal(false)
+        resetAddModalState()
+        setOauthUrl('')
+        setPendingOAuthAccount(null)
+        setPendingOAuthEmailInput('')
+        setOauthAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
+      }, 900)
+    } catch (error) {
+      setAddStatus('error')
+      setAddMessage(t('codex.pendingAuth.saveFailed', { defaultValue: '保存待授权账号失败：{{error}}', error: String(error).replace(/^Error:\s*/, '') }))
+    } finally {
+      setSavingPendingOAuthAccount(false)
+    }
+  }
+
+  const handlePendingOAuthStart = async () => {
+    if (!pendingOAuthAccount) return
+    await runModalAction(t('modals.import.oauthAction'), async () => {
+      const account = await accountService.startOAuthLogin(buildAntigravityAccountNoteUpdate(oauthAccountNoteForm))
+      await fetchAccounts()
+      await fetchCurrentAccount(antigravityRuntimeTarget)
+      await assignAccountsToAddTargetGroup([account])
+    })
+  }
+
+  const handlePendingOAuthComplete = async () => {
+    if (!pendingOAuthAccount) return
+    await runModalAction(t('modals.import.oauthAction'), async () => {
+      const account = await accountService.completeOAuthLogin(buildAntigravityAccountNoteUpdate(oauthAccountNoteForm))
       await fetchAccounts()
       await fetchCurrentAccount(antigravityRuntimeTarget)
       await assignAccountsToAddTargetGroup([account])
@@ -1860,6 +1794,11 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
 
   const handleSwitch = async (accountId: string) => {
     setMessage(null)
+    const targetAccount = accounts.find((account) => account.id === accountId)
+    if (isPendingAntigravityAccount(targetAccount)) {
+      if (targetAccount) openPendingOAuthAccount(targetAccount)
+      return
+    }
     setSwitching(accountId)
     try {
       const account = await switchAccount(accountId, antigravityRuntimeTarget)
@@ -1877,28 +1816,12 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     setSwitching(null)
   }
 
-  const loadSwitchHistory = useCallback(async () => {
-    setSwitchHistoryLoading(true)
-    try {
-      const items = await accountService.loadAntigravitySwitchHistory()
-      setSwitchHistory(items)
-    } catch (error) {
-      setMessage({
-        text: t('accounts.switchHistory.loadFailed', { error: String(error) }),
-        tone: 'error',
-      })
-    } finally {
-      setSwitchHistoryLoading(false)
-    }
-  }, [t])
-
-  const openSwitchHistoryModal = async () => {
+  const openSwitchHistoryModal = () => {
     if (!antigravitySeamlessSwitchUnlocked) {
       return
     }
     setShowSwitchHistoryModal(true)
     setSwitchHistoryClearConfirmOpen(false)
-    await loadSwitchHistory()
   }
 
   const handleClearSwitchHistory = () => {
@@ -1912,7 +1835,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     setSwitchHistoryClearing(true)
     try {
       await accountService.clearAntigravitySwitchHistory()
-      setSwitchHistory([])
+      clearVisibleSwitchHistory()
       setSwitchHistoryClearConfirmOpen(false)
     } catch (error) {
       setSwitchHistoryClearConfirmOpen(false)
@@ -2055,7 +1978,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     setAddStatus('loading')
     setAddMessage(t('modals.import.importingLocal'))
     try {
-      const imported = await accountService.importFromLocal()
+      const imported = await accountService.importFromLocal(antigravityRuntimeTarget)
       await fetchAccounts()
       await new Promise((resolve) => setTimeout(resolve, 180))
       await fetchAccounts()
@@ -2239,6 +2162,52 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   }
 
   const handleTokenImport = async () => {
+    const trimmedInput = tokenInput.trim()
+    const quickNoteLines = trimmedInput.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.includes('----'))
+    if (quickNoteLines.length > 0 && !trimmedInput.startsWith('{') && !trimmedInput.startsWith('[')) {
+        setImporting(true)
+        setAddStatus('loading')
+        try {
+          const imported = await accountService.importFromJson(trimmedInput)
+          await fetchAccounts()
+          await assignAccountsToAddTargetGroup(imported)
+          setAddStatus('success')
+          setAddMessage(t('messages.importSuccess', { count: imported.length }))
+        } catch (error) {
+          setAddStatus('error')
+          setAddMessage(t('messages.importFailed', { error: String(error) }))
+        } finally {
+          setImporting(false)
+        }
+        return
+    }
+    if (trimmedInput.startsWith('{') || trimmedInput.startsWith('[')) {
+      setImporting(true)
+      setAddStatus('loading')
+      try {
+        const importedAccounts = await accountService.importFromJson(trimmedInput)
+        await Promise.allSettled(
+        importedAccounts.filter((account) => !account.pending_oauth).map((account) => refreshQuota(account.id, antigravityRuntimeTarget)),
+        )
+        await fetchAccounts()
+        await assignAccountsToAddTargetGroup(importedAccounts)
+        setAddStatus('success')
+        setAddMessage(t('accounts.token.importSuccess', { count: importedAccounts.length }))
+        if (importedAccounts.length > 0) {
+          window.setTimeout(() => {
+            setShowAddModal(false)
+            resetAddModalState()
+          }, 1200)
+        }
+      } catch (error) {
+        setAddStatus('error')
+        setAddMessage(t('messages.importFailed', { error: String(error) }))
+      } finally {
+        setImporting(false)
+      }
+      return
+    }
+
     const tokens = extractRefreshTokens(tokenInput)
     if (tokens.length === 0) {
       setAddStatus('error')
@@ -2272,7 +2241,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
 
     if (importedAccounts.length > 0) {
       await Promise.allSettled(
-        importedAccounts.map((acc) => refreshQuota(acc.id, antigravityRuntimeTarget))
+        importedAccounts.filter((acc) => !acc.pending_oauth).map((acc) => refreshQuota(acc.id, antigravityRuntimeTarget))
       )
       await fetchAccounts()
       await assignAccountsToAddTargetGroup(importedAccounts)
@@ -2326,6 +2295,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     const selectedVisibleIds = Array.from(selected).filter((id) => visibleIdSet.has(id))
     const ids = selectedVisibleIds.length > 0 ? selectedVisibleIds : filteredAccounts.map((account) => account.id)
     if (ids.length === 0) return
+    exportAccountIdsRef.current = ids
+    includeExportSensitiveNotesRef.current = false
+    setIncludeExportSensitiveNotes(false)
     await exportModal.startExport(ids)
   }
 
@@ -2357,76 +2329,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
 
   // 从当前分组中移除选中账号
   const handleRemoveFromGroup = async () => {
-    if (!activeGroupId || selected.size === 0) return
-    await removeAccountsFromGroup(activeGroupId, Array.from(selected))
-    setSelected(new Set())
-    await reloadAccountGroups()
+    if (!grouping.activeGroupId || selected.size === 0) return
+    await grouping.handleRemoveFromGroup(Array.from(selected))
   }
-
-  const handleRemoveSingleFromGroup = useCallback(
-    async (groupId: string, accountId: string) => {
-      setRemovingGroupAccountIds((prev) => {
-        const next = new Set(prev)
-        next.add(accountId)
-        return next
-      })
-
-      try {
-        await removeAccountsFromGroup(groupId, [accountId])
-        setSelected((prev) => {
-          if (!prev.has(accountId)) return prev
-          const next = new Set(prev)
-          next.delete(accountId)
-          return next
-        })
-        await reloadAccountGroups()
-      } catch (error) {
-        console.error('Failed to remove account from group:', error)
-        setMessage({
-          text: t('messages.actionFailed', {
-            action: t('accounts.groups.removeFromGroup'),
-            error: String(error),
-          }),
-          tone: 'error',
-        })
-      } finally {
-        setRemovingGroupAccountIds((prev) => {
-          const next = new Set(prev)
-          next.delete(accountId)
-          return next
-        })
-      }
-    },
-    [reloadAccountGroups, t]
-  )
-
-  const requestDeleteGroup = useCallback((groupId: string, groupName: string) => {
-    setGroupDeleteError(null)
-    setGroupDeleteConfirm({
-      id: groupId,
-      name: groupName,
-    })
-  }, [])
-
-  const confirmDeleteGroup = useCallback(async () => {
-    if (!groupDeleteConfirm || deletingGroup) return
-
-    setDeletingGroup(true)
-    setGroupDeleteError(null)
-    try {
-      await deleteGroup(groupDeleteConfirm.id)
-      await reloadAccountGroups()
-      setGroupDeleteConfirm(null)
-      setGroupDeleteError(null)
-    } catch (error) {
-      console.error('Failed to delete account group:', error)
-      setGroupDeleteError(
-        t('accounts.groups.error.deleteFailed', { error: String(error) })
-      )
-    } finally {
-      setDeletingGroup(false)
-    }
-  }, [deletingGroup, groupDeleteConfirm, reloadAccountGroups, t])
 
   // 渲染分组文件夹卡片
 
@@ -2493,6 +2398,203 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     setShowTagModal(accountId);
   };
 
+  const { status: accountNoteReadStatus, start: loadAccountNote, reset: resetAccountNoteRead, retry: retryAccountNoteRead } = useAccountFormLoad()
+  const openAccountNoteModal = useCallback((snapshot: Account) => {
+    setOauthAccountNoteMode(false)
+    setEditingAccountNoteId(snapshot.id)
+    setEditingAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
+    setAccountNoteSecretVisible(true)
+    setAccountNotePasswordVisible(true)
+    setAccountNoteCopiedKey(null)
+    setAccountNoteFieldError(null)
+    setAccountNoteMfaPickerOpen(false)
+    setSavedMfaRecords(loadSavedMfaRecords())
+    setAccountNoteError(null)
+    resetAccountNoteMailPreview()
+    const account = useAccountStore.getState().accounts.find(item => item.id === snapshot.id) ?? snapshot
+    if (account.token.access_token || account.token.refresh_token) {
+      resetAccountNoteRead()
+      setEditingAccountNoteForm(buildAntigravityAccountNoteForm(account))
+      return
+    }
+    loadAccountNote(async () => {
+      const fetched = (await accountService.listAccounts()).find(item => item.id === snapshot.id)
+      const latest = useAccountStore.getState().accounts.find(item => item.id === snapshot.id)
+      if (!latest) throw new Error(t('common.failed'))
+      if (latest.token.access_token || latest.token.refresh_token) return latest
+      if (!fetched) throw new Error(t('common.failed'))
+      return fetched
+    }, live => {
+      setEditingAccountNoteForm(buildAntigravityAccountNoteForm(live))
+      void fetchAccountNoteMailPreviewForUrl(live.mail_url ?? '')
+    }, error => setAccountNoteError(error ? t('messages.actionFailed', {
+      action: t('accounts.accountNote.short'), error: String(error),
+    }) : null))
+  }, [fetchAccountNoteMailPreviewForUrl, loadAccountNote, resetAccountNoteMailPreview, resetAccountNoteRead, setAccountNoteError, t])
+
+  const openOAuthAccountNoteModal = useCallback(() => {
+    resetAccountNoteRead()
+    setOauthAccountNoteMode(true)
+    setEditingAccountNoteId(null)
+    setEditingAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
+    setAccountNoteSecretVisible(true)
+    setAccountNotePasswordVisible(true)
+    setAccountNoteCopiedKey(null)
+    setAccountNoteFieldError(null)
+    setAccountNoteMfaPickerOpen(false)
+    setSavedMfaRecords(loadSavedMfaRecords())
+    setAccountNoteError(null)
+    resetAccountNoteMailPreview()
+  }, [resetAccountNoteMailPreview, resetAccountNoteRead, setAccountNoteError])
+
+  useEffect(() => {
+    if (editingAccountNoteId && editingAccountNoteAccount?.mail_url?.trim()) {
+      void fetchAccountNoteMailPreviewForUrl(editingAccountNoteAccount.mail_url)
+    }
+  }, [editingAccountNoteAccount, editingAccountNoteId, fetchAccountNoteMailPreviewForUrl])
+
+  useEffect(() => {
+    if (oauthAccountNoteMode && oauthAccountNoteForm.mailUrl.trim()) {
+      void fetchAccountNoteMailPreviewForUrl(oauthAccountNoteForm.mailUrl)
+    }
+  }, [fetchAccountNoteMailPreviewForUrl, oauthAccountNoteForm.mailUrl, oauthAccountNoteMode])
+
+  const rememberActiveAccountNoteMfaQuery = useRememberMfaQuery({
+    enabled: Boolean(editingAccountNoteId || oauthAccountNoteMode),
+    secret: activeAccountNoteForm.twoFactorSecret,
+    accountName: activeAccountNoteEmail,
+    remark: activeAccountNoteForm.note,
+  })
+
+  const closeAccountNoteModal = useCallback(() => {
+    if (savingAccountNote) return
+    resetAccountNoteRead()
+    rememberActiveAccountNoteMfaQuery()
+    setEditingAccountNoteId(null)
+    setOauthAccountNoteMode(false)
+    setEditingAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
+    setAccountNoteCopiedKey(null)
+    setAccountNoteFieldError(null)
+    setAccountNoteMfaPickerOpen(false)
+    setAccountNoteError(null)
+    resetAccountNoteMailPreview()
+  }, [rememberActiveAccountNoteMfaQuery, resetAccountNoteMailPreview, resetAccountNoteRead, savingAccountNote, setAccountNoteError])
+
+  const updateEditingAccountNoteForm = useCallback(
+    (update: Partial<AntigravityAccountNoteFormState>) => {
+      if (oauthAccountNoteMode) {
+        setOauthAccountNoteForm((previous) => ({ ...previous, ...update }))
+      } else {
+        setEditingAccountNoteForm((previous) => ({ ...previous, ...update }))
+      }
+      if (Object.prototype.hasOwnProperty.call(update, 'twoFactorSecret')) {
+        setAccountNoteFieldError(null)
+      }
+      if (Object.prototype.hasOwnProperty.call(update, 'mailUrl')) {
+        setAccountNoteMailPreview(null)
+        setAccountNoteMailPreviewError(null)
+      }
+      setAccountNoteError(null)
+    },
+    [oauthAccountNoteMode, setAccountNoteError],
+  )
+
+  const copyAccountNoteValue = useCallback(async (key: string, value: string) => {
+    const text = value.trim()
+    if (!text) return
+    await navigator.clipboard.writeText(text)
+    setAccountNoteCopiedKey(key)
+    window.setTimeout(() => setAccountNoteCopiedKey((current) => (current === key ? null : current)), 1200)
+  }, [])
+
+  const handleSaveAccountNote = useCallback(async () => {
+    if ((!editingAccountNoteId && !oauthAccountNoteMode) || savingAccountNote || accountNoteReadStatus !== 'ready') return
+    setSavingAccountNote(true)
+    setAccountNoteError(null)
+    setAccountNoteFieldError(null)
+    try {
+      const rawTwoFactorSecret = activeAccountNoteForm.twoFactorSecret.trim()
+      const parsedTwoFactorSecret = rawTwoFactorSecret
+        ? parseMfaCredentialInput(rawTwoFactorSecret)
+        : null
+      if (rawTwoFactorSecret && !parsedTwoFactorSecret) {
+        setAccountNoteFieldError(
+          t('accounts.accountNote.twoFactorSecretInvalid', '2FA 秘钥格式无效，请输入 Base32 secret 或 otpauth:// 链接'),
+        )
+        return
+      }
+      const normalizedTwoFactorSecret = parsedTwoFactorSecret?.secret ?? rawTwoFactorSecret
+      const noteUpdate = {
+        note: activeAccountNoteForm.note,
+        twoFactorSecret: normalizedTwoFactorSecret,
+        accountPassword: activeAccountNoteForm.accountPassword,
+        phoneNumber: activeAccountNoteForm.phoneNumber,
+        mailUrl: activeAccountNoteForm.mailUrl,
+      }
+      if (oauthAccountNoteMode) {
+        setOauthAccountNoteForm({ ...activeAccountNoteForm, twoFactorSecret: normalizedTwoFactorSecret })
+      } else if (editingAccountNoteId) {
+        await updateAccountNotes(editingAccountNoteId, noteUpdate)
+      }
+      if (normalizedTwoFactorSecret) {
+        rememberActiveAccountNoteMfaQuery()
+        void upsertSavedMfaRecord({
+          secret: normalizedTwoFactorSecret,
+          accountName: editingAccountNoteAccount?.email ?? parsedTwoFactorSecret?.accountName ?? null,
+          remark: activeAccountNoteForm.note,
+        }).then(setSavedMfaRecords)
+      }
+      setMessage({ text: t('accounts.accountNote.saved', '账号备注已保存') })
+      setEditingAccountNoteId(null)
+      setOauthAccountNoteMode(false)
+      setEditingAccountNoteForm(EMPTY_ANTIGRAVITY_ACCOUNT_NOTE_FORM)
+    } catch (error) {
+      setAccountNoteError(
+        t('accounts.accountNote.saveFailed', {
+          error: String(error).replace(/^Error:\s*/, ''),
+          defaultValue: '保存账号备注失败：{{error}}',
+        })
+      )
+    } finally {
+      setSavingAccountNote(false)
+    }
+  }, [
+    accountNoteReadStatus,
+    activeAccountNoteForm,
+    editingAccountNoteId,
+    editingAccountNoteAccount,
+    oauthAccountNoteMode,
+    rememberActiveAccountNoteMfaQuery,
+    savingAccountNote,
+    setAccountNoteError,
+    t,
+    updateAccountNotes,
+  ])
+
+  const accountNoteOtpToken = useMemo(() => {
+    const secret = activeAccountNoteForm.twoFactorSecret.trim()
+    return secret ? getMfaOtpToken(secret) : ''
+  }, [activeAccountNoteForm.twoFactorSecret, mfaTimeRemaining])
+
+  const renderAccountNoteChip = useCallback((account: Account) => {
+    const hasNote = hasAntigravityAccountNoteDetails(account)
+    return (
+      <button
+        type="button"
+        className={`codex-account-note-chip ${hasNote ? 'has-note' : 'empty-note'}`}
+        onClick={() => openAccountNoteModal(account)}
+        title={hasNote
+          ? getAntigravityAccountNoteTitle(account, t('accounts.accountNote.short', '账号备注'))
+          : t('accounts.accountNote.emptyTitle', '填写账号备注')}
+      >
+        <FileText size={12} />
+        <span>{hasNote ? t('accounts.accountNote.short', '账号备注') : t('accounts.accountNote.addShort', '加备注')}</span>
+      </button>
+    )
+  }, [openAccountNoteModal, t])
+
+  useEscClose((Boolean(editingAccountNoteId) || oauthAccountNoteMode) && !savingAccountNote, closeAccountNoteModal)
+
   const handleSaveTags = async (tags: string[], notes?: string) => {
     if (!showTagModal) return;
     const scrollY = window.scrollY
@@ -2507,56 +2609,20 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     })
   };
 
-  const handleAssignAccountsToGroup = async (
-    groupId: string,
-    groupName: string,
-    accountIds: string[]
-  ) => {
-    const currentGroup = accountGroups.find((group) => group.id === groupId)
-    if (!currentGroup) return
-
-    const nextName = groupName.trim()
-    if (!nextName) {
-      throw new Error(t('platformLayout.groupNameRequired'))
-    }
-
-    if (accountGroups.some((group) => group.id !== groupId && group.name === nextName)) {
-      throw new Error(t('accounts.groups.error.duplicate'))
-    }
-
-    const currentIds = new Set(currentGroup.accountIds)
-    const nextIds = new Set(accountIds)
-    const addedIds = accountIds.filter((accountId) => !currentIds.has(accountId))
-    const removedIds = currentGroup.accountIds.filter((accountId) => !nextIds.has(accountId))
-    const shouldRename = nextName !== currentGroup.name
-
-    if (!shouldRename && addedIds.length === 0 && removedIds.length === 0) return
-
-    if (shouldRename) {
-      await renameGroup(groupId, nextName)
-    }
-
-    if (accountIds.length > 0) {
-      await assignAccountsToGroup(groupId, accountIds)
-    }
-
-    if (removedIds.length > 0) {
-      await removeAccountsFromGroup(groupId, removedIds)
-    }
-
-    await reloadAccountGroups()
-  }
-
   const formatDate = (timestamp: number) => {
-    const d = new Date(timestamp * 1000)
+    // 用系统真实时区偏移把 UTC 时间戳平移到本地墙上时间，再以 UTC 渲染，
+    // 绕开 WebView 默认/ICU 时区库回退 UTC 的问题（#时区）。
+    const offsetMin = getLocalOffsetMinutes()
+    const d = new Date(timestamp * 1000 + offsetMin * 60000)
     return (
       d.toLocaleDateString(locale, {
         year: 'numeric',
         month: '2-digit',
-        day: '2-digit'
+        day: '2-digit',
+        timeZone: 'UTC'
       }) +
       ' ' +
-      d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+      d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })
     )
   }
 
@@ -2651,71 +2717,15 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
   const resolveGroupLabel = (groupKey: string) =>
     groupKey === untaggedKey ? t('accounts.untagged', '未分组') : groupKey
 
-  const renderCustomQuotaSection = (account: Account, isList: boolean = false) => {
-    const quotaDisplayItems = getQuotaDisplayItems(account);
-    const hasModels = account.quota?.models && account.quota.models.length > 0;
-    
-    if (!hasModels) {
-      return (
-        <div className="quota-empty" style={{ gridColumn: '1 / -1', textAlign: 'center' }}>
-          {t('overview.noQuotaData')}
-        </div>
-      );
-    }
-
-    const claude5h = quotaDisplayItems.find(item => item.key === 'claude:5h');
-    const claudeWeekly = quotaDisplayItems.find(item => item.key === 'claude:weekly');
-    const gemini5h = quotaDisplayItems.find(item => item.key === 'gemini:5h');
-    const geminiWeekly = quotaDisplayItems.find(item => item.key === 'gemini:weekly');
-
-    const renderBar = (label: string, item: any) => {
-      const percentage = item ? item.percentage : 100;
-      const resetTime = item ? item.resetTime : '';
-      const resetLabel = resetTime ? formatResetTimeDisplay(resetTime, t) : '';
-      
-      return (
-        <div className={isList ? "quota-item" : "quota-compact-item"}>
-          <div className={isList ? "quota-header" : "quota-compact-header"}>
-            <span className={isList ? "quota-name" : "model-label"}>{label}</span>
-            <span className={`${isList ? "quota-value" : "model-pct"} ${getQuotaClass(percentage)}`}>
-              {percentage}%
-            </span>
-          </div>
-          <div className={isList ? "quota-progress-track" : "quota-compact-bar-track"}>
-            <div
-              className={`${isList ? "quota-progress-bar" : "quota-compact-bar"} ${getQuotaClass(percentage)}`}
-              style={{ width: `${percentage}%` }}
-            />
-          </div>
-          {(isList || resetLabel) && (
-            <div className={isList ? "quota-footer" : undefined}>
-              <span
-                className={isList ? "quota-reset" : "quota-compact-reset"}
-                title={resetLabel || undefined}
-              >
-                {resetLabel || '\u00A0'}
-              </span>
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    return (
-      <>
-        <div className="quota-column">
-          <div className="quota-column-title">Claude</div>
-          {renderBar("5h", claude5h)}
-          {renderBar(t('common.weekly', 'Weekly'), claudeWeekly)}
-        </div>
-        <div className="quota-column">
-          <div className="quota-column-title">Gemini</div>
-          {renderBar("5h", gemini5h)}
-          {renderBar(t('common.weekly', 'Weekly'), geminiWeekly)}
-        </div>
-      </>
-    );
-  };
+  const renderCustomQuotaSection = (account: Account, isList: boolean = false) => (
+    <AntigravityQuotaSection
+      items={getQuotaDisplayItems(account)}
+      modelItems={isList ? getAntigravityModelQuotaDisplayItems(account) : undefined}
+      isList={isList}
+      isNeedsReauth={isAccountNeedsReauth(account, verificationStatusMap)}
+      t={t}
+    />
+  );
 
   const renderGridCards = (items: Account[], groupKey?: string) =>
     items.map((account) => {
@@ -2726,7 +2736,12 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const isForbidden = Boolean(account.quota?.is_forbidden)
       const isSelected = selected.has(account.id)
       const quotaError = account.quota_error
-      const hasQuotaError = Boolean(quotaError?.message)
+      const hasValidModels = Boolean(account.quota?.models && account.quota.models.length > 0)
+      const isSpuriousSubscriptionError =
+        hasValidModels &&
+        (quotaError?.reason === 'SUBSCRIPTION_REQUIRED' ||
+          Boolean(quotaError?.message?.includes('valid license')))
+      const hasQuotaError = Boolean(quotaError?.message) && !isSpuriousSubscriptionError
       const accountTags = (account.tags || []).map((tag) => tag.trim()).filter(Boolean)
       const visibleTags = accountTags.slice(0, 2)
       const moreTagCount = Math.max(0, accountTags.length - visibleTags.length)
@@ -2740,7 +2755,11 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const disabledTitle = isDisabled
         ? `${t('accounts.status.disabled')}${account.disabled_reason ? `: ${account.disabled_reason}` : ''}`
         : ''
-      const verificationReason = account.disabled_reason || verificationStatusMap[account.id]
+      const rawVerificationReason = account.disabled_reason || verificationStatusMap[account.id]
+      const verificationReason =
+        rawVerificationReason === 'subscription_required' && hasValidModels
+          ? undefined
+          : rawVerificationReason
       const hasVerificationIssue = verificationReason === 'verification_required' || verificationReason === 'tos_violation'
 
       const hasModels = account.quota?.models && account.quota.models.length > 0
@@ -2780,7 +2799,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                 {warningLabel}
               </span>
             )}
-            {isDisabled && (
+            {isDisabled && !isAccountNeedsReauth(account, verificationStatusMap) && (
               <span className="status-pill disabled" title={disabledTitle}>
                 <CircleAlert size={12} />
                 {t('accounts.status.disabled')}
@@ -2795,6 +2814,10 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
             <span className={`tier-badge ${tierBadge.className}`}>
               {tierBadge.label}
             </span>
+            <AntigravityGcpTosBadge account={account} />
+            {isPendingAntigravityAccount(account) && (
+              <span className="status-pill warning">{t('codex.pendingAuth.badge', '待授权')}</span>
+            )}
             {(() => {
               const vBadge = getVerificationBadge(account)
               return vBadge ? (
@@ -2802,6 +2825,71 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                   {vBadge.label}
                 </span>
               ) : null
+            })()}
+          </div>
+
+          <div className="account-sub-line antigravity-account-meta-inline">
+            {renderAccountNoteChip(account)}
+            {isPendingAntigravityAccount(account) && (
+              <button type="button" className="btn btn-sm btn-outline" onClick={() => openPendingOAuthAccount(account)}>
+                {t('codex.pendingAuth.authorizeAction', '授权添加')}
+              </button>
+            )}
+            {!isPendingAntigravityAccount(account) && isAccountNeedsReauth(account, verificationStatusMap) && (() => {
+              const validationUrl = resolveValidationUrl(account)
+              const isCopied = copiedValidationUrlAccountId === account.id
+              return (
+                <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline validation-warning-btn"
+                    style={{
+                      color: 'var(--color-warning, #f59e0b)',
+                      borderColor: 'var(--color-warning, #f59e0b)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                    onClick={async () => {
+                      if (validationUrl) {
+                        try {
+                          await openUrl(validationUrl)
+                        } catch {
+                          window.open(validationUrl, '_blank', 'noopener,noreferrer')
+                        }
+                      } else {
+                        setShowVerificationErrorModal(account.id)
+                      }
+                    }}
+                    title={validationUrl || t('modals.errors.viewVerificationDetail')}
+                  >
+                    <ExternalLink size={12} />
+                    <span>{t('accounts.actions.openValidationUrl', '网页验证')}</span>
+                  </button>
+                  {validationUrl && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline copy-validation-btn"
+                      style={{
+                        color: isCopied ? 'var(--color-success, #10b981)' : 'var(--color-warning, #f59e0b)',
+                        borderColor: isCopied ? 'var(--color-success, #10b981)' : 'var(--color-warning, #f59e0b)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                      onClick={() => handleCopyValidationUrl(account.id, validationUrl)}
+                      title={t('accounts.actions.copyValidationUrlTooltip', '复制网页验证地址')}
+                    >
+                      {isCopied ? <Check size={12} /> : <Copy size={12} />}
+                      <span>
+                        {isCopied
+                          ? t('common.copied', '已复制')
+                          : t('accounts.actions.copyValidationUrl', '复制验证链接')}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )
             })()}
           </div>
 
@@ -2819,7 +2907,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
               </div>
             ) : (
               <>
-                {hasQuotaError && (
+                {hasQuotaError && !isAccountNeedsReauth(account, verificationStatusMap) && (
                   <div className="quota-empty" title={quotaError?.message}>
                     {t('common.shared.quota.queryFailed', '配额查询失败')}
                   </div>
@@ -2844,14 +2932,24 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
               {moreTagCount > 0 && <span className="tag-pill more">+{moreTagCount}</span>}
             </div>
           )}
-          <div className="card-footer">
-            <span className="card-date">{formatDate(account.created_at)}</span>
+          <div className="card-footer antigravity-card-footer">
+            <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} createdAt={account.created_at} formatDate={formatDate} />
             <div className="card-actions">
-              {(hasQuotaError || hasVerificationIssue) && (
+              {isPendingAntigravityAccount(account) && (
+                <button
+                  type="button"
+                  className="card-action-btn pending-auth-action"
+                  onClick={() => openPendingOAuthAccount(account)}
+                  title={t('common.shared.addModal.oauth', 'OAuth 授权')}
+                >
+                  <Globe size={14} />
+                </button>
+              )}
+              {(hasQuotaError || hasVerificationIssue || isAccountNeedsReauth(account, verificationStatusMap)) && (
                 <button
                   className="card-action-btn is-danger"
                   onClick={() =>
-                    hasVerificationIssue
+                    (hasVerificationIssue || isAccountNeedsReauth(account, verificationStatusMap))
                       ? setShowVerificationErrorModal(account.id)
                       : setShowErrorModal(account.id)
                   }
@@ -2873,6 +2971,15 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                 title={t('accounts.editTags', '编辑标签')}
               >
                 <Tag size={14} />
+              </button>
+              <button
+                type="button"
+                className={`card-action-btn ${hasAntigravityAccountNoteDetails(account) ? 'active' : ''}`}
+                onClick={() => isPendingAntigravityAccount(account) ? openPendingOAuthAccount(account) : openAccountNoteModal(account)}
+                title={hasAntigravityAccountNoteDetails(account) ? t('accounts.accountNote.short', '账号备注') : t('accounts.accountNote.emptyTitle', '填写账号备注')}
+                aria-label={t('accounts.accountNote.title', '账号备注')}
+              >
+                <FileText size={14} />
               </button>
               <button
                 className={`card-action-btn ${!isCurrent ? 'success' : ''}`}
@@ -2926,109 +3033,13 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       )
     })
 
-  // 渲染文件夹卡片（嵌入accounts-grid内）
-  const renderInlineFolderCards = () => {
-    if (activeGroupId || accountGroups.length === 0) return null
-    return accountGroups.map((group) => {
-      const groupAccounts = accounts.filter((acc) => group.accountIds.includes(acc.id))
-      return (
-        <div
-          key={`folder-${group.id}`}
-          className="account-card folder-inline-card"
-          onClick={() => {
-            setActiveGroupId(group.id)
-            setSelected(new Set())
-          }}
-        >
-          <div className="folder-inline-header">
-            <div className="folder-inline-icon">
-              <FolderOpen size={24} />
-            </div>
-            <div className="folder-inline-info">
-              <span className="folder-inline-name">{group.name}</span>
-              <span className="folder-inline-count">
-                {t('accounts.groups.accountCount', { count: groupAccounts.length })}
-              </span>
-            </div>
-            <button
-              className="folder-icon-btn"
-              title={t('accounts.groups.addAccounts')}
-              onClick={(e) => {
-                e.stopPropagation()
-                setGroupQuickAddGroupId(group.id)
-              }}
-            >
-              <FolderPlus size={14} />
-            </button>
-            <button
-              className="folder-icon-btn"
-              title={t('accounts.groups.editTitle')}
-              onClick={(e) => {
-                e.stopPropagation()
-                setGroupAccountPickerGroupId(group.id)
-              }}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              className="folder-icon-btn folder-delete-btn"
-              title={t('accounts.groups.deleteTitle')}
-              onClick={(e) => {
-                e.stopPropagation()
-                requestDeleteGroup(group.id, group.name)
-              }}
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
-          <div className="folder-inline-preview">
-            {groupAccounts.map((acc) => (
-              <div key={acc.id} className={`folder-preview-item${acc.disabled ? ' disabled' : ''}`}>
-                <span className="folder-preview-email" title={maskAccountText(acc.email) || ''}>
-                  {maskAccountText(acc.email)}
-                </span>
-                {acc.quota?.subscription_tier && (
-                  <span className={`tier-badge ${(acc.quota.subscription_tier || '').replace(/-tier$/, '').replace('g1-', '').toLowerCase()}`}>
-                    {(acc.quota.subscription_tier || '').replace(/-tier$/, '').replace('g1-', '').toUpperCase()}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="folder-preview-remove-btn"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    void handleRemoveSingleFromGroup(group.id, acc.id)
-                  }}
-                  title={t('accounts.groups.removeFromGroup')}
-                  aria-label={`${t('accounts.groups.removeFromGroup')}: ${maskAccountText(acc.email)}`}
-                  disabled={removingGroupAccountIds.has(acc.id)}
-                >
-                  <LogOut size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )
-    })
-  }
+  // 渲染文件夹卡片（已改为顶部 Tab，不再嵌入 accounts-grid）
+  const renderInlineFolderCards = () => null
 
   // 渲染卡片视图
   const renderGridView = () => {
     return (
       <div className="grid-view-container">
-        {paginatedAccounts.length > 0 && (
-          <div className="grid-view-header" style={{ marginBottom: '12px', paddingLeft: '4px' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-color)' }}>
-              <input
-                type="checkbox"
-                checked={allPaginatedSelected}
-                onChange={toggleSelectAll}
-              />
-              {t('common.selectAll', '全选')}
-            </label>
-          </div>
-        )}
         {!groupByTag ? (
           <div className="accounts-grid">
             {renderInlineFolderCards()}
@@ -3059,6 +3070,9 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     const baseName = account.email.includes('@')
       ? account.email.slice(0, account.email.indexOf('@'))
       : account.email
+    exportAccountIdsRef.current = [account.id]
+    includeExportSensitiveNotesRef.current = false
+    setIncludeExportSensitiveNotes(false)
     await exportModal.startExport([account.id], baseName)
   }
 
@@ -3168,6 +3182,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                 {maskAccountText(account.email)}
               </span>
             </span>
+            <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} createdAt={account.created_at} formatDate={formatDate} />
             <div className={styles.quotas}>
               {groupQuotas.length > 0 ? (
                 groupQuotas.map((gq) => (
@@ -3191,6 +3206,19 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                 </span>
               )}
             </div>
+            <button
+              type="button"
+              className={`${styles.noteBtn} ${hasAntigravityAccountNoteDetails(account) ? styles.noteBtnActive : ''}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                openAccountNoteModal(account)
+              }}
+              title={hasAntigravityAccountNoteDetails(account) ? t('accounts.accountNote.short', '账号备注') : t('accounts.accountNote.emptyTitle', '填写账号备注')}
+              aria-label={t('accounts.accountNote.title', '账号备注')}
+            >
+              <FileText size={12} />
+              <span>{hasAntigravityAccountNoteDetails(account) ? t('accounts.accountNote.short', '账号备注') : t('accounts.accountNote.addShort', '加备注')}</span>
+            </button>
             <button
               type="button"
               className={styles.switchBtn}
@@ -3356,7 +3384,12 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const availableCreditsDisplay = getAvailableAICreditsDisplay(account)
       const isForbidden = Boolean(account.quota?.is_forbidden)
       const quotaError = account.quota_error
-      const hasQuotaError = Boolean(quotaError?.message)
+      const hasValidModels = Boolean(account.quota?.models && account.quota.models.length > 0)
+      const isSpuriousSubscriptionError =
+        hasValidModels &&
+        (quotaError?.reason === 'SUBSCRIPTION_REQUIRED' ||
+          Boolean(quotaError?.message?.includes('valid license')))
+      const hasQuotaError = Boolean(quotaError?.message) && !isSpuriousSubscriptionError
       const warning = refreshWarnings[account.email]
       const warningLabel =
         warning?.kind === 'auth'
@@ -3367,7 +3400,11 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
       const disabledTitle = account.disabled
         ? `${t('accounts.status.disabled')}${account.disabled_reason ? `: ${account.disabled_reason}` : ''}`
         : ''
-      const verificationReason = account.disabled_reason || verificationStatusMap[account.id]
+      const rawVerificationReason = account.disabled_reason || verificationStatusMap[account.id]
+      const verificationReason =
+        rawVerificationReason === 'subscription_required' && hasValidModels
+          ? undefined
+          : rawVerificationReason
       const hasVerificationIssue = verificationReason === 'verification_required' || verificationReason === 'tos_violation'
 
       return (
@@ -3393,11 +3430,79 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                     {t('accounts.status.current')}
                   </span>
                 )}
+                {isPendingAntigravityAccount(account) && (
+                  <span className="status-pill warning">{t('codex.pendingAuth.badge', '待授权')}</span>
+                )}
+              </div>
+              <div className="account-sub-line antigravity-account-meta-inline">
+                {renderAccountNoteChip(account)}
+                {isPendingAntigravityAccount(account) && (
+                  <button type="button" className="btn btn-sm btn-outline" onClick={() => openPendingOAuthAccount(account)}>
+                    {t('codex.pendingAuth.authorizeAction', '授权添加')}
+                  </button>
+                )}
+                {!isPendingAntigravityAccount(account) && isAccountNeedsReauth(account, verificationStatusMap) && (() => {
+                  const validationUrl = resolveValidationUrl(account)
+                  const isCopied = copiedValidationUrlAccountId === account.id
+                  return (
+                    <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline validation-warning-btn"
+                        style={{
+                          color: 'var(--color-warning, #f59e0b)',
+                          borderColor: 'var(--color-warning, #f59e0b)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                        onClick={async () => {
+                          if (validationUrl) {
+                            try {
+                              await openUrl(validationUrl)
+                            } catch {
+                              window.open(validationUrl, '_blank', 'noopener,noreferrer')
+                            }
+                          } else {
+                            setShowVerificationErrorModal(account.id)
+                          }
+                        }}
+                        title={validationUrl || t('modals.errors.viewVerificationDetail')}
+                      >
+                        <ExternalLink size={12} />
+                        <span>{t('accounts.actions.openValidationUrl', '网页验证')}</span>
+                      </button>
+                      {validationUrl && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline copy-validation-btn"
+                          style={{
+                            color: isCopied ? 'var(--color-success, #10b981)' : 'var(--color-warning, #f59e0b)',
+                            borderColor: isCopied ? 'var(--color-success, #10b981)' : 'var(--color-warning, #f59e0b)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}
+                          onClick={() => handleCopyValidationUrl(account.id, validationUrl)}
+                          title={t('accounts.actions.copyValidationUrlTooltip', '复制网页验证地址')}
+                        >
+                          {isCopied ? <Check size={12} /> : <Copy size={12} />}
+                          <span>
+                            {isCopied
+                              ? t('common.copied', '已复制')
+                              : t('accounts.actions.copyValidationUrl', '复制验证链接')}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )
+                })()}
               </div>
               <div className="account-sub-line">
                 <span className={`tier-badge ${tierBadge.className}`}>
                   {tierBadge.label}
                 </span>
+                <AntigravityGcpTosBadge account={account} />
                 {(() => {
                   const vBadge = getVerificationBadge(account)
                   return vBadge ? (
@@ -3412,7 +3517,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                     {warningLabel}
                   </span>
                 )}
-                {account.disabled && (
+                {account.disabled && !isAccountNeedsReauth(account, verificationStatusMap) && (
                   <span className="status-pill disabled" title={disabledTitle}>
                     <CircleAlert size={12} />
                     {t('accounts.status.disabled')}
@@ -3436,7 +3541,7 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                 </div>
               ) : (
                 <>
-                  {hasQuotaError && (
+                  {hasQuotaError && !isAccountNeedsReauth(account, verificationStatusMap) && (
                     <div className="quota-empty" title={quotaError?.message}>
                       {t('common.shared.quota.queryFailed', '配额查询失败')}
                     </div>
@@ -3451,13 +3556,23 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
               </div>
             </div>
           </td>
+          <td>
+            {account.last_switched_at != null && account.last_switched_at > 0
+              ? formatDate(account.last_switched_at)
+              : t('common.none')}
+          </td>
           <td className="sticky-action-cell table-action-cell">
             <div className="action-buttons">
-              {(hasQuotaError || hasVerificationIssue) && (
+              {isPendingAntigravityAccount(account) && (
+                <button type="button" className="action-btn" onClick={() => openPendingOAuthAccount(account)} title={t('common.shared.addModal.oauth', 'OAuth 授权')}>
+                  <Globe size={16} />
+                </button>
+              )}
+              {(hasQuotaError || hasVerificationIssue || isAccountNeedsReauth(account, verificationStatusMap)) && (
                 <button
                   className="action-btn is-danger"
                   onClick={() =>
-                    hasVerificationIssue
+                    (hasVerificationIssue || isAccountNeedsReauth(account, verificationStatusMap))
                       ? setShowVerificationErrorModal(account.id)
                       : setShowErrorModal(account.id)
                   }
@@ -3479,6 +3594,15 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
                 title={t('accounts.editTags', '编辑标签')}
               >
                 <Tag size={16} />
+              </button>
+              <button
+                type="button"
+                className={`action-btn ${hasAntigravityAccountNoteDetails(account) ? 'active' : ''}`}
+                onClick={() => isPendingAntigravityAccount(account) ? openPendingOAuthAccount(account) : openAccountNoteModal(account)}
+                title={hasAntigravityAccountNoteDetails(account) ? t('accounts.accountNote.short', '账号备注') : t('accounts.accountNote.emptyTitle', '填写账号备注')}
+                aria-label={t('accounts.accountNote.title', '账号备注')}
+              >
+                <FileText size={16} />
               </button>
               <button
                 className={`action-btn ${!isCurrent ? 'success' : ''}`}
@@ -3547,71 +3671,13 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
             </th>
             <th style={{ width: 220 }}>{t('accounts.columns.email')}</th>
             <th>{t('accounts.columns.quota')}</th>
+            <th>{t('accounts.lastSwitchTime')}</th>
             <th className="sticky-action-header table-action-header">
               {t('accounts.columns.actions')}
             </th>
           </tr>
         </thead>
         <tbody>
-          {!activeGroupId && accountGroups.length > 0 && accountGroups.map((group) => {
-            const groupAccounts = accounts.filter((acc) => group.accountIds.includes(acc.id))
-            return (
-              <tr
-                key={`folder-row-${group.id}`}
-                className="folder-table-row"
-                style={{ cursor: 'pointer' }}
-                onClick={() => {
-                  setActiveGroupId(group.id)
-                  setSelected(new Set())
-                }}
-              >
-                <td></td>
-                <td colSpan={3}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <FolderOpen size={16} style={{ color: 'var(--primary)' }} />
-                    <strong>{group.name}</strong>
-                    <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                      {t('accounts.groups.accountCount', { count: groupAccounts.length })}
-                    </span>
-                  </div>
-                </td>
-                <td>
-                  <div className="folder-table-actions">
-                    <button
-                      className="folder-icon-btn"
-                      title={t('accounts.groups.addAccounts')}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setGroupQuickAddGroupId(group.id)
-                      }}
-                    >
-                      <FolderPlus size={14} />
-                    </button>
-                    <button
-                      className="folder-icon-btn"
-                      title={t('accounts.groups.editTitle')}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setGroupAccountPickerGroupId(group.id)
-                      }}
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      className="folder-icon-btn folder-delete-btn"
-                      title={t('accounts.groups.deleteTitle')}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        requestDeleteGroup(group.id, group.name)
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            )
-          })}
           {groupByTag
             ? paginatedGroupedAccounts.map(({ groupKey, items, totalCount }) => (
               <Fragment key={groupKey}>
@@ -3634,1533 +3700,221 @@ export function AccountsPage({ onNavigate }: AccountsPageProps) {
     </div>
   )
 
-  return (
-    <>
-      <main className="main-content accounts-page">
-        <OverviewTabsHeader
-          active="overview"
-          onNavigate={onNavigate}
-          onOpenManual={() => onNavigate?.('manual')}
-          subtitle={t('overview.subtitle')}
-        />
+  return {
+    grouping,
+    accountGroups: grouping.groups,
+    accountNoteCopiedKey,
+    accountNoteError,
+    accountNoteErrorScrollKey,
+    accountNoteReadStatus,
+    accountNoteFieldError,
+    accountNoteMailPreview,
+    accountNoteMailPreviewError,
+    accountNoteMailPreviewLoading,
+    accountNoteMfaPickerOpen,
+    accountNoteOtpToken,
+    accountNotePasswordVisible,
+    accountNoteSecretVisible,
+    accounts,
+    activeAccountNoteEmail,
+    activeAccountNoteForm,
+    activeGroup: grouping.activeGroup,
+    activeGroupId: grouping.activeGroupId,
+    addMessage,
+    addStatus,
+    addTab,
+    addTargetGroup,
+    allPaginatedSelected,
+    ANTIGRAVITY_ACCOUNT_NOTE_MAX_LENGTH,
+    ANTIGRAVITY_TOKEN_BATCH_EXAMPLE,
+    ANTIGRAVITY_TOKEN_SINGLE_EXAMPLE,
+    antigravityRuntimeTarget,
+    antigravitySeamlessSwitchUnlocked,
+    availableTags,
+    clearFilterTypes,
+    clearTagFilter,
+    closeAccountNoteModal,
+    closeAddModal,
+    confirmClearSwitchHistory,
+    confirmDelete,
+    confirmDeleteTag,
+    copiedValidationUrlAccountId,
+    copyAccountNoteValue,
+    currentAccount,
+    customSortAccounts,
+    customSortDropTargetId,
+    deleteConfirm,
+    deleteConfirmError,
+    deleteConfirmErrorScrollKey,
+    deleting,
+    deletingTag,
+    displayGroups,
+    draggedCustomSortAccountId,
+    editingAccountNoteAccount,
+    editingAccountNoteId,
+    retryAccountNoteRead,
+    exportAccountIdsRef,
+    exporting,
+    exportModal,
+    exportSelectionCount,
+    exportSensitiveRefreshSeqRef,
+    fetchAccountNoteMailPreviewForUrl,
+    fileCorruptedError,
+    filteredAccounts,
+    filterTypes,
+    formatAntigravityMailPreviewTime,
+    formatDate,
+    formatMfaRecordOption,
+    formatSwitchHistoryAutoReason,
+    formatSwitchHistoryOrigin,
+    formatSwitchHistoryStage,
+    formatSwitchHistoryTrigger,
+    getQuotaDisplayItems,
+    getVerificationBadge,
+    groupByTag,
+    handleBatchDelete,
+    handleClearSwitchHistory,
+    handleCopyOauthUrl,
+    handleCopyValidationUrl,
+    handleCustomSortDragMove,
+    handleCustomSortDragStart,
+    handleExport,
+    handleImportFromExtension,
+    handleImportFromFiles,
+    handleImportFromLocal,
+    handleImportFromTools,
+    handleOAuthComplete,
+    handleOAuthStart,
+    handlePendingOAuthComplete,
+    handlePendingOAuthStart,
+    handleRefresh,
+    handleRefreshAll,
+    handleRemoveFromGroup,
+    handleSaveAccountNote,
+    handleSavePendingOAuthAccount,
+    handleSaveTags,
+    handleSortByChange,
+    handleSubmitOauthCallbackUrl,
+    handleTokenImport,
+    handleViewModeChange,
+    handleWakeupSelected,
+    hasAntigravityAccountNoteFormDetails,
+    hasVisibleAccountGroups,
+    importing,
+    includeExportSensitiveNotes,
+    includeExportSensitiveNotesRef,
+    isCustomSortActive,
+    loading,
+    locale,
+    maskAccountText,
+    message,
+    mfaTimeRemaining,
+    moveCustomSortAccount,
+    oauthAccountNoteForm,
+    oauthAccountNoteMode,
+    oauthCallbackError,
+    oauthCallbackInput,
+    oauthCallbackSubmitting,
+    oauthUrl,
+    oauthUrlCopied,
+    onNavigate,
+    openAddModal,
+    openOAuthAccountNoteModal,
+    openPendingOAuthAccount,
+    openSwitchHistoryModal,
+    paginatedIds,
+    pagination,
+    pendingOAuthAccount,
+    pendingOAuthEmailError,
+    pendingOAuthEmailInput,
+    privacyModeEnabled,
+    refreshing,
+    refreshingAll,
+    reloadAccountGroups: grouping.reloadGroups,
+    renderCompactView,
+    renderErrorMessage,
+    renderGridView,
+    renderListView,
+    requestDeleteTag,
+    resetAddModalState,
+    resetCustomSortOrder,
+    resolveValidationUrl,
+    savedMfaRecords,
+    savingAccountNote,
+    savingPendingOAuthAccount,
+    searchQuery,
+    selected,
+    setAccountNoteMfaPickerOpen,
+    setAccountNotePasswordVisible,
+    setAccountNoteSecretVisible,
+    setActiveGroupId: grouping.setActiveGroupId,
+    setAddTab,
+    setDeleteConfirm,
+    setDeleteConfirmError,
+    setFileCorruptedError,
+    setGroupByTag,
+    setIncludeExportSensitiveNotes,
+    setMessage,
+    setOauthCallbackInput,
+    setPendingOAuthEmailError,
+    setPendingOAuthEmailInput,
+    setSavedMfaRecords,
+    setSearchQuery,
+    setSelected,
+    setShowAccountGroupModal: grouping.setShowManageModal,
+    setShowAddToGroupModal: grouping.setShowAddToGroupModal,
+    setShowCustomSortModal,
+    setShowErrorModal,
+    setShowQuotaModal,
+    setShowSwitchHistoryModal,
+    setShowTagModal,
+    setShowVerificationErrorModal,
+    setSortDirection,
+    setSwitchHistoryClearConfirmOpen,
+    setTagDeleteConfirm,
+    setTagDeleteConfirmError,
+    setTokenInput,
+    showAccountGroupModal: grouping.showManageModal,
+    showAddModal,
+    showAddToGroupModal: grouping.showAddToGroupModal,
+    showCustomSortModal,
+    showErrorModal,
+    showQuotaModal,
+    showSwitchHistoryModal,
+    showTagModal,
+    showVerificationErrorModal,
+    sortBy,
+    sortDirection,
+    stopCustomSortDragging,
+    switchHistory,
+    switchHistoryClearConfirmOpen,
+    switchHistoryClearing,
+    switchHistoryLoading,
+    switchHistoryError,
+    switchHistoryMigrating,
+    refreshSwitchHistory,
+    t,
+    tagDeleteConfirm,
+    tagDeleteConfirmError,
+    tagDeleteConfirmErrorScrollKey,
+    tagFilter,
+    tierCounts,
+    tierFilterOptions,
+    toggleFilterTypeValue,
+    togglePrivacyMode,
+    toggleSelectAll,
+    toggleTagFilterValue,
+    tokenInput,
+    updateEditingAccountNoteForm,
+    verificationDetailMap,
+    verificationStatusMap,
+    viewMode,
+    wakeupRunning,
+  };
+}
 
-        {/* 面包屑：进入分组后显示 */}
-        {activeGroup && (
-          <div className="folder-breadcrumb">
-            <button
-              className="breadcrumb-back"
-              onClick={() => {
-                setActiveGroupId(null)
-                setSelected(new Set())
-              }}
-            >
-              <FolderOpen size={14} />
-              {t('accounts.groups.allGroups')}
-            </button>
-            <ChevronRight size={14} className="breadcrumb-sep" />
-            <span className="breadcrumb-current">
-              {activeGroup.name}
-              <span className="breadcrumb-count">({filteredAccounts.length})</span>
-            </span>
-            {selected.size > 0 && (
-              <>
-                <button
-                  className="btn btn-secondary breadcrumb-remove-btn"
-                  onClick={() => setGroupQuickAddGroupId(activeGroup.id)}
-                  title={t('accounts.groups.addAccounts')}
-                >
-                  <FolderPlus size={14} />
-                  {t('accounts.groups.addAccounts')}
-                </button>
-                <button
-                  className="btn btn-secondary breadcrumb-remove-btn"
-                  onClick={() => setShowAddToGroupModal(true)}
-                  title={t('accounts.groups.moveToGroup')}
-                >
-                  <FolderPlus size={14} />
-                  {t('accounts.groups.moveToGroup')} ({selected.size})
-                </button>
-                <button
-                  className="btn btn-secondary breadcrumb-remove-btn"
-                  onClick={handleRemoveFromGroup}
-                  title={t('accounts.groups.removeFromGroup')}
-                >
-                  <LogOut size={14} />
-                  {t('accounts.groups.removeFromGroup')} ({selected.size})
-                </button>
-              </>
-            )}
-            {selected.size === 0 && (
-              <button
-                className="btn btn-secondary breadcrumb-remove-btn"
-                onClick={() => setGroupQuickAddGroupId(activeGroup.id)}
-                title={t('accounts.groups.addAccounts')}
-              >
-                <FolderPlus size={14} />
-                {t('accounts.groups.addAccounts')}
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* 分组文件夹已嵌入到 accounts-grid 内，此处不再单独显示 */}
-
-        {/* 工具栏 */}
-        <div className="toolbar">
-          <div className="toolbar-left">
-            <div className="search-box">
-              <Search size={16} className="search-icon" />
-              <input
-                type="text"
-                placeholder={t('accounts.search')}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-
-            <div className="view-switcher">
-              <button
-                className={`view-btn ${viewMode === 'compact' ? 'active' : ''}`}
-                onClick={() => handleViewModeChange('compact')}
-                title={t('accounts.view.compact')}
-              >
-                <Rows3 size={16} />
-              </button>
-              <button
-                className={`view-btn ${viewMode === 'list' ? 'active' : ''}`}
-                onClick={() => handleViewModeChange('list')}
-                title={t('accounts.view.list')}
-              >
-                <List size={16} />
-              </button>
-              <button
-                className={`view-btn ${viewMode === 'grid' ? 'active' : ''}`}
-                onClick={() => handleViewModeChange('grid')}
-                title={t('accounts.view.grid')}
-              >
-                <LayoutGrid size={16} />
-              </button>
-            </div>
-
-            <MultiSelectFilterDropdown
-              options={tierFilterOptions}
-              selectedValues={filterTypes}
-              allLabel={t('accounts.filter.all', { count: tierCounts.all })}
-              filterLabel={t('accounts.filterLabel', '筛选')}
-              clearLabel={t('accounts.clearFilter', '清空筛选')}
-              emptyLabel={t('common.none', '暂无')}
-              ariaLabel={t('accounts.filterLabel', '筛选')}
-              onToggleValue={(value) => toggleFilterTypeValue(value as AccountsFilterType)}
-              onClear={clearFilterTypes}
-            />
-
-            <AccountTagFilterDropdown
-              availableTags={availableTags}
-              selectedTags={tagFilter}
-              onToggleTag={toggleTagFilterValue}
-              onClear={clearTagFilter}
-              onDeleteTag={requestDeleteTag}
-              groupByTag={groupByTag}
-              onToggleGroupByTag={setGroupByTag}
-            />
-            {/* 排序下拉菜单 */}
-            <SingleSelectFilterDropdown
-              value={sortBy}
-              options={[
-                {
-                  value: 'overall',
-                  label: t('accounts.sort.overall', '按综合配额'),
-                },
-                {
-                  value: 'created_at',
-                  label: t('accounts.sort.createdAt', '按创建时间'),
-                },
-                ...displayGroups.map((group) => ({
-                  value: group.id,
-                  label: t('accounts.sort.byGroup', {
-                    group: group.name,
-                    defaultValue: `按 ${group.name} 配额`,
-                  }),
-                })),
-                ...displayGroups.map((group) => ({
-                  value: `${ANTIGRAVITY_RESET_SORT_PREFIX}${group.id}`,
-                  label: t('accounts.sort.byGroupReset', {
-                    group: group.name,
-                    defaultValue: `按 ${group.name} 重置时间`,
-                  }),
-                })),
-                {
-                  value: 'custom',
-                  label: t('accounts.sort.custom', '自定义顺序'),
-                },
-              ]}
-              ariaLabel={t('accounts.sortLabel', '排序')}
-              icon={<ArrowDownWideNarrow size={14} />}
-              onChange={handleSortByChange}
-            />
-
-            {/* 排序方向切换按钮 / 自定义排序配置按钮 */}
-            {!isCustomSortActive ? (
-              <button
-                className="sort-direction-btn"
-                onClick={() =>
-                  setSortDirection((prev) => (prev === 'desc' ? 'asc' : 'desc'))
-                }
-                title={
-                  sortDirection === 'desc'
-                    ? t('accounts.sort.descTooltip', '当前：降序，点击切换为升序')
-                    : t('accounts.sort.ascTooltip', '当前：升序，点击切换为降序')
-                }
-                aria-label={t('accounts.sort.toggleDirection', '切换排序方向')}
-              >
-                {sortDirection === 'desc' ? '⬇' : '⬆'}
-              </button>
-            ) : (
-              <button
-                className="sort-direction-btn"
-                onClick={() => setShowCustomSortModal(true)}
-                title={t('accounts.sort.customSettingsTooltip', '配置自定义顺序')}
-                aria-label={t('accounts.sort.customSettingsTooltip', '配置自定义顺序')}
-              >
-                <Wrench size={14} />
-              </button>
-            )}
-          </div>
-
-          <div className="toolbar-right">
-            <button
-              className="btn btn-primary icon-only"
-              onClick={() => openAddModal('oauth')}
-              title={t('accounts.addAccount')}
-              aria-label={t('accounts.addAccount')}
-            >
-              <Plus size={14} />
-            </button>
-            <button
-              className="btn btn-secondary icon-only"
-              onClick={handleRefreshAll}
-              disabled={refreshingAll}
-              title={t('accounts.refreshAll')}
-              aria-label={t('accounts.refreshAll')}
-            >
-              <RefreshCw
-                size={14}
-                className={refreshingAll ? 'loading-spinner' : ''}
-              />
-            </button>
-            {antigravitySeamlessSwitchUnlocked && (
-              <button
-                className="btn btn-secondary icon-only"
-                onClick={openSwitchHistoryModal}
-                title={t('accounts.switchHistory.title', '切换记录')}
-                aria-label={t('accounts.switchHistory.title', '切换记录')}
-              >
-                <History size={14} />
-              </button>
-            )}
-            <button
-              className="btn btn-secondary icon-only"
-              onClick={togglePrivacyMode}
-              title={
-                privacyModeEnabled
-                  ? t('privacy.showSensitive', '显示邮箱')
-                  : t('privacy.hideSensitive', '隐藏邮箱')
-              }
-              aria-label={
-                privacyModeEnabled
-                  ? t('privacy.showSensitive', '显示邮箱')
-                  : t('privacy.hideSensitive', '隐藏邮箱')
-              }
-            >
-              {privacyModeEnabled ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-            <button
-              className="btn btn-secondary export-btn icon-only"
-              onClick={handleExport}
-              disabled={exporting || filteredAccounts.length === 0}
-              title={
-                exportSelectionCount > 0
-                  ? `${t('accounts.export')} (${exportSelectionCount})`
-                  : t('accounts.export')
-              }
-              aria-label={
-                exportSelectionCount > 0
-                  ? `${t('accounts.export')} (${exportSelectionCount})`
-                  : t('accounts.export')
-              }
-            >
-              <Upload size={14} />
-            </button>
-            {!activeGroupId && (
-              <button
-                className="btn btn-secondary icon-only"
-                onClick={() => setShowAccountGroupModal(true)}
-                title={t('accounts.groups.manageTitle')}
-                aria-label={t('accounts.groups.manageTitle')}
-              >
-                <FolderOpen size={14} />
-              </button>
-            )}
-            <QuickSettingsPopover type="antigravity" />
-          </div>
-        </div>
-
-        {filteredAccounts.length > 0 && (
-          <AccountSelectionToolbar
-            selectedCount={selected.size}
-            allSelected={allPaginatedSelected}
-            disabled={paginatedIds.length === 0}
-            onToggleSelectAll={toggleSelectAll}
-            onClearSelection={() => setSelected(new Set())}
-            actions={(
-              <>
-                <button
-                  className="btn btn-secondary icon-only"
-                  onClick={() => void handleWakeupSelected()}
-                  disabled={wakeupRunning || selected.size === 0}
-                  title={`${t('wakeup.runTest')} (${selected.size})`}
-                  aria-label={`${t('wakeup.runTest')} (${selected.size})`}
-                >
-                  {wakeupRunning ? (
-                    <RefreshCw size={14} className="loading-spinner" />
-                  ) : (
-                    <Rocket size={14} />
-                  )}
-                </button>
-                <button
-                  className="btn btn-secondary icon-only"
-                  onClick={() => setShowAddToGroupModal(true)}
-                  title={t('accounts.groups.addToGroup')}
-                  aria-label={t('accounts.groups.addToGroup')}
-                >
-                  <FolderPlus size={14} />
-                </button>
-                <button
-                  className="btn btn-danger icon-only"
-                  onClick={handleBatchDelete}
-                  title={`${t('common.delete')} (${selected.size})`}
-                  aria-label={`${t('common.delete')} (${selected.size})`}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </>
-            )}
-          />
-        )}
-
-        {message && (
-          <div
-            className={`action-message${message.tone ? ` ${message.tone}` : ''}`}
-          >
-            <span className="action-message-text">{message.text}</span>
-            <button
-              className="action-message-close"
-              onClick={() => setMessage(null)}
-              aria-label={t('common.close')}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
-        {/* 内容区域 */}
-        {loading ? (
-          <div className="empty-state">
-            <div
-              className="loading-spinner"
-              style={{ width: 40, height: 40 }}
-            />
-          </div>
-        ) : accounts.length === 0 ? (
-          <div className="empty-state">
-            <div className="icon">
-              <Rocket size={40} />
-            </div>
-            <h3>{t('accounts.empty.title')}</h3>
-            <p>{t('accounts.empty.desc')}</p>
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '16px' }}>
-              <button
-                className="btn btn-primary"
-                onClick={() => openAddModal('oauth')}
-              >
-                <Plus size={18} />
-                {t('accounts.empty.btn')}
-              </button>
-              <button
-                className="btn btn-secondary"
-                onClick={() => onNavigate?.('manual')}
-              >
-                <BookOpen size={18} />
-                {t('manual.navTitle', '查阅接入手册')}
-              </button>
-            </div>
-          </div>
-        ) : filteredAccounts.length === 0 && !hasVisibleAccountGroups ? (
-          <div className="empty-state">
-            <h3>{t('accounts.noMatch.title')}</h3>
-            <p>{t('accounts.noMatch.desc')}</p>
-          </div>
-        ) : viewMode === 'grid' ? (
-          renderGridView()
-        ) : viewMode === 'list' ? (
-          renderListView()
-        ) : (
-          renderCompactView()
-        )}
-
-        <PaginationControls
-          totalItems={pagination.totalItems}
-          currentPage={pagination.currentPage}
-          totalPages={pagination.totalPages}
-          pageSize={pagination.pageSize}
-          pageSizeOptions={pagination.pageSizeOptions}
-          rangeStart={pagination.rangeStart}
-          rangeEnd={pagination.rangeEnd}
-          canGoPrevious={pagination.canGoPrevious}
-          canGoNext={pagination.canGoNext}
-          onPageSizeChange={pagination.setPageSize}
-          onPreviousPage={pagination.goToPreviousPage}
-          onNextPage={pagination.goToNextPage}
-        />
-      </main>
-
-      {/* Add Account Modal */}
-      {showAddModal && (
-        <div className="modal-overlay">
-          <div
-            className="modal modal-lg add-account-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="modal-header">
-              <h2>{t('modals.addAccount.title')}</h2>
-              <button className="close-btn" onClick={closeAddModal}>
-                <X size={20} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <MfaQuickCodeSelect />
-              {addTargetGroup && (
-                <div className="accounts-add-target-group-hint">
-                  <FolderPlus size={14} />
-                  <span>
-                    {t('accounts.addModal.targetGroup', {
-                      defaultValue: '将添加到分组：{{group}}',
-                      group: addTargetGroup.name,
-                    })}
-                  </span>
-                </div>
-              )}
-              <div className="add-tabs">
-                <button
-                  className={`add-tab ${addTab === 'oauth' ? 'active' : ''}`}
-                  onClick={() => {
-                    setAddTab('oauth')
-                    resetAddModalState()
-                  }}
-                >
-                  <Globe size={14} /> {t('accounts.tabs.oauth')}
-                </button>
-                <button
-                  className={`add-tab ${addTab === 'token' ? 'active' : ''}`}
-                  onClick={() => {
-                    setAddTab('token')
-                    resetAddModalState()
-                  }}
-                >
-                  <KeyRound size={14} /> {t('common.shared.addModal.token', 'Token / JSON')}
-                </button>
-                <button
-                  className={`add-tab ${addTab === 'import' ? 'active' : ''}`}
-                  onClick={() => {
-                    setAddTab('import')
-                    resetAddModalState()
-                  }}
-                >
-                  <Database size={14} /> {t('accounts.tabs.import')}
-                </button>
-              </div>
-
-              {addTab === 'oauth' && (
-                <div className="add-panel">
-                  <div className="oauth-hint">
-                    <Globe size={18} />
-                    <span>{t('accounts.oauth.hint')}</span>
-                  </div>
-                  <div className="oauth-actions">
-                    <button
-                      className="btn btn-primary"
-                      onClick={handleOAuthStart}
-                      disabled={addStatus === 'loading'}
-                    >
-                      <Globe size={16} /> {t('accounts.oauth.start')}
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={handleOAuthComplete}
-                      disabled={!oauthUrl || addStatus === 'loading'}
-                    >
-                      <Check size={16} /> {t('accounts.oauth.continue')}
-                    </button>
-                  </div>
-                  <div className="oauth-link">
-                    <label>{t('accounts.oauth.linkLabel')}</label>
-                    <div className="oauth-link-row">
-                      <input
-                        type="text"
-                        value={oauthUrl || t('accounts.oauth.generatingLink')}
-                        readOnly
-                      />
-                      <button
-                        className="btn btn-secondary icon-only"
-                        onClick={handleCopyOauthUrl}
-                        disabled={!oauthUrl}
-                        title={t('common.copy')}
-                      >
-                        {oauthUrlCopied ? (
-                          <Check size={14} />
-                        ) : (
-                          <Copy size={14} />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="oauth-link">
-                    <label>{t('common.shared.oauth.manualCallbackLabel', '手动输入回调地址')}</label>
-                    <div className="oauth-link-row oauth-manual-input">
-                      <input
-                        type="text"
-                        value={oauthCallbackInput}
-                        onChange={(e) => setOauthCallbackInput(e.target.value)}
-                        placeholder={t('common.shared.oauth.manualCallbackPlaceholder', '粘贴完整回调地址，例如：http://localhost:1455/auth/callback?code=...&state=...')}
-                      />
-                      <button
-                        className="btn btn-secondary"
-                        onClick={handleSubmitOauthCallbackUrl}
-                        disabled={!oauthCallbackInput.trim() || oauthCallbackSubmitting}
-                      >
-                        {oauthCallbackSubmitting ? (
-                          <RefreshCw size={16} className="loading-spinner" />
-                        ) : (
-                          <Check size={16} />
-                        )}{' '}
-                        {t('accounts.oauth.continue')}
-                      </button>
-                    </div>
-                  </div>
-                  {oauthCallbackError && (
-                    <div className="add-status error">
-                      <CircleAlert size={16} />
-                      <span>{oauthCallbackError}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {addTab === 'token' && (
-                <div className="add-panel">
-                  <p className="add-panel-desc">{t('accounts.token.desc')}</p>
-                  <details className="token-format-collapse">
-                    <summary className="token-format-collapse-summary">
-                      {t('messages.example', 'Example')}
-                    </summary>
-                    <div className="token-format">
-                      <p className="token-format-required">{t('accounts.token.desc')}</p>
-                      <div className="token-format-group">
-                        <div className="token-format-label">{`${t('messages.example', 'Example')} 1`}</div>
-                        <pre className="token-format-code">{ANTIGRAVITY_TOKEN_SINGLE_EXAMPLE}</pre>
-                      </div>
-                      <div className="token-format-group">
-                        <div className="token-format-label">{`${t('messages.example', 'Example')} 2`}</div>
-                        <pre className="token-format-code">{ANTIGRAVITY_TOKEN_BATCH_EXAMPLE}</pre>
-                      </div>
-                    </div>
-                  </details>
-                  <textarea
-                    className="token-input"
-                    placeholder={t('accounts.token.placeholder')}
-                    value={tokenInput}
-                    onChange={(e) => setTokenInput(e.target.value)}
-                    rows={6}
-                  />
-                  <div className="modal-actions">
-                    <button
-                      className="btn btn-primary"
-                      onClick={handleTokenImport}
-                      disabled={importing || addStatus === 'loading'}
-                    >
-                      <KeyRound size={14} /> {t('accounts.token.importStart')}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {addTab === 'import' && (
-                <div className="add-panel">
-                  <div className="import-options">
-                    <button
-                      className="import-option"
-                      onClick={handleImportFromExtension}
-                      disabled={importing || addStatus === 'loading'}
-                    >
-                      <div className="import-option-icon">
-                        <Plug size={20} />
-                      </div>
-                      <div className="import-option-content">
-                        <div className="import-option-title">
-                          {t('modals.import.fromExtension')}
-                        </div>
-                        <div className="import-option-desc">
-                          {t('modals.import.syncBadge')}
-                        </div>
-                      </div>
-                    </button>
-
-                    <button
-                      className="import-option"
-                      onClick={handleImportFromLocal}
-                      disabled={importing || addStatus === 'loading'}
-                    >
-                      <div className="import-option-icon">
-                        <Database size={20} />
-                      </div>
-                      <div className="import-option-content">
-                        <div className="import-option-title">
-                          {t('modals.import.fromLocalDB')}
-                        </div>
-                        <div className="import-option-desc">
-                          {t('modals.import.localDBDesc')}
-                        </div>
-                      </div>
-                    </button>
-
-                    <button
-                      className="import-option"
-                      onClick={handleImportFromTools}
-                      disabled={importing || addStatus === 'loading'}
-                    >
-                      <div className="import-option-icon">
-                        <Rocket size={20} />
-                      </div>
-                      <div className="import-option-content">
-                        <div className="import-option-title">
-                          {t('modals.import.tools')}
-                        </div>
-                        <div className="import-option-desc">
-                          {t('modals.import.toolsDescMigrate')}
-                        </div>
-                      </div>
-                    </button>
-
-                    <button
-                      className="import-option"
-                      onClick={handleImportFromFiles}
-                      disabled={importing || addStatus === 'loading'}
-                    >
-                      <div className="import-option-icon">
-                        <FileUp size={20} />
-                      </div>
-                      <div className="import-option-content">
-                        <div className="import-option-title">
-                          {t('modals.import.fromFiles')}
-                        </div>
-                        <div className="import-option-desc">
-                          {t('modals.import.fromFilesDesc')}
-                        </div>
-                      </div>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {addMessage && (
-                <div className={`add-feedback ${addStatus}`}>{addMessage}</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <ExportJsonModal
-        isOpen={exportModal.showModal}
-        title={`${t('accounts.export')} JSON`}
-        jsonContent={exportModal.jsonContent}
-        hidden={exportModal.hidden}
-        copied={exportModal.copied}
-        saving={exportModal.saving}
-        savedPath={exportModal.savedPath}
-        canOpenSavedDirectory={exportModal.canOpenSavedDirectory}
-        pathCopied={exportModal.pathCopied}
-        onClose={exportModal.closeModal}
-        onToggleHidden={exportModal.toggleHidden}
-        onCopyJson={exportModal.copyJson}
-        onSaveJson={exportModal.saveJson}
-        onOpenSavedDirectory={exportModal.openSavedDirectory}
-        onCopySavedPath={exportModal.copySavedPath}
-      />
-
-      {showCustomSortModal && (
-        <div className="modal-overlay">
-          <div
-            className="modal codex-custom-sort-modal"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-header">
-              <div>
-                <h2>
-                  {t('accounts.sort.customModalTitle', '自定义账号排序')}
-                </h2>
-                <p className="codex-custom-sort-modal-desc">
-                  {t(
-                    'accounts.sort.customModalDesc',
-                    '拖动账号或使用上下按钮调整展示顺序。'
-                  )}
-                </p>
-              </div>
-              <button
-                className="modal-close"
-                onClick={() => setShowCustomSortModal(false)}
-                aria-label={t('common.close', '关闭')}
-              >
-                <X />
-              </button>
-            </div>
-            <div className="modal-body">
-              <div
-                className={`codex-custom-sort-list ${
-                  draggedCustomSortAccountId ? 'is-sorting' : ''
-                }`}
-                onMouseUp={stopCustomSortDragging}
-                onMouseLeave={stopCustomSortDragging}
-              >
-                {customSortAccounts.map((account, index) => {
-                  const isCurrent = currentAccount?.id === account.id
-                  const tierBadge = getAntigravityTierBadge(account.quota)
-                  const quotaDisplayItems = getQuotaDisplayItems(account)
-                  const rowClass = [
-                    'codex-custom-sort-row',
-                    draggedCustomSortAccountId === account.id
-                      ? 'is-dragging'
-                      : '',
-                    draggedCustomSortAccountId &&
-                    draggedCustomSortAccountId !== account.id
-                      ? 'is-drop-candidate'
-                      : '',
-                    draggedCustomSortAccountId &&
-                    draggedCustomSortAccountId !== account.id &&
-                    customSortDropTargetId === account.id
-                      ? 'is-drop-target'
-                      : '',
-                  ]
-                    .join(' ')
-                    .trim()
-
-                  return (
-                    <div
-                      key={account.id}
-                      className={rowClass}
-                      onMouseEnter={() =>
-                        handleCustomSortDragMove(account.id)
-                      }
-                    >
-                      <div className="codex-custom-sort-row-main">
-                        <button
-                          type="button"
-                          className="codex-custom-sort-drag-handle"
-                          onMouseDown={(event) =>
-                            handleCustomSortDragStart(event, account.id)
-                          }
-                          title={t(
-                            'accounts.sort.customDragHandle',
-                            '拖拽排序'
-                          )}
-                          aria-label={t(
-                            'accounts.sort.customDragHandle',
-                            '拖拽排序'
-                          )}
-                        >
-                          <GripVertical size={16} />
-                        </button>
-                        <span className="codex-custom-sort-index">
-                          {index + 1}
-                        </span>
-                        <div className="codex-custom-sort-account">
-                          <div className="codex-custom-sort-account-title">
-                            <span
-                              title={maskAccountText(account.email)}
-                            >
-                              {maskAccountText(account.email)}
-                            </span>
-                            {isCurrent && (
-                              <span className="mini-tag current">
-                                {t('accounts.status.current', '当前')}
-                              </span>
-                            )}
-                            <span
-                              className={`tier-badge ${tierBadge.className}`}
-                            >
-                              {tierBadge.label}
-                            </span>
-                          </div>
-                          <div className="codex-custom-sort-quota-line">
-                            {quotaDisplayItems.length > 0 ? (
-                              quotaDisplayItems.slice(0, 2).map((item) => (
-                                <span
-                                  key={`${account.id}-${item.key}`}
-                                  className="codex-custom-sort-quota"
-                                >
-                                  <span>{item.key.includes('claude') ? 'Claude' : 'Gemini'} {item.key.includes('5h') ? '5h' : 'Weekly'}:</span>
-                                  <strong className={getQuotaClass(item.percentage)}>
-                                    {item.percentage}%
-                                  </strong>
-                                </span>
-                              ))
-                            ) : (
-                              <span className="codex-custom-sort-quota-empty">
-                                {t('common.shared.quota.noData', '暂无配额数据')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="codex-custom-sort-row-actions">
-                        <button
-                          type="button"
-                          className="folder-icon-btn"
-                          onClick={() =>
-                            moveCustomSortAccount(account.id, 'up')
-                          }
-                          disabled={index === 0}
-                          title={t('accounts.sort.customMoveUp', '上移')}
-                          aria-label={t('accounts.sort.customMoveUp', '上移')}
-                        >
-                          <ArrowUp size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          className="folder-icon-btn"
-                          onClick={() =>
-                            moveCustomSortAccount(account.id, 'down')
-                          }
-                          disabled={index === customSortAccounts.length - 1}
-                          title={t('accounts.sort.customMoveDown', '下移')}
-                          aria-label={t(
-                            'accounts.sort.customMoveDown',
-                            '下移'
-                          )}
-                        >
-                          <ArrowDown size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={resetCustomSortOrder}
-              >
-                <RotateCw size={14} />
-                {t('accounts.sort.customReset', '重置自定义顺序')}
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={() => setShowCustomSortModal(false)}
-              >
-                {t('common.confirm', '确认')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {antigravitySeamlessSwitchUnlocked && showSwitchHistoryModal && (
-        <div
-          className="modal-overlay"
-        >
-          <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('accounts.switchHistory.title', '切换记录')}</h2>
-              <button
-                className="modal-close"
-                onClick={() => {
-                  if (switchHistoryClearing || switchHistoryClearConfirmOpen) return
-                  setShowSwitchHistoryModal(false)
-                  setSwitchHistoryClearConfirmOpen(false)
-                }}
-                aria-label={t('common.close', '关闭')}
-              >
-                <X />
-              </button>
-            </div>
-            <div className="modal-body">
-              {switchHistoryLoading ? (
-                <div className="empty-state">
-                  <div className="loading-spinner" style={{ width: 28, height: 28 }} />
-                </div>
-              ) : switchHistory.length === 0 ? (
-                <div className="empty-state" style={{ minHeight: 180 }}>
-                  <p>{t('accounts.switchHistory.empty', '暂无切换记录')}</p>
-                </div>
-              ) : (
-                <div style={{ maxHeight: 420, overflowY: 'auto', display: 'grid', gap: 10 }}>
-                  {switchHistory.map((item) => (
-                    <div
-                      key={item.id}
-                      style={{
-                        border: '1px solid var(--border)',
-                        borderRadius: 10,
-                        padding: '10px 12px',
-                        display: 'grid',
-                        gap: 6,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          gap: 12,
-                        }}
-                      >
-                        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                          {new Date(item.timestamp).toLocaleString(locale)}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 12,
-                            color: item.success ? 'var(--success, #10b981)' : 'var(--danger, #ef4444)',
-                          }}
-                        >
-                          {item.success
-                            ? t('accounts.switchHistory.success', '成功')
-                            : t('accounts.switchHistory.failed', '失败')}
-                        </div>
-                      </div>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>
-                        {t('accounts.switchHistory.target', {
-                          email: maskAccountText(item.targetEmail) || item.targetEmail || '-',
-                          defaultValue: '目标账号：{{email}}',
-                        })}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                        {t('accounts.switchHistory.trigger', {
-                          trigger: formatSwitchHistoryTrigger(item.triggerType),
-                          defaultValue: '触发方式：{{trigger}}',
-                        })}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                        {t('accounts.switchHistory.origin', {
-                          origin: formatSwitchHistoryOrigin(item.triggerSource),
-                          defaultValue: '触发端：{{origin}}',
-                        })}
-                      </div>
-                      {item.triggerType === 'auto' && (
-                        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                          {t('accounts.switchHistory.autoReasonLabel', {
-                            reason: formatSwitchHistoryAutoReason(item.autoSwitchReason),
-                            defaultValue: '自动原因：{{reason}}',
-                          })}
-                        </div>
-                      )}
-                      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                        {t('accounts.switchHistory.stageResult', {
-                          local: item.localOk
-                            ? t('accounts.switchHistory.success', '成功')
-                            : t('accounts.switchHistory.failed', '失败'),
-                          seamless: item.seamlessOk
-                            ? t('accounts.switchHistory.success', '成功')
-                            : t('accounts.switchHistory.failed', '失败'),
-                          defaultValue: '本地：{{local}} / 无感：{{seamless}}',
-                        })}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                        {t('accounts.switchHistory.duration', {
-                          total: item.totalDurationMs,
-                          local: item.localDurationMs,
-                          seamless: item.seamlessDurationMs ?? 0,
-                          defaultValue: '耗时：总 {{total}}ms，本地 {{local}}ms，无感 {{seamless}}ms',
-                        })}
-                      </div>
-                      {!item.success && (
-                        <div style={{ fontSize: 12, color: 'var(--danger, #ef4444)' }}>
-                          {t('accounts.switchHistory.error', {
-                            stage: formatSwitchHistoryStage(item.errorStage),
-                            code: item.errorCode || '-',
-                            message: item.errorMessage || '-',
-                            defaultValue: '失败阶段：{{stage}}（{{code}}）{{message}}',
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setShowSwitchHistoryModal(false)
-                  setSwitchHistoryClearConfirmOpen(false)
-                }}
-                disabled={switchHistoryClearing}
-              >
-                {t('common.close', '关闭')}
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={handleClearSwitchHistory}
-                disabled={switchHistoryClearing || switchHistoryLoading || switchHistory.length === 0}
-              >
-                {switchHistoryClearing
-                  ? t('common.loading', '加载中...')
-                  : t('accounts.switchHistory.clear', '清空记录')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {antigravitySeamlessSwitchUnlocked && showSwitchHistoryModal && switchHistoryClearConfirmOpen && (
-        <div
-          className="modal-overlay"
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('common.confirm')}</h2>
-              <button
-                className="modal-close"
-                onClick={() => {
-                  if (switchHistoryClearing) return
-                  setSwitchHistoryClearConfirmOpen(false)
-                }}
-                aria-label={t('common.close', '关闭')}
-              >
-                <X />
-              </button>
-            </div>
-            <div className="modal-body">
-              <p>{t('accounts.switchHistory.clearConfirm', '确定清空全部切换记录吗？')}</p>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={() => setSwitchHistoryClearConfirmOpen(false)}
-                disabled={switchHistoryClearing}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={confirmClearSwitchHistory}
-                disabled={switchHistoryClearing}
-              >
-                {switchHistoryClearing
-                  ? t('common.loading', '加载中...')
-                  : t('accounts.switchHistory.clear', '清空记录')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {deleteConfirm && (
-        <div
-          className="modal-overlay"
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('common.confirm')}</h2>
-              <button
-                className="modal-close"
-                onClick={() => {
-                  if (deleting) return
-                  setDeleteConfirm(null)
-                  setDeleteConfirmError(null)
-                }}
-                aria-label={t('common.close', '关闭')}
-              >
-                <X />
-              </button>
-            </div>
-            <div className="modal-body">
-              <ModalErrorMessage message={deleteConfirmError} scrollKey={deleteConfirmErrorScrollKey} />
-              <p>{deleteConfirm.message}</p>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setDeleteConfirm(null)
-                  setDeleteConfirmError(null)
-                }}
-                disabled={deleting}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={confirmDelete}
-                disabled={deleting}
-              >
-                {t('common.confirm')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {groupDeleteConfirm && (
-        <div
-          className="modal-overlay"
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('accounts.groups.deleteTitle')}</h2>
-              <button
-                className="modal-close"
-                onClick={() => {
-                  if (deletingGroup) return
-                  setGroupDeleteConfirm(null)
-                  setGroupDeleteError(null)
-                }}
-                aria-label={t('common.close', '关闭')}
-              >
-                <X />
-              </button>
-            </div>
-            <div className="modal-body">
-              <ModalErrorMessage message={groupDeleteError} scrollKey={groupDeleteErrorScrollKey} />
-              <p>
-                {t('accounts.groups.deleteConfirm', {
-                  name: groupDeleteConfirm.name,
-                })}
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setGroupDeleteConfirm(null)
-                  setGroupDeleteError(null)
-                }}
-                disabled={deletingGroup}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={confirmDeleteGroup}
-                disabled={deletingGroup}
-              >
-                {t('common.delete')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {tagDeleteConfirm && (
-        <div
-          className="modal-overlay"
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('common.confirm')}</h2>
-              <button
-                className="modal-close"
-                onClick={() => {
-                  if (deletingTag) return
-                  setTagDeleteConfirm(null)
-                  setTagDeleteConfirmError(null)
-                }}
-                aria-label={t('common.close', '关闭')}
-              >
-                <X />
-              </button>
-            </div>
-            <div className="modal-body">
-              <ModalErrorMessage message={tagDeleteConfirmError} scrollKey={tagDeleteConfirmErrorScrollKey} />
-              <p>
-                {t('accounts.confirmDeleteTag', {
-                  tag: tagDeleteConfirm.tag,
-                  count: tagDeleteConfirm.count,
-                  defaultValue: '确认删除标签 "{{tag}}" 吗？该标签将从 {{count}} 个账号中移除。',
-                })}
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={() => {
-                  setTagDeleteConfirm(null)
-                  setTagDeleteConfirmError(null)
-                }}
-                disabled={deletingTag}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={confirmDeleteTag}
-                disabled={deletingTag}
-              >
-                {deletingTag ? '处理中...' : t('common.confirm')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Quota Details Modal */}
-      {showQuotaModal &&
-        (() => {
-          const account = accounts.find((a) => a.id === showQuotaModal)
-          if (!account) return null
-          const tierBadge = getAntigravityTierBadge(account.quota)
-          const tierClass =
-            tierBadge.tier === 'PRO' || tierBadge.tier === 'ULTRA'
-              ? 'pill-success'
-              : 'pill-secondary'
-
-          return (
-            <div
-              className="modal-overlay"
-            >
-              <div
-                className="modal modal-lg"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="modal-header">
-                  <h2>{t('modals.quota.title')}</h2>
-                  <div className="badges">
-                    <span className={`pill ${tierClass}`}>{tierBadge.label}</span>
-                  </div>
-                  <button
-                    className="close-btn"
-                    onClick={() => setShowQuotaModal(null)}
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-                <div className="modal-body">
-                  {(() => {
-                    const quotaDisplayItems = getQuotaDisplayItems(account)
-                    if (quotaDisplayItems.length === 0) {
-                      return (
-                        <div className="empty-state-small">
-                          {t('overview.noQuotaData')}
-                        </div>
-                      )
-                    }
-                    return (
-                      <div className="quota-list">
-                        {quotaDisplayItems.map((item) => (
-                          <div key={item.key} className="quota-card">
-                            <h4>{item.label}</h4>
-                            <div className="quota-value-row">
-                              <span
-                                className={`quota-value ${getQuotaClass(item.percentage)}`}
-                              >
-                                {item.percentage}%
-                              </span>
-                            </div>
-                            <div className="quota-bar">
-                              <div
-                                className={`quota-fill ${getQuotaClass(item.percentage)}`}
-                                style={{
-                                  width: `${Math.min(100, item.percentage)}%`
-                                }}
-                              ></div>
-                            </div>
-                            <div className="quota-reset-info">
-                              <p>
-                                <strong>{t('modals.quota.resetTime')}:</strong>{' '}
-                                {formatResetTimeDisplay(item.resetTime, t)}
-                              </p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )
-                  })()}
-
-                  <div className="modal-actions" style={{ marginTop: 20 }}>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => setShowQuotaModal(null)}
-                    >
-                      {t('common.close')}
-                    </button>
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => {
-                        handleRefresh(account.id)
-                      }}
-                    >
-                      {refreshing.has(account.id) ? (
-                        <div className="loading-spinner small" />
-                      ) : (
-                        <RefreshCw size={16} />
-                      )}
-                      {t('common.refresh')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        })()}
-
-      {/* Error Details Modal */}
-      {showErrorModal &&
-        (() => {
-          const account = accounts.find((a) => a.id === showErrorModal)
-          if (!account) return null
-          const errorInfo = account.quota_error
-
-          return (
-            <div
-              className="modal-overlay"
-            >
-              <div
-                className="modal modal-lg"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="modal-header">
-                  <h2>{t('modals.errors.title')}</h2>
-                  <button
-                    className="close-btn"
-                    onClick={() => setShowErrorModal(null)}
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-                <div className="modal-body">
-                  {!errorInfo?.message ? (
-                    <div className="empty-state-small">
-                      {t('modals.errors.empty')}
-                    </div>
-                  ) : (
-                    <div className="error-detail">
-                      <div className="error-detail-meta">
-                        <span>
-                          {t('modals.errors.account')}: {maskAccountText(account.email)}
-                        </span>
-                        {errorInfo.code && (
-                          <span>
-                            {t('modals.errors.code')}: {errorInfo.code}
-                          </span>
-                        )}
-                        {errorInfo.timestamp && (
-                          <span>
-                            {t('modals.errors.time')}:{' '}
-                            {formatDate(errorInfo.timestamp)}
-                          </span>
-                        )}
-                      </div>
-                      <div className="error-detail-message">
-                        {renderErrorMessage(errorInfo.message)}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="modal-actions" style={{ marginTop: 20 }}>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => setShowErrorModal(null)}
-                    >
-                      {t('common.close')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        })()}
-
-      {/* Verification Error Modal (verification_required / tos_violation) */}
-      {showVerificationErrorModal &&
-        (() => {
-          const account = accounts.find((a) => a.id === showVerificationErrorModal)
-          if (!account) return null
-          const vReason = account.disabled_reason || verificationStatusMap[account.id]
-          const vDetail = verificationDetailMap[account.id]
-          const isTos = vReason === 'tos_violation'
-          const title = isTos
-            ? t('wakeup.errorUi.tosViolationTitle', 'TOS 违规')
-            : t('wakeup.errorUi.verificationRequiredTitle', '需要验证')
-
-          const openLink = async (url: string) => {
-            try {
-              await openUrl(url)
-            } catch {
-              window.open(url, '_blank', 'noopener,noreferrer')
-            }
-          }
-
-          const copyLink = async (url: string) => {
-            try {
-              await navigator.clipboard.writeText(url)
-            } catch (e) {
-              console.error('复制失败', e)
-            }
-          }
-
-          return (
-            <div
-              className="modal-overlay"
-            >
-              <div
-                className="modal modal-lg"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="modal-header">
-                  <h2>{title}</h2>
-                  <button
-                    className="close-btn"
-                    onClick={() => setShowVerificationErrorModal(null)}
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-                <div className="modal-body">
-                  <div className="error-detail">
-                    <div className="error-detail-meta">
-                      <span>{t('modals.errors.account')}: {maskAccountText(account.email)}</span>
-                      {vDetail?.lastErrorCode && (
-                        <span>{t('wakeup.errorUi.errorCode', { code: vDetail.lastErrorCode })}</span>
-                      )}
-                    </div>
-                    {vDetail?.lastMessage && (
-                      <div className="error-detail-message" style={{ marginTop: 12 }}>
-                        {vDetail.lastMessage}
-                      </div>
-                    )}
-                  </div>
-                  {!vDetail && (
-                    <div className="empty-state-small" style={{ marginTop: 12 }}>
-                      {t('modals.errors.empty', '暂无验证详情')}
-                    </div>
-                  )}
-
-                  {/* Action buttons based on error type */}
-                  <div className="modal-actions" style={{ marginTop: 20, gap: 8, flexWrap: 'wrap' }}>
-                    {!isTos && vDetail?.validationUrl && (
-                      <>
-                        <button
-                          className="btn btn-primary"
-                          onClick={() => openLink(vDetail.validationUrl!)}
-                        >
-                          <ExternalLink size={14} />
-                          {t('wakeup.errorUi.completeVerification', '立即验证')}
-                        </button>
-                        <button
-                          className="btn btn-secondary"
-                          onClick={() => copyLink(vDetail.validationUrl!)}
-                        >
-                          <Copy size={14} />
-                          {t('wakeup.errorUi.copyValidationUrl', '复制验证地址')}
-                        </button>
-                      </>
-                    )}
-                    {isTos && vDetail?.appealUrl && (
-                      <>
-                        <button
-                          className="btn btn-primary"
-                          onClick={() => openLink(vDetail.appealUrl!)}
-                        >
-                          <ExternalLink size={14} />
-                          {t('wakeup.errorUi.submitAppeal', '立即提交保证书')}
-                        </button>
-                        <button
-                          className="btn btn-secondary"
-                          onClick={() => copyLink(vDetail.appealUrl!)}
-                        >
-                          <Copy size={14} />
-                          {t('wakeup.errorUi.copyAppealUrl', '复制链接')}
-                        </button>
-                      </>
-                    )}
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => setShowVerificationErrorModal(null)}
-                    >
-                      {t('common.close')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        })()}
-
-      {/* 标签编辑弹窗 */}
-      <TagEditModal
-        isOpen={!!showTagModal}
-        initialTags={accounts.find((acc) => acc.id === showTagModal)?.tags || []}
-        initialNotes={accounts.find((acc) => acc.id === showTagModal)?.notes ?? ''}
-        availableTags={availableTags}
-        onClose={() => setShowTagModal(null)}
-        onSave={handleSaveTags}
-      />
-
-      {/* 账号分组管理弹窗 */}
-      <AccountGroupModal
-        isOpen={showAccountGroupModal}
-        onClose={() => setShowAccountGroupModal(false)}
-        onGroupsChanged={reloadAccountGroups}
-      />
-
-      {/* 添加到分组弹窗 */}
-      <AddToGroupModal
-        isOpen={showAddToGroupModal}
-        onClose={() => setShowAddToGroupModal(false)}
-        accountIds={Array.from(selected)}
-        sourceGroupId={activeGroupId || undefined}
-        onAdded={async () => {
-          await reloadAccountGroups()
-          setSelected(new Set())
-        }}
-      />
-
-      <GroupAccountPickerModal
-        isOpen={!!groupAccountPickerGroupId}
-        targetGroup={groupAccountPickerGroup}
-        accounts={accounts}
-        accountGroups={accountGroups}
-        verificationStatusMap={verificationStatusMap}
-        getVerificationBadge={getVerificationBadge}
-        maskAccountText={maskAccountText}
-        onClose={() => setGroupAccountPickerGroupId(null)}
-        onConfirm={({ name, accountIds }) =>
-          handleAssignAccountsToGroup(groupAccountPickerGroupId!, name, accountIds)
-        }
-      />
-      <GroupAccountPickerModal
-        isOpen={!!groupQuickAddGroupId}
-        targetGroup={groupQuickAddGroup}
-        accounts={accounts}
-        accountGroups={accountGroups}
-        verificationStatusMap={verificationStatusMap}
-        getVerificationBadge={getVerificationBadge}
-        maskAccountText={maskAccountText}
-        onClose={() => setGroupQuickAddGroupId(null)}
-        onConfirm={({ name, accountIds }) =>
-          handleAssignAccountsToGroup(groupQuickAddGroupId!, name, accountIds)
-        }
-        mode="addAccounts"
-      />
-
-      {/* 文件损坏弹窗 */}
-      {fileCorruptedError && (
-        <FileCorruptedModal
-          error={fileCorruptedError}
-          onClose={() => setFileCorruptedError(null)}
-        />
-      )}
-    </>
-  )
+/** 组合业务 Controller 与独立 View，保持原组件公开调用入口不变。 */
+export function AccountsPage(props: AccountsPageProps) {
+  const controller = useAccountsPageController(props);
+  return <AccountsOverviewView {...controller} />;
 }

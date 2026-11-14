@@ -1,8 +1,25 @@
 import {
   isCodexApiKeyAccount,
-  isCodexExplicitFreePlanType,
+  isCodexChatgptPlanAccount,
+  isCodexAgentIdentityAccount,
+  isCodexEffectiveFreePlan,
+  isCodexPendingOAuthAccount,
+  isCodexWebSessionAccount,
   type CodexAccount,
 } from '../types/codex.ts';
+import type { CodexLocalAccessImageGenerationPolicy } from '../types/codexLocalAccess';
+import { getCodexServiceEndpoint } from './chatgptPlanOverview';
+
+/** Plan grants cannot enable hosted image generation, even in a stale draft. */
+export function resolveCodexMemberImagePolicy(
+  account: CodexAccount,
+  configured?: CodexLocalAccessImageGenerationPolicy,
+  official = false,
+): CodexLocalAccessImageGenerationPolicy {
+  account = getCodexServiceEndpoint(account);
+  if (official || isCodexChatgptPlanAccount(account)) return 'disabled';
+  return configured ?? (isCodexApiKeyAccount(account) ? 'disabled' : 'inherit');
+}
 
 const CHAT_COMPLETIONS_PROVIDER_HOSTS = [
   "api.deepseek.com",
@@ -39,15 +56,17 @@ const CHAT_COMPLETIONS_PROVIDER_HOSTS = [
 ];
 
 export type CodexLocalAccessAccountIneligibleReason =
-  | "chat_completions_api_key"
-  | "free_restricted";
+  | "free_restricted"
+  | "pending_oauth"
+  | "web_session_quota_only";
 
 export function isCodexChatCompletionsApiKeyAccount(account: CodexAccount): boolean {
-  if (!isCodexApiKeyAccount(account)) {
-    return false;
-  }
-  const wireApi = (account.api_wire_api || "").trim();
-  if (wireApi === "chat_completions") {
+  return isCodexApiKeyAccount(account) && codexProviderNeedsProtocolGateway(account);
+}
+
+export function codexProviderNeedsProtocolGateway(account: Pick<CodexAccount, "api_wire_api" | "api_base_url">): boolean {
+  const wireApi = (account.api_wire_api || "").trim().toLowerCase();
+  if (wireApi === "chat_completions" || wireApi === "anthropic") {
     return true;
   }
   if (wireApi === "responses") {
@@ -74,10 +93,20 @@ export function getCodexLocalAccessAccountIneligibleReason(
   account: CodexAccount,
   restrictFreeAccounts: boolean,
 ): CodexLocalAccessAccountIneligibleReason | null {
-  if (isCodexChatCompletionsApiKeyAccount(account)) {
-    return "chat_completions_api_key";
+  account = getCodexServiceEndpoint(account);
+  // Pending / incomplete OAuth accounts cannot serve API traffic.
+  if (isCodexPendingOAuthAccount(account)) {
+    return "pending_oauth";
   }
-  if (restrictFreeAccounts && isCodexExplicitFreePlanType(account.plan_type)) {
+  // ChatGPT Web Session: quota view only, never join API service.
+  if (isCodexWebSessionAccount(account)) {
+    return "web_session_quota_only";
+  }
+  if (
+    restrictFreeAccounts &&
+    !isCodexAgentIdentityAccount(account) &&
+    isCodexEffectiveFreePlan(account)
+  ) {
     return "free_restricted";
   }
   return null;
@@ -93,10 +122,33 @@ export function isCodexLocalAccessEligibleAccount(
   ) === null;
 }
 
+export function canAddCodexAccountToLocalAccess(
+  account: CodexAccount,
+  currentAccountIds: ReadonlySet<string>,
+  restrictFreeAccounts: boolean,
+): boolean {
+  return (
+    !currentAccountIds.has(account.id) &&
+    isCodexLocalAccessEligibleAccount(account, restrictFreeAccounts)
+  );
+}
+
+export function isCodexOAuthBindingEligibleAccount(
+  account: CodexAccount,
+): boolean {
+  return (
+    !isCodexApiKeyAccount(account) &&
+    !isCodexAgentIdentityAccount(account) &&
+    !isCodexWebSessionAccount(account) &&
+    Boolean(account.tokens.refresh_token?.trim())
+  );
+}
+
 export function filterCodexLocalAccessAccountIds(
   accountIds: string[],
   accounts: CodexAccount[],
   restrictFreeAccounts: boolean,
+  retainedPausedIds: readonly string[] = [],
 ): string[] {
   const accountById = new Map(accounts.map((account) => [account.id, account]));
   const seen = new Set<string>();
@@ -104,7 +156,8 @@ export function filterCodexLocalAccessAccountIds(
 
   for (const accountId of accountIds) {
     const account = accountById.get(accountId);
-    if (!account || !isCodexLocalAccessEligibleAccount(account, restrictFreeAccounts)) {
+    // Retaining a paused member is separate from admitting a new usable account.
+    if (!retainedPausedIds.includes(accountId) && (!account || !isCodexLocalAccessEligibleAccount(account, restrictFreeAccounts))) {
       continue;
     }
     if (!seen.has(accountId)) {
@@ -121,6 +174,7 @@ export function resolveCodexLocalAccessInitialAccountIds(
   accounts: CodexAccount[],
   restrictFreeAccounts: boolean,
   accountsLoaded: boolean,
+  retainedPausedIds: readonly string[] = [],
 ): string[] {
   if (!accountsLoaded) {
     return Array.from(new Set(accountIds));
@@ -129,5 +183,25 @@ export function resolveCodexLocalAccessInitialAccountIds(
     accountIds,
     accounts,
     restrictFreeAccounts,
+    retainedPausedIds,
   );
+}
+
+export function resolveImportedCodexAccountIdsForLocalAccess(
+  accounts: CodexAccount[],
+  syncAllImportedAccounts: boolean,
+  forceAgentIdentityAccounts: boolean,
+): string[] {
+  const eligible = accounts.filter((account) =>
+    isCodexLocalAccessEligibleAccount(account, false),
+  );
+  if (syncAllImportedAccounts) {
+    return eligible.map((account) => account.id);
+  }
+  if (!forceAgentIdentityAccounts) {
+    return [];
+  }
+  return eligible
+    .filter(isCodexAgentIdentityAccount)
+    .map((account) => account.id);
 }

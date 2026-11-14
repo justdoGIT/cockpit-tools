@@ -1,3 +1,5 @@
+import { useDurableUiBooleanSetting, useDurableUiSetting } from '../hooks/useDurableUiSetting';
+import { previewDurableUiSetting } from '../utils/durableUiSettings';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
@@ -35,6 +37,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { AccountLastUsed } from '../components/AccountLastUsed';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -43,16 +46,21 @@ import type { TFunction } from 'i18next';
 import md5 from 'blueimp-md5';
 import { ModalErrorMessage, useModalErrorState } from '../components/ModalErrorMessage';
 import { ExportJsonModal } from '../components/ExportJsonModal';
+import { AccountSelectionToolbar } from '../components/AccountSelectionToolbar';
 import { ManualHelpIconButton } from '../components/ManualHelpIconButton';
 import { QuickSettingsPopover } from '../components/QuickSettingsPopover';
 import { SingleSelectDropdown } from '../components/SingleSelectDropdown';
 import { TagEditModal } from '../components/TagEditModal';
 import { ClaudeIcon } from '../components/icons/ClaudeIcon';
+import { ClaudeCliUserConfigAction } from '../components/claude/ClaudeCliUserConfigAction';
+import { ClaudeDesktopRuntimeManager } from '../components/claude/ClaudeDesktopRuntimeManager';
 import { ModelProviderUsagePanel } from '../components/model-provider/ModelProviderUsagePanel';
 import { PlatformGroupSwitcher } from '../components/platform/PlatformGroupSwitcher';
 import { useEscClose } from '../hooks/useEscClose';
+import { useEnterConfirm } from '../hooks/useEnterConfirm';
 import { useExportJsonModal } from '../hooks/useExportJsonModal';
 import { useLaunchTerminalOptions } from '../hooks/useLaunchTerminalOptions';
+import { usePlatformAccountGroups } from '../hooks/usePlatformAccountGroups';
 import { getProviderCurrentAccountId, type ProviderCurrentPlatform } from '../services/providerCurrentAccountService';
 import {
   isModelProviderUsageUnavailableError,
@@ -64,6 +72,8 @@ import { isPrivacyModeEnabledByDefault, maskSensitiveValue, persistPrivacyModeEn
 import * as claudeService from '../services/claudeService';
 import * as claudeInstanceService from '../services/claudeInstanceService';
 import { useClaudeAccountStore } from '../stores/useClaudeAccountStore';
+import { useAccountFormLoad } from '../hooks/useAccountFormLoad';
+import { AccountFormReadDialog } from '../components/AccountFormReadDialog';
 import { useClaudeInstanceStore } from '../stores/useClaudeInstanceStore';
 import {
   findGroupByPlatform,
@@ -87,12 +97,15 @@ import {
   getClaudeAuthModeLabel,
   getClaudePlanBadge,
   getClaudePlanBadgeClass,
-  getClaudeQuotaClass,
   isClaudeDesktopGatewayAccount,
   isClaudeDesktopOAuthAccount,
   isClaudeDesktopRuntimeAccount,
   normalizeClaudeAuthMode,
 } from '../types/claude';
+import {
+  resolveClaudeDisplayPercentage,
+  resolveClaudeQuotaClassForDisplayValue,
+} from '../utils/claudeQuotaDisplayPreference';
 import {
   CLAUDE_APIKEY_FUN_BASE_URL,
   CLAUDE_APIKEY_FUN_PROVIDER_ID,
@@ -102,7 +115,6 @@ import {
   findClaudeApiProviderPresetById,
   inferClaudeApiKeyField,
   normalizeClaudeApiProviderBaseUrl,
-  type ClaudeApiProviderPreset,
 } from '../utils/claudeProviderPresets';
 import {
   CLAUDE_DESKTOP_GATEWAY_DEFAULT_MODELS,
@@ -118,13 +130,22 @@ import {
   type ApiKeyFunPrefillPayload,
 } from '../utils/apiKeyFunPrefill';
 import { getPlatformLabel } from '../utils/platformMeta';
+import {
+  applyClaudeApiProviderTemplateValue,
+  getClaudeApiProviderTemplateInitialValues,
+  resolveClaudeApiProviderExtraEnv,
+} from '../utils/claudeApiProviderTemplates';
+import {
+  persistLastClaudeCliWorkingDir,
+  readLastClaudeCliWorkingDir,
+  sanitizeClaudeCliInstanceName,
+} from '../utils/claudeCliLaunchPreferences';
 import { ClaudeInstancesContent } from './ClaudeInstancesPage';
 import type { InstanceProfile } from '../types/instance';
 
 const CLAUDE_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.claude.flow_notice_collapsed';
 const CLAUDE_ACCOUNTS_VIEW_MODE_KEY = 'agtools.claude.accounts_view_mode';
 const CLAUDE_API_KEY_USAGE_CACHE_KEY = 'agtools.claude.apiKeyUsage.cache.v1';
-const CLAUDE_CLI_LAST_WORKING_DIR_KEY = 'agtools.claude.cli.last_working_dir';
 const CLAUDE_API_KEY_USAGE_REFRESH_THROTTLE_MS = 10 * 1000;
 const CLAUDE_DESKTOP_LOGIN_PROGRESS_EVENT = 'claude:desktop-login-progress';
 const claudeApiKeyUsageInFlight = new Set<string>();
@@ -269,72 +290,10 @@ function normalizePathForCompare(value?: string | null): string {
   return (value || '').trim();
 }
 
-function sanitizeClaudeCliInstanceName(value: string): string {
-  return value.replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim() || 'Claude CLI';
-}
-
-function readLastClaudeCliWorkingDir(): string {
-  try {
-    return localStorage.getItem(CLAUDE_CLI_LAST_WORKING_DIR_KEY)?.trim() || '';
-  } catch {
-    return '';
-  }
-}
-
-function persistLastClaudeCliWorkingDir(value: string): void {
-  const trimmed = value.trim();
-  if (!trimmed) return;
-  try {
-    localStorage.setItem(CLAUDE_CLI_LAST_WORKING_DIR_KEY, trimmed);
-  } catch {
-    // Ignore storage errors. The selected workspace is only a UI convenience.
-  }
-}
-
-function getClaudeApiProviderTemplateInitialValues(
-  preset?: ClaudeApiProviderPreset | null,
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(preset?.templateValues ?? {}).map(([key, config]) => [
-      key,
-      config.editorValue ?? config.defaultValue ?? '',
-    ]),
-  );
-}
-
-function applyClaudeApiProviderTemplateValue(
-  value: string,
-  templateValues: Record<string, string>,
-): string {
-  return value.replace(/\$\{([A-Z0-9_]+)\}/g, (matched, key: string) => templateValues[key] ?? matched);
-}
-
-function resolveClaudeApiProviderExtraEnv(
-  preset: ClaudeApiProviderPreset | null | undefined,
-  templateValues: Record<string, string>,
-): Record<string, string> | null {
-  const entries = Object.entries(preset?.extraEnv ?? {}).map(([key, value]) => [
-    key,
-    applyClaudeApiProviderTemplateValue(value, templateValues),
-  ]);
-  return entries.length > 0 ? Object.fromEntries(entries) : null;
-}
-
 function formatDate(timestamp: number): string {
   if (!timestamp) return '-';
   const value = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000;
   return new Date(value).toLocaleString();
-}
-
-function readInitialViewMode(): ViewMode {
-  try {
-    const value = localStorage.getItem(CLAUDE_ACCOUNTS_VIEW_MODE_KEY);
-    if (value === 'grid' || value === 'list') return value;
-    if (value === 'compact') return 'list';
-  } catch {
-    // ignore storage failures
-  }
-  return 'grid';
 }
 
 function readClaudeApiKeyUsageCache(): Record<string, ClaudeApiKeyUsageState> {
@@ -615,7 +574,7 @@ function normalizeClaudeDesktopGatewayMappings(
       desktopModel,
       upstreamModel,
       labelOverride: upstreamModel,
-      ...(mapping.supports1m === true ? { supports1m: true } : {}),
+      ...(typeof mapping.supports1m === 'boolean' ? { supports1m: mapping.supports1m } : {}),
     });
   });
   return result;
@@ -693,8 +652,9 @@ function isClaudeApiKeyFunAccount(account: ClaudeAccount): boolean {
   return (
     providerId === CLAUDE_APIKEY_FUN_PROVIDER_ID ||
     sourceTag === 'apikey_fun' ||
+    providerName === 'apikey.fan' ||
     providerName === 'apikey.fun' ||
-    Boolean(baseUrl && /(^https?:\/\/)?([^/]+\.)?apikey\.fun(\/|$)/i.test(baseUrl))
+    Boolean(baseUrl && /(^https?:\/\/)?([^/]+\.)?apikey\.(?:fan|fun)(\/|$)/i.test(baseUrl))
   );
 }
 
@@ -705,13 +665,13 @@ function buildClaudeQuotaSummaryItems(account: ClaudeAccount, t: TFunction): Cla
     {
       key: 'five-hour',
       label: t('claude.quota.fiveHour', 'Current session'),
-      percentage: quota.five_hour_percentage,
+      percentage: resolveClaudeDisplayPercentage(quota.five_hour_percentage),
       resetTime: quota.five_hour_reset_time,
     },
     {
       key: 'seven-day',
       label: t('claude.quota.sevenDay', 'Current week (all models)'),
-      percentage: quota.seven_day_percentage,
+      percentage: resolveClaudeDisplayPercentage(quota.seven_day_percentage),
       resetTime: quota.seven_day_reset_time,
     },
   ];
@@ -785,17 +745,14 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
       })),
     [claudePlatformId, claudePlatformLabel, currentPlatformGroup, switchablePlatforms, t],
   );
-  const [viewMode, setViewMode] = useState<ViewMode>(readInitialViewMode);
+  const storedViewMode = useDurableUiSetting(CLAUDE_ACCOUNTS_VIEW_MODE_KEY);
+  const viewMode: ViewMode = storedViewMode === 'list' || storedViewMode === 'compact' ? 'list' : 'grid';
+  const setViewMode = (mode: ViewMode) => previewDurableUiSetting(CLAUDE_ACCOUNTS_VIEW_MODE_KEY, mode);
   const [searchQuery, setSearchQuery] = useState('');
   const [privacyModeEnabled, setPrivacyModeEnabled] = useState(isPrivacyModeEnabledByDefault);
   const [message, setMessage] = useState<{ text: string; tone?: 'error' | 'success' } | null>(null);
-  const [isFlowNoticeCollapsed, setIsFlowNoticeCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(CLAUDE_FLOW_NOTICE_COLLAPSED_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
+  const [isFlowNoticeCollapsed, setIsFlowNoticeCollapsed] =
+    useDurableUiBooleanSetting(CLAUDE_FLOW_NOTICE_COLLAPSED_KEY);
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTab, setAddTab] = useState<AddTab>('desktop');
   const [jsonInput, setJsonInput] = useState('');
@@ -821,8 +778,15 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
   const [desktopGatewayModelsError, setDesktopGatewayModelsError] = useState<string | null>(null);
   const [desktopGatewayModelsMessage, setDesktopGatewayModelsMessage] = useState<string | null>(null);
   const [editingDesktopGatewayAccountId, setEditingDesktopGatewayAccountId] = useState<string | null>(null);
+  const gatewayRead = useAccountFormLoad();
+  const [gatewayReadError, setGatewayReadError] = useState<string | null>(null);
   const desktopGatewayModelsFetchSignatureRef = useRef('');
   const desktopGatewayModelsFetchRequestRef = useRef(0);
+  // Keep React row identity separate from editable values and the persisted mapping shape.
+  const desktopGatewayMappingRowKeysRef = useRef(
+    new WeakMap<ClaudeDesktopGatewayModelMapping, string>(),
+  );
+  const desktopGatewayMappingRowKeySequenceRef = useRef(0);
   const [desktopLogin, setDesktopLogin] = useState<ClaudeDesktopLoginStartResponse | null>(null);
   const [desktopLoginProgress, setDesktopLoginProgress] = useState<ClaudeDesktopLoginProgressPayload | null>(null);
   const [desktopAccountNameInput, setDesktopAccountNameInput] = useState('');
@@ -852,6 +816,10 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
   const [currentAccountId, setCurrentAccountId] = useState<string | null>(null);
   const [tagAccountId, setTagAccountId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
+  const grouping = usePlatformAccountGroups('claude_manager', clearSelection);
   const [editingAccountNoteId, setEditingAccountNoteId] = useState<string | null>(null);
   const [editingAccountNoteValue, setEditingAccountNoteValue] = useState('');
   const [savingAccountNote, setSavingAccountNote] = useState(false);
@@ -873,6 +841,34 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
     scrollKey: accountNoteErrorScrollKey,
     set: setAccountNoteError,
   } = useModalErrorState();
+
+  const getDesktopGatewayMappingRowKey = useCallback((mapping: ClaudeDesktopGatewayModelMapping) => {
+    const existingKey = desktopGatewayMappingRowKeysRef.current.get(mapping);
+    if (existingKey) return existingKey;
+    desktopGatewayMappingRowKeySequenceRef.current += 1;
+    const nextKey = `claude-gateway-mapping-${desktopGatewayMappingRowKeySequenceRef.current}`;
+    desktopGatewayMappingRowKeysRef.current.set(mapping, nextKey);
+    return nextKey;
+  }, []);
+
+  const updateDesktopGatewayModelMapping = useCallback((
+    index: number,
+    updater: (mapping: ClaudeDesktopGatewayModelMapping) => ClaudeDesktopGatewayModelMapping,
+  ) => {
+    setDesktopGatewayModelMappings((previous) => {
+      const current = previous[index];
+      if (!current) return previous;
+      const updated = updater(current);
+      if (updated === current) return previous;
+      desktopGatewayMappingRowKeysRef.current.set(
+        updated,
+        getDesktopGatewayMappingRowKey(current),
+      );
+      const next = [...previous];
+      next[index] = updated;
+      return next;
+    });
+  }, [getDesktopGatewayMappingRowKey]);
 
   const exportModal = useExportJsonModal({
     exportFilePrefix: activeSubPlatform === 'desktop' ? 'claude_desktop_accounts' : 'claude_cli_accounts',
@@ -956,7 +952,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
 
   useEscClose(showAddModal, closeAddModal);
   useEscClose(Boolean(cliLaunchModal), () => setCliLaunchModal(null));
-  useEscClose(Boolean(deleteConfirm), () => setDeleteConfirm(null));
+  useEscClose(Boolean(deleteConfirm) && !deleting, () => setDeleteConfirm(null));
 
   const refreshCurrentAccountId = useCallback(
     async (platform: ClaudeSubPlatform = activeSubPlatform) => {
@@ -974,22 +970,6 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
     void store.fetchAccounts();
     void refreshCurrentAccountId();
   }, [refreshCurrentAccountId, store.fetchAccounts]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(CLAUDE_FLOW_NOTICE_COLLAPSED_KEY, String(isFlowNoticeCollapsed));
-    } catch {
-      // ignore storage failures
-    }
-  }, [isFlowNoticeCollapsed]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(CLAUDE_ACCOUNTS_VIEW_MODE_KEY, viewMode);
-    } catch {
-      // ignore storage failures
-    }
-  }, [viewMode]);
 
   useEffect(() => {
     setActiveSection(routeInitialSection);
@@ -1098,7 +1078,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
 
   const filteredAccounts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return [...currentSubPlatformAccounts]
+    let result = [...currentSubPlatformAccounts]
       .filter((account) => {
         if (!query) return true;
         return [
@@ -1110,17 +1090,22 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
           account.account_note ?? '',
           ...(account.tags || []),
         ].some((value) => value.toLowerCase().includes(query));
-      })
-      .sort((a, b) => {
-        const currentFirstDiff = compareCurrentAccountFirst(
-          a.id,
-          b.id,
-          currentAccountId,
-        );
-        if (currentFirstDiff !== 0) return currentFirstDiff;
-        return (b.last_used || b.created_at) - (a.last_used || a.created_at);
       });
-  }, [searchQuery, currentSubPlatformAccounts, currentAccountId]);
+
+    if (grouping.activeGroupId) {
+      result = grouping.filterAccountsByGroup(result);
+    }
+
+    return result.sort((a, b) => {
+      const currentFirstDiff = compareCurrentAccountFirst(
+        a.id,
+        b.id,
+        currentAccountId,
+      );
+      if (currentFirstDiff !== 0) return currentFirstDiff;
+      return (b.last_used || b.created_at) - (a.last_used || a.created_at);
+    });
+  }, [searchQuery, currentSubPlatformAccounts, grouping, currentAccountId]);
 
   const filteredIds = useMemo(
     () => filteredAccounts.map((account) => account.id),
@@ -1214,10 +1199,6 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
       return next;
     });
   }, [filteredIds]);
-
-  const clearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-  }, []);
 
   const openAddModal = () => {
     resetAddModalState(activeSubPlatform);
@@ -1342,6 +1323,19 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
     desktopGatewayModelsFetchSignatureRef.current = apiKey && normalizedBaseUrl
       ? `${apiKey}\n${normalizedBaseUrl}\n${authScheme}`
       : '';
+  };
+
+  const loadDesktopGatewayEditor = (account: ClaudeAccount) => {
+    if (account.api_key) {
+      openEditDesktopGatewayModal(account);
+      return;
+    }
+    gatewayRead.start(async () => {
+      const liveAccount = (await claudeService.listClaudeAccounts()).find(item => item.id === account.id);
+      if (!liveAccount || !isClaudeDesktopGatewayAccount(liveAccount)) throw new Error(t('common.failed'));
+      return liveAccount;
+    }, openEditDesktopGatewayModal, error => setGatewayReadError(error ?
+      t('messages.actionFailed', { action: t('claude.desktopGateway.label'), error: String(error) }) : null));
   };
 
   const selectAddTab = (tab: AddTab) => {
@@ -1956,11 +1950,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
       const displayName = maskAccountText(getClaudeAccountDisplayEmail(account));
       setMessage({
         text: isClaudeDesktopGatewayAccount(account)
-          ? t(
-            'claude.desktopGateway.switchSuccess',
-            '已应用 Claude Desktop 供应商配置：{{name}}。',
-            { name: displayName },
-          )
+          ? t('claude.desktopGateway.switchSuccess', { name: displayName })
           : t('messages.switched', {
             email: displayName,
           }),
@@ -2071,7 +2061,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
           ? {
               ...prev,
               executeMessage: null,
-              executeError: t('instances.messages.accountMissing', '账号不存在'),
+              executeError: t('instances.quota.accountMissing', '账号不存在'),
             }
           : prev,
       );
@@ -2453,6 +2443,10 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
     }
   };
 
+  useEnterConfirm(Boolean(deleteConfirm) && !deleting, () => {
+    void confirmDelete();
+  });
+
   const openBatchDeleteConfirm = () => {
     if (selectedDeletableIds.length === 0) return;
     setDeleteError(null);
@@ -2515,7 +2509,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
         {isDesktopGateway && (
           <button
             className={buttonClass}
-            onClick={() => openEditDesktopGatewayModal(account)}
+            onClick={() => loadDesktopGatewayEditor(account)}
             title={t('common.edit', '编辑')}
           >
             <Pencil size={14} />
@@ -2532,14 +2526,14 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
           title={
             isCliSubPlatform
               ? isDesktopRuntime
-                  ? t('claude.desktopOAuth.cliUnsupported', 'Claude 账号不能启动 Claude Code CLI')
-                  : t('claude.cli.quickLaunch', 'CLI 启动')
+                  ? t('claude.desktopOAuth.cliUnsupported')
+                  : t('common.cliQuickLaunch', 'CLI 启动')
               : isApiKey
                 ? t('claude.apiKey.switchDisabled', 'API Key 账号不能写入本地登录态')
                 : isDesktopGateway
-                  ? t('claude.desktopGateway.switchHint', '应用供应商配置并启动 Claude Desktop')
+                  ? t('claude.desktopGateway.switchHint')
                   : isClaudeCodeOAuth
-                    ? t('claude.oauth.switchHint', '切换到本机 Claude Code')
+                    ? t('claude.oauth.switchHint')
                     : isDesktopRuntime
                       ? t('claude.desktopOAuth.switchHint', '切换到官方 Claude')
                       : t('common.shared.switchAccount', '切换账号')
@@ -2620,7 +2614,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
     return (
       <div className="account-sub-line claude-api-key-line">
         <span className="codex-login-subline" title={apiKey ? masked : '-'}>
-          {t('claude.apiKey.label', 'API Key')}: {masked}
+          {t('claude.apiKey.keyLabel', 'API Key')}: {masked}
         </span>
         {apiKey && (
           <button
@@ -2667,7 +2661,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
       <>
         {items.map((item) => {
           const percentage = clampQuotaPercentage(item.percentage);
-          const quotaClass = getClaudeQuotaClass(percentage);
+          const quotaClass = resolveClaudeQuotaClassForDisplayValue(percentage);
           const resetText = formatClaudeResetTime(item.resetTime);
           const resetDisplay = resetText || '-';
           const Icon = item.key === 'five-hour' ? Clock3 : CalendarDays;
@@ -2800,7 +2794,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
       <div className="page-top-strip">
         <div className="page-top-strip-left">
           <span className="page-top-strip-label">
-            {t('settings.general.account', '账号')}
+            {t('settings.general.accountManagement', 'Account')}
           </span>
           <ManualHelpIconButton className="platform-header-help" />
         </div>
@@ -2956,6 +2950,41 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
             </div>
           </div>
 
+          {(subPlatformAccountsCount > 0 || grouping.groups.length > 0) && (
+            <AccountSelectionToolbar
+              selectedCount={selectedVisibleIds.length}
+              allSelected={isAllFilteredSelected}
+              disabled={filteredIds.length === 0}
+              onToggleSelectAll={toggleSelectAllFiltered}
+              onClearSelection={clearSelection}
+              grouping={grouping}
+              accounts={currentSubPlatformAccounts}
+              selectedIds={selectedVisibleIds}
+              actions={(
+                <>
+                  {selectedExportableIds.length > 0 && (
+                    <button
+                      className="btn btn-secondary icon-only"
+                      onClick={() => void handleExport(selectedExportableIds)}
+                      disabled={exportModal.preparing}
+                      title={`${t('common.shared.export.title', '导出')} (${selectedExportableIds.length})`}
+                    >
+                      <Upload size={14} />
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-danger icon-only"
+                    onClick={openBatchDeleteConfirm}
+                    disabled={selectedDeletableIds.length === 0}
+                    title={`${t('common.delete', '删除')} (${selectedDeletableIds.length})`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </>
+              )}
+            />
+          )}
+
           {store.loading && store.accounts.length === 0 ? (
             <div className="loading-container">
               <RefreshCw size={24} className="loading-spinner" />
@@ -2983,57 +3012,6 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
             </div>
           ) : (
             <>
-              <div className="codex-overview-selection-bar">
-                <div className="codex-overview-selection-left">
-                  <label className="codex-overview-select-all">
-                    <input
-                      type="checkbox"
-                      checked={isAllFilteredSelected}
-                      onChange={toggleSelectAllFiltered}
-                    />
-                    <span>{t('common.selectAll', '全选')}</span>
-                  </label>
-                  {selectedVisibleIds.length > 0 && (
-                    <>
-                      <span className="codex-overview-selected-count">
-                        {t('claude.selection.selected', '已选 {{count}}', {
-                          count: selectedVisibleIds.length,
-                        })}
-                      </span>
-                      <button
-                        type="button"
-                        className="codex-overview-clear-selection-btn"
-                        onClick={clearSelection}
-                      >
-                        {t('messages.clearSelection', '取消选择')}
-                      </button>
-                    </>
-                  )}
-                </div>
-                {selectedVisibleIds.length > 0 && (
-                  <div className="codex-overview-selection-actions">
-                    {selectedExportableIds.length > 0 && (
-                      <button
-                        className="btn btn-secondary icon-only"
-                        onClick={() => void handleExport(selectedExportableIds)}
-                        disabled={exportModal.preparing}
-                        title={`${t('common.shared.export.title', '导出')} (${selectedExportableIds.length})`}
-                      >
-                        <Upload size={14} />
-                      </button>
-                    )}
-                    <button
-                      className="btn btn-danger icon-only"
-                      onClick={openBatchDeleteConfirm}
-                      disabled={selectedDeletableIds.length === 0}
-                      title={`${t('common.delete', '删除')} (${selectedDeletableIds.length})`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                )}
-              </div>
-
               {viewMode === 'grid' ? (
                 <div className="codex-accounts-grid">
                   {filteredAccounts.map((account) => {
@@ -3053,7 +3031,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                     const cardTitle = isDesktopGateway
                       ? gatewayProviderTitle
                       : isProviderAccount
-                      ? apiProviderLabel || displayEmail || t('claude.apiKey.label', 'API Key')
+                      ? apiProviderLabel || displayEmail || t('claude.apiKey.keyLabel', 'API Key')
                       : displayEmail;
                     const apiBaseUrlText = account.api_base_url?.trim()
                       || t('claude.apiKey.officialEndpoint', '官方默认');
@@ -3135,7 +3113,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                           renderQuotaSummary(account, 'card')
                         )}
                         <div className="codex-card-bottom">
-                          <span className="card-date">{formatDate(account.created_at)}</span>
+                          <AccountLastUsed accountId={account.id} lastSwitchedAt={account.last_switched_at} createdAt={account.created_at} formatDate={formatDate} />
                           <div className="card-footer">
                             {renderAccountActions(account, 'card')}
                           </div>
@@ -3157,9 +3135,9 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                           />
                         </th>
                         <th style={{ width: 260 }}>{t('common.shared.columns.account', '账号')}</th>
-                        <th style={{ width: 140 }}>{t('accounts.columns.plan', '套餐')}</th>
+                        <th style={{ width: 140 }}>{t('common.shared.columns.plan', '套餐')}</th>
                         <th>{t('claude.quota.title', '额度')}</th>
-                        <th style={{ width: 180 }}>{t('accounts.columns.createdAt', '创建时间')}</th>
+                        <th style={{ width: 180 }}>{t('common.shared.columns.createdAt', '创建时间')}</th>
                         <th className="sticky-action-header table-action-header">{t('common.shared.columns.actions', '操作')}</th>
                       </tr>
                     </thead>
@@ -3229,7 +3207,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                             </td>
                             <td>{isProviderAccount ? null : renderPlanControl(account)}</td>
                             <td>{isProviderAccount ? renderApiKeyStatsPanel(account) : renderQuotaSummary(account, 'table')}</td>
-                            <td>{formatDate(account.created_at)}</td>
+                            <td>{account.last_used > 0 ? formatDate(account.last_used) : '—'}</td>
                             <td className="sticky-action-cell table-action-cell">
                               {renderAccountActions(account, 'table')}
                             </td>
@@ -3247,7 +3225,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
 
       {showAddModal && (
         <div className="modal-overlay">
-          <div className="modal ghcp-add-modal claude-add-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal ghcp-add-modal platform-account-add-modal claude-add-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <h2>
                 {t(
@@ -3360,6 +3338,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                       '首次使用时会下载并校验 Electron 登录组件到本地应用数据目录；安装包不内置，之后复用本地缓存。',
                     )}
                   </p>
+                  <ClaudeDesktopRuntimeManager disabled={addModalBusy || Boolean(desktopLogin)} onError={setAddModalError} onSuccess={(text) => setMessage({ text })} />
                   {desktopStarting && desktopLoginProgress && (
                     <div className="claude-desktop-login-progress" role="status" aria-live="polite">
                       <div className="claude-desktop-login-progress__head">
@@ -3813,14 +3792,16 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                                   const showCustomDesktopInput =
                                     desktopDropdownValue === CLAUDE_DESKTOP_GATEWAY_CUSTOM_DESKTOP_MODEL;
                                   return (
-                                    <div className="claude-gateway-mapping-row" key={`${index}-${mapping.upstreamModel}-${mapping.desktopModel}`}>
+                                    <div className="claude-gateway-mapping-row" key={getDesktopGatewayMappingRowKey(mapping)}>
                                       <input
                                         className="form-input"
                                         value={mapping.upstreamModel}
                                         onChange={(event) => {
-                                          const next = [...desktopGatewayModelMappings];
-                                          next[index] = { ...mapping, upstreamModel: event.target.value };
-                                          setDesktopGatewayModelMappings(next);
+                                          const value = event.target.value;
+                                          updateDesktopGatewayModelMapping(index, (current) => ({
+                                            ...current,
+                                            upstreamModel: value,
+                                          }));
                                           setDesktopGatewayModelsError(null);
                                           setAddModalError(null);
                                         }}
@@ -3832,17 +3813,15 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                                           value={desktopDropdownValue}
                                           options={desktopModelOptions}
                                           onChange={(value) => {
-                                            const next = [...desktopGatewayModelMappings];
-                                            next[index] = {
-                                              ...mapping,
+                                            updateDesktopGatewayModelMapping(index, (current) => ({
+                                              ...current,
                                               desktopModel:
                                                 value === CLAUDE_DESKTOP_GATEWAY_CUSTOM_DESKTOP_MODEL
                                                   ? desktopModelInOptions
                                                     ? ''
-                                                    : mapping.desktopModel
+                                                    : current.desktopModel
                                                   : value,
-                                            };
-                                            setDesktopGatewayModelMappings(next);
+                                            }));
                                             setDesktopGatewayModelsError(null);
                                             setAddModalError(null);
                                           }}
@@ -3855,9 +3834,11 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                                             className="form-input"
                                             value={mapping.desktopModel}
                                             onChange={(event) => {
-                                              const next = [...desktopGatewayModelMappings];
-                                              next[index] = { ...mapping, desktopModel: event.target.value };
-                                              setDesktopGatewayModelMappings(next);
+                                              const value = event.target.value;
+                                              updateDesktopGatewayModelMapping(index, (current) => ({
+                                                ...current,
+                                                desktopModel: value,
+                                              }));
                                               setDesktopGatewayModelsError(null);
                                               setAddModalError(null);
                                             }}
@@ -3874,9 +3855,11 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                                           type="checkbox"
                                           checked={mapping.supports1m === true}
                                           onChange={(event) => {
-                                            const next = [...desktopGatewayModelMappings];
-                                            next[index] = { ...mapping, supports1m: event.target.checked };
-                                            setDesktopGatewayModelMappings(next);
+                                            const checked = event.target.checked;
+                                            updateDesktopGatewayModelMapping(index, (current) => ({
+                                              ...current,
+                                              supports1m: checked,
+                                            }));
                                             setDesktopGatewayModelsError(null);
                                             setAddModalError(null);
                                           }}
@@ -4050,7 +4033,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
                   disabled={addModalBusy}
                 >
                   <FileJson size={14} />
-                  {t('common.shared.import.file', '选择文件')}
+                  {t('common.shared.import.file')}
                 </button>
                 <button
                   className="btn btn-primary"
@@ -4101,11 +4084,15 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
               <div className="add-status success">
                 <Check size={16} />
                 <span>
-                  {t('accounts.switched', '已切换至 {{email}}', {
-                    email: maskAccountText(cliLaunchModal.accountEmail),
-                  })}
+                  {maskAccountText(cliLaunchModal.accountEmail)}
                 </span>
               </div>
+              <ClaudeCliUserConfigAction
+                key={cliLaunchModal.accountId}
+                accountId={cliLaunchModal.accountId}
+                disabled={cliLaunchModal.preparing || cliLaunchModal.executing}
+                onApplied={() => { void refreshCurrentAccountId('cli'); }}
+              />
               <div className="form-group">
                 <label>{t('instances.columns.instance', '实例')}</label>
                 <input
@@ -4283,6 +4270,8 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
         </div>
       )}
 
+      {gatewayRead.status !== 'ready' && <AccountFormReadDialog title={t('claude.desktopGateway.label')}
+        status={gatewayRead.status} error={gatewayReadError} onRetry={gatewayRead.retry} onClose={gatewayRead.reset} />}
       <TagEditModal
         isOpen={Boolean(tagAccount)}
         initialTags={tagAccount?.tags || []}

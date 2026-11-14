@@ -82,30 +82,50 @@ fn build_available_log_files(paths: Vec<PathBuf>) -> Result<Vec<ManagedLogFile>,
         .collect()
 }
 
+async fn run_bounded_log_read<T: Send + 'static>(
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
+    timeout: std::time::Duration,
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let permit = gate.try_acquire_owned().map_err(|_| "日志读取仍在进行，请稍后重试".to_string())?;
+    let worker = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        task()
+    });
+    tokio::time::timeout(timeout, worker).await
+        .map_err(|_| "日志读取超时，请稍后重试".to_string())?
+        .map_err(|error| format!("日志读取任务失败: {error}"))?
+}
+
 #[tauri::command]
-pub fn logs_get_snapshot(
+pub async fn logs_get_snapshot(file_name: Option<String>, line_limit: Option<usize>) -> Result<LogSnapshot, String> {
+    static GATE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let gate = GATE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1))).clone();
+    run_bounded_log_read(gate, std::time::Duration::from_secs(5), move || {
+        read_log_snapshot(file_name, line_limit)
+    }).await
+}
+
+fn read_log_snapshot(
     file_name: Option<String>,
     line_limit: Option<usize>,
 ) -> Result<LogSnapshot, String> {
     let line_limit = logger::clamp_log_tail_lines(line_limit);
     let log_dir = logger::get_log_dir()?;
-    let log_file = logger::resolve_managed_log_file(file_name.as_deref())?;
-    let content = logger::read_log_tail_lines(&log_file, line_limit)?;
-    let metadata = fs::metadata(&log_file).map_err(|e| format!("读取日志文件元数据失败: {}", e))?;
-    let available_files = build_available_log_files(logger::list_managed_log_files()?)?;
+    let log_files = logger::list_managed_log_files()?;
+    let log_file = logger::resolve_managed_log_file(&log_files, file_name.as_deref())?;
+    let content = logger::read_log_tail_lines(log_file, line_limit)?;
+    let selected_file = build_managed_log_file(log_file)?;
+    let available_files = build_available_log_files(log_files)?;
 
     Ok(LogSnapshot {
         log_dir_path: log_dir.to_string_lossy().to_string(),
-        log_file_path: log_file.to_string_lossy().to_string(),
-        log_file_name: log_file
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_string(),
+        log_file_path: selected_file.log_file_path,
+        log_file_name: selected_file.log_file_name,
         content,
         line_limit,
-        file_size: metadata.len(),
-        modified_at_ms: metadata.modified().ok().and_then(to_unix_millis),
+        file_size: selected_file.file_size,
+        modified_at_ms: selected_file.modified_at_ms,
         available_files,
     })
 }
@@ -114,4 +134,25 @@ pub fn logs_get_snapshot(
 pub fn logs_open_log_directory() -> Result<(), String> {
     let log_dir = logger::get_log_dir()?;
     open_directory(&log_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn log_read_timeout_does_not_allow_overlapping_workers() {
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let result = run_bounded_log_read(gate.clone(), std::time::Duration::from_millis(10), move || {
+            let _ = blocked.recv();
+            Ok(1)
+        }).await;
+        assert!(result.unwrap_err().contains("超时"));
+        assert_eq!(gate.available_permits(), 0);
+        assert!(run_bounded_log_read(gate.clone(), std::time::Duration::from_secs(1), || Ok(2)).await.is_err());
+        release.send(()).unwrap();
+        let permit = tokio::time::timeout(std::time::Duration::from_secs(4), gate.clone().acquire_owned()).await.unwrap().unwrap();
+        drop(permit);
+        assert_eq!(run_bounded_log_read(gate, std::time::Duration::from_secs(1), || Ok(3)).await.unwrap(), 3);
+    }
 }

@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { X, Tag, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { globalRenameTag, globalDeleteTag } from '../utils/globalTagOperations';
-import { useEscClose } from '../hooks/useEscClose';
+import { useEscCloseTopmost } from '../hooks/useEscClose';
+import { useModalFocusTrap } from '../hooks/useModalFocusTrap';
+import { useEnterConfirm } from '../hooks/useEnterConfirm';
+import { ModalErrorMessage } from './ModalErrorMessage';
 import './TagEditModal.css';
 
 interface TagEditModalProps {
@@ -36,17 +39,30 @@ const normalizeTagList = (tags: string[]) => {
 
 export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags = [], resetKey, onClose, onSave }: TagEditModalProps) => {
   const { t } = useTranslation();
-  useEscClose(isOpen, onClose);
   const [tags, setTags] = useState<string[]>([]);
   const [notes, setNotes] = useState('');
   const [inputValue, setInputValue] = useState('');
   const [error, setError] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [globalRenamingTag, setGlobalRenamingTag] = useState<string | null>(null);
+  const [globalDeleteConfirm, setGlobalDeleteConfirm] = useState<string | null>(null);
+  const [globalDeleteError, setGlobalDeleteError] = useState('');
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
   const normalizedInitialTags = useMemo(() => normalizeTagList(initialTags), [initialTags]);
   const initialNotesValue = initialNotes ?? '';
   const initialTagsSignature = normalizedInitialTags.join('\u0001');
   const effectiveResetKey = resetKey ?? `${initialTagsSignature}\u0002${initialNotesValue}`;
+
+  // ESC closes nested confirm first; only then closes the main modal.
+  useEscCloseTopmost(isOpen && !globalDeleteConfirm && !saving, onClose, dialogRef);
+  useEscCloseTopmost(!!globalDeleteConfirm && !saving, () => {
+    setGlobalDeleteConfirm(null);
+    setGlobalDeleteError('');
+  }, confirmRef);
+  useModalFocusTrap(dialogRef, isOpen, true, !globalDeleteConfirm);
+  useModalFocusTrap(confirmRef, !!globalDeleteConfirm);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -55,6 +71,8 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
     setInputValue('');
     setError('');
     setGlobalRenamingTag(null);
+    setGlobalDeleteConfirm(null);
+    setGlobalDeleteError('');
   }, [effectiveResetKey, isOpen]);
 
   const remaining = useMemo(() => MAX_TAGS - tags.length, [tags.length]);
@@ -134,6 +152,7 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
 
   const handleSave = async () => {
     if (saving) return;
+    setError('');
     const { nextTags, error: saveError } = buildTagsForSave();
     if (saveError) {
       setError(saveError);
@@ -143,6 +162,8 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
     try {
       await onSave(nextTags, notes.trim());
       onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
     }
@@ -174,38 +195,57 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
     }
   };
 
-  const handleGlobalDelete = async (targetTag: string) => {
+  const requestGlobalDelete = (targetTag: string) => {
     if (saving) return;
-    if (!window.confirm(t('accounts.tagModal.confirmGlobalDelete', { targetTag, defaultValue: `确定要从所有账号中全局删除标签 "${targetTag}" 吗？此操作不可逆。` }))) {
-      return;
-    }
+    setGlobalDeleteError('');
+    setGlobalDeleteConfirm(targetTag);
+  };
+
+  const cancelGlobalDelete = () => {
+    if (saving) return;
+    setGlobalDeleteConfirm(null);
+    setGlobalDeleteError('');
+  };
+
+  const confirmGlobalDelete = async () => {
+    if (saving || !globalDeleteConfirm) return;
+    const targetTag = globalDeleteConfirm;
     setSaving(true);
+    setGlobalDeleteError('');
     try {
       await globalDeleteTag(targetTag);
-      setTags(prev => prev.filter(t => t !== targetTag));
+      setTags((prev) => prev.filter((tag) => tag !== targetTag));
       setError('');
       if (globalRenamingTag === targetTag) {
         setGlobalRenamingTag(null);
         setInputValue('');
       }
+      setGlobalDeleteConfirm(null);
     } catch (err: any) {
-      setError(err?.message || '全局删除失败');
+      setGlobalDeleteError(
+        err?.message || t('accounts.tagModal.globalDeleteFailed', '全局删除失败')
+      );
     } finally {
       setSaving(false);
     }
   };
 
+  useEnterConfirm(!!globalDeleteConfirm && !saving, () => {
+    void confirmGlobalDelete();
+  });
+
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay">
-      <div className="modal tag-edit-modal" onClick={(e) => e.stopPropagation()}>
+    <>
+    <div className="modal-overlay" onKeyDown={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} className="modal tag-edit-modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2 className="tag-edit-title">
+          <h2 id={titleId} className="tag-edit-title">
             <Tag size={18} />
             {t('accounts.tagModal.title', '账户标签')}
           </h2>
-          <button className="modal-close" onClick={onClose} aria-label={t('common.close', '关闭')}>
+          <button className="modal-close" onClick={onClose} disabled={saving} aria-label={t('common.close', '关闭')}>
             <X size={18} />
           </button>
         </div>
@@ -244,7 +284,7 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
                       removeTag(tag);
                     }}
                     style={{ cursor: 'pointer' }}
-                    title={t('accounts.tagModal.editHint', '点击修改')}
+                    title={t('common.edit')}
                   >
                     {tag}
                   </span>
@@ -277,7 +317,7 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
                         className="tag-suggestion"
                         style={{ border: 'none', background: 'transparent', paddingRight: 4, margin: 0 }}
                         onClick={() => addTag(tag)}
-                        title={t('accounts.tagModal.addHint', '点击添加')}
+                        title={t('common.add')}
                       >
                         <Tag size={12} style={{ marginRight: 4 }} />
                         {tag}
@@ -310,13 +350,15 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
                         className="tag-suggestion-delete-btn"
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleGlobalDelete(tag);
+                          requestGlobalDelete(tag);
                         }}
+                        disabled={saving}
                         title={t('accounts.tagModal.globalDeleteHint', '全局删除此标签')}
+                        aria-label={t('accounts.tagModal.globalDeleteHint', '全局删除此标签')}
                         style={{
                           background: 'transparent',
                           border: 'none',
-                          cursor: 'pointer',
+                          cursor: saving ? 'not-allowed' : 'pointer',
                           color: 'var(--text-secondary, #6b7280)',
                           padding: '2px 4px',
                           display: 'flex',
@@ -335,7 +377,7 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
           {globalRenamingTag ? (
             <div className="tag-input-row">
               <div className="tag-global-rename-hint" style={{ fontSize: 12, color: 'var(--text-secondary, #6b7280)', marginBottom: 4 }}>
-                {t('accounts.tagModal.renamingGlobal', '正在全局重命名已存在标签所有账号记录：')} <b>{globalRenamingTag}</b>
+                {t('accounts.tagModal.renamingGlobal')} <b>{globalRenamingTag}</b>
               </div>
               <div className="tag-input-wrap">
                 <input
@@ -354,7 +396,7 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
                       setInputValue('');
                     }
                   }}
-                  placeholder={t('accounts.tagModal.renamePlaceholder', '输入新的标签名称')}
+                  placeholder={t('accounts.tagModal.renamePlaceholder')}
                   autoFocus
                 />
                 <button
@@ -411,7 +453,7 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
             </div>
           </div>
           )}
-          {error && <div className="tag-edit-error">{error}</div>}
+          <ModalErrorMessage message={error} position="bottom" className="tag-edit-error" />
         </div>
         <div className="modal-footer tag-edit-footer">
           <button className="btn btn-secondary" onClick={onClose} disabled={saving}>
@@ -423,6 +465,66 @@ export const TagEditModal = ({ isOpen, initialTags, initialNotes, availableTags 
         </div>
       </div>
     </div>
+
+    {globalDeleteConfirm && (
+      <div className="modal-overlay tag-global-delete-confirm-overlay" onKeyDown={(event) => event.stopPropagation()}>
+        <div
+          ref={confirmRef}
+          className="modal tag-global-delete-confirm-modal"
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="tag-global-delete-confirm-title"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="modal-header">
+            <h2 id="tag-global-delete-confirm-title">
+              {t('common.confirmDeleteTag', '确认删除标签')}
+            </h2>
+            <button
+              type="button"
+              className="modal-close"
+              onClick={cancelGlobalDelete}
+              disabled={saving}
+              aria-label={t('common.close', '关闭')}
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="modal-body">
+            <ModalErrorMessage message={globalDeleteError} className="tag-edit-error" />
+            <p>
+              {t('accounts.tagModal.confirmGlobalDelete', {
+                targetTag: globalDeleteConfirm,
+                defaultValue:
+                  '确定要从所有账号中全局删除标签 "{{targetTag}}" 吗？此操作不可逆。',
+              })}
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={cancelGlobalDelete}
+              disabled={saving}
+            >
+              {t('common.cancel', '取消')}
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={confirmGlobalDelete}
+              disabled={saving}
+            >
+              {saving
+                ? t('common.processing', '处理中...')
+                : t('common.confirm', '确认')}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 

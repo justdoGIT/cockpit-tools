@@ -81,6 +81,10 @@ pub enum WsMessage {
         account_id: String,
         #[serde(default)]
         request_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_on_switch: Option<bool>,
     },
 
     /// 请求设置语言
@@ -251,7 +255,8 @@ impl WsServer {
 
 /// 全局 WebSocket 服务实例
 static WS_SERVER: std::sync::OnceLock<Arc<WsServer>> = std::sync::OnceLock::new();
-static WS_AUTH_TOKEN: std::sync::LazyLock<String> = std::sync::LazyLock::new(generate_ws_auth_token);
+static WS_AUTH_TOKEN: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(generate_ws_auth_token);
 static PLUGIN_SWITCH_PENDING: std::sync::LazyLock<
     Mutex<HashMap<String, oneshot::Sender<PluginSwitchAccountResponsePayload>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -725,31 +730,47 @@ async fn handle_client_message(
         WsMessage::SwitchAccount {
             account_id,
             request_id,
+            runtime_target,
+            launch_on_switch,
         } => {
             crate::modules::logger::log_info("[WS] 收到切换请求");
 
             // 异步执行切换
             let server_clone = server.tx.clone();
             tokio::spawn(async move {
-                let dual_no_restart_enabled = crate::modules::config::get_user_config()
-                    .antigravity_dual_switch_no_restart_enabled;
-                let switch_result = if dual_no_restart_enabled {
-                    crate::modules::account::switch_account_dual_no_restart(
-                        &account_id,
-                        "manual",
-                        "tools.ws.request_switch_account",
-                        "ws_request_switch_account",
-                        None,
-                    )
-                    .await
-                } else {
-                    crate::modules::account::switch_account_internal(&account_id).await
+                let config = crate::modules::config::get_user_config();
+                let dual_no_restart_enabled = config.antigravity_launch_on_switch
+                    && config.antigravity_dual_switch_no_restart_enabled;
+                let target = resolve_ws_switch_target(runtime_target.as_deref(), launch_on_switch);
+                let desktop_switch = matches!(target, Ok(WsSwitchTarget::Desktop { .. }));
+                let switch_result = match target {
+                    Err(error) => Err(error),
+                    Ok(WsSwitchTarget::Desktop { launch_on_switch }) => {
+                        crate::commands::account::switch_account_desktop(
+                            account_id,
+                            launch_on_switch,
+                        )
+                        .await
+                    }
+                    Ok(WsSwitchTarget::Ide) if dual_no_restart_enabled => {
+                        crate::modules::account::switch_account_dual_no_restart(
+                            &account_id,
+                            "manual",
+                            "tools.ws.request_switch_account",
+                            "ws_request_switch_account",
+                            None,
+                        )
+                        .await
+                    }
+                    Ok(WsSwitchTarget::Ide) => {
+                        crate::modules::account::switch_account_internal(&account_id).await
+                    }
                 };
 
                 match switch_result {
                     Ok(account) => {
-                        // 无感双通道链路内已广播 account_switched，这里避免重复广播。
-                        if !dual_no_restart_enabled {
+                        // 桌面和无感双通道链路内已广播，避免重复 account_switched。
+                        if !desktop_switch && !dual_no_restart_enabled {
                             let msg = WsMessage::AccountSwitched {
                                 account_id: account.id,
                                 email: account.email,
@@ -828,29 +849,23 @@ async fn handle_client_message(
         } => {
             crate::modules::logger::log_info("[WS] 收到添加账号请求");
 
-            let response = match require_ws_auth(auth_token.as_deref(), "add_account").and_then(
-                |_| {
-                    handle_add_account(
-                        &email,
-                        &refresh_token,
-                        access_token.as_deref(),
-                        expires_at,
-                    )
-                },
-            ) {
-                Ok(msg) => {
-                    // 广播数据变更（同时发送 Tauri 事件通知前端）
-                    broadcast_data_changed("extension_add_account");
-                    WsMessage::SuccessResponse {
-                        request_id,
-                        message: msg,
+            let response =
+                match require_ws_auth(auth_token.as_deref(), "add_account").and_then(|_| {
+                    handle_add_account(&email, &refresh_token, access_token.as_deref(), expires_at)
+                }) {
+                    Ok(msg) => {
+                        // 广播数据变更（同时发送 Tauri 事件通知前端）
+                        broadcast_data_changed("extension_add_account");
+                        WsMessage::SuccessResponse {
+                            request_id,
+                            message: msg,
+                        }
                     }
-                }
-                Err(e) => WsMessage::ErrorResponse {
-                    request_id,
-                    error: e,
-                },
-            };
+                    Err(e) => WsMessage::ErrorResponse {
+                        request_id,
+                        error: e,
+                    },
+                };
 
             if let Ok(json) = serde_json::to_string(&response) {
                 sender
@@ -867,23 +882,22 @@ async fn handle_client_message(
         } => {
             crate::modules::logger::log_info("[WS] 收到删除账号请求");
 
-            let response =
-                match require_ws_auth(auth_token.as_deref(), "delete_account")
-                    .and_then(|_| handle_delete_account_by_email(&email))
-                {
-                    Ok(msg) => {
-                        // 广播数据变更（同时发送 Tauri 事件通知前端）
-                        broadcast_data_changed("extension_delete_account");
-                        WsMessage::SuccessResponse {
-                            request_id,
-                            message: msg,
-                        }
-                    }
-                    Err(e) => WsMessage::ErrorResponse {
+            let response = match require_ws_auth(auth_token.as_deref(), "delete_account")
+                .and_then(|_| handle_delete_account_by_email(&email))
+            {
+                Ok(msg) => {
+                    // 广播数据变更（同时发送 Tauri 事件通知前端）
+                    broadcast_data_changed("extension_delete_account");
+                    WsMessage::SuccessResponse {
                         request_id,
-                        error: e,
-                    },
-                };
+                        message: msg,
+                    }
+                }
+                Err(e) => WsMessage::ErrorResponse {
+                    request_id,
+                    error: e,
+                },
+            };
 
             if let Ok(json) = serde_json::to_string(&response) {
                 sender
@@ -1118,3 +1132,32 @@ fn handle_set_language(language: &str, source: Option<&str>) -> Result<String, S
 
     Ok(format!("语言已更新为 {}", normalized))
 }
+
+#[derive(Debug, PartialEq, Eq)]
+enum WsSwitchTarget {
+    Ide,
+    Desktop { launch_on_switch: bool },
+}
+
+fn resolve_ws_switch_target(
+    runtime_target: Option<&str>,
+    launch_on_switch: Option<bool>,
+) -> Result<WsSwitchTarget, String> {
+    match runtime_target
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "antigravity" => Ok(WsSwitchTarget::Desktop {
+            launch_on_switch: launch_on_switch.unwrap_or(false),
+        }),
+        "" | "antigravity_ide" if launch_on_switch.is_none() => Ok(WsSwitchTarget::Ide),
+        "" | "antigravity_ide" => Err("WS_SWITCH_LAUNCH_POLICY_INVALID".to_string()),
+        _ => Err("WS_SWITCH_TARGET_INVALID".to_string()),
+    }
+}
+
+#[cfg(test)]
+#[path = "websocket_switch_tests.rs"]
+mod switch_tests;

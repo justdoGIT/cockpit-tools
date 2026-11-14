@@ -187,6 +187,7 @@ pub(crate) fn execute_claude_cli_command(
     #[cfg(target_os = "macos")]
     {
         let is_iterm = terminal.to_lowercase().contains("iterm");
+        let is_ghostty = terminal.eq_ignore_ascii_case("Ghostty");
         let is_terminal_app = terminal == "system" || terminal.is_empty() || terminal == "Terminal";
         let app_name = if is_terminal_app {
             "Terminal"
@@ -223,9 +224,19 @@ pub(crate) fn execute_claude_cli_command(
                 end tell",
                 escape_applescript(command)
             )
+        } else if is_ghostty {
+            format!(
+                "tell application \"Ghostty\"
+                    activate
+                    set cfg to new surface configuration
+                    set command of cfg to \"{}\"
+                    new window with configuration cfg
+                end tell",
+                escape_applescript(command)
+            )
         } else {
             return Err(format!(
-                "当前终端暂不支持直接执行：{}。请改用 Terminal 或 iTerm2。",
+                "当前终端暂不支持直接执行：{}。请改用 Terminal、iTerm2 或 Ghostty。",
                 terminal
             ));
         };
@@ -360,8 +371,10 @@ fn prepare_claude_cli_launch(
 }
 
 #[tauri::command]
-pub fn list_claude_accounts() -> Result<Vec<ClaudeAccount>, String> {
-    claude_account::list_accounts_checked()
+pub async fn list_claude_accounts() -> Result<Vec<ClaudeAccount>, String> {
+    tauri::async_runtime::spawn_blocking(claude_account::list_accounts_checked)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -372,6 +385,21 @@ pub fn delete_claude_account(account_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn delete_claude_accounts(account_ids: Vec<String>) -> Result<(), String> {
     claude_account::remove_accounts(&account_ids)
+}
+
+#[tauri::command]
+pub async fn claude_uninstall_desktop_login_component() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(claude_account::uninstall_desktop_login_component)
+        .await
+        .map_err(|error| format!("卸载 Claude 登录组件任务失败: {}", error))?
+}
+
+#[tauri::command]
+pub async fn claude_get_desktop_login_component_storage(
+) -> Result<claude_account::ClaudeDesktopLoginComponentStorageInfo, String> {
+    tauri::async_runtime::spawn_blocking(claude_account::desktop_login_component_storage_info)
+        .await
+        .map_err(|error| format!("读取 Claude 登录组件占用空间任务失败: {}", error))?
 }
 
 #[tauri::command]
@@ -621,12 +649,21 @@ pub async fn refresh_claude_quota(
 
     let account = claude_account::refresh_account_quota(&account_id).await?;
     let _ = crate::modules::tray::update_tray_menu(&app);
-    logger::log_info(&format!(
-        "[Claude Command] 刷新完成: account_id={}, email={}, elapsed={}ms",
-        account.id,
-        account.email,
-        started_at.elapsed().as_millis()
-    ));
+    if let Some(error) = &account.quota_error {
+        logger::log_warn(&format!(
+            "[Claude Command] 刷新失败: account_id={}, code={}, elapsed={}ms",
+            account.id,
+            error.code.as_deref().unwrap_or("unknown"),
+            started_at.elapsed().as_millis()
+        ));
+    } else {
+        logger::log_info(&format!(
+            "[Claude Command] 刷新完成: account_id={}, email={}, elapsed={}ms",
+            account.id,
+            account.email,
+            started_at.elapsed().as_millis()
+        ));
+    }
     Ok(account)
 }
 
@@ -635,7 +672,10 @@ pub async fn refresh_all_claude_quotas(app: AppHandle) -> Result<i32, String> {
     let started_at = Instant::now();
     logger::log_info("[Claude Command] 批量刷新开始");
     let results = claude_account::refresh_all_quotas().await?;
-    let success_count = results.iter().filter(|(_, item)| item.is_ok()).count();
+    let success_count = results
+        .iter()
+        .filter(|(_, item)| item.as_ref().is_ok_and(|account| account.quota_error.is_none()))
+        .count();
     let failed_count = results.len().saturating_sub(success_count);
     let _ = crate::modules::tray::update_tray_menu(&app);
     logger::log_info(&format!(
@@ -762,7 +802,17 @@ pub fn claude_launch_cli(
 }
 
 #[tauri::command]
-pub fn switch_claude_account(app: AppHandle, account_id: String) -> Result<String, String> {
+pub async fn switch_claude_account(app: AppHandle, account_id: String) -> Result<String, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || switch_claude_account_impl(account_id))
+        .await
+        .map_err(|error| error.to_string())?;
+    if result.is_ok() {
+        let _ = crate::modules::tray::update_tray_menu(&app);
+    }
+    result
+}
+
+fn switch_claude_account_impl(account_id: String) -> Result<String, String> {
     let started_at = Instant::now();
     logger::log_info(&format!(
         "[Claude Switch] 开始切换账号: account_id={}",
@@ -772,6 +822,7 @@ pub fn switch_claude_account(app: AppHandle, account_id: String) -> Result<Strin
     let account = claude_account::load_account(&account_id)
         .ok_or_else(|| format!("Claude account not found: {}", account_id))?;
     claude_account::inject_to_claude(&account_id)?;
+    claude_account::touch_last_used(&account_id)?;
     let current_platform = if matches!(
         account.auth_mode,
         ClaudeAuthMode::DesktopOAuth | ClaudeAuthMode::DesktopGateway
@@ -784,7 +835,6 @@ pub fn switch_claude_account(app: AppHandle, account_id: String) -> Result<Strin
         current_platform,
         Some(account_id.as_str()),
     )?;
-    let _ = crate::modules::tray::update_tray_menu(&app);
 
     logger::log_info(&format!(
         "[Claude Switch] 切号成功: account_id={}, email={}, elapsed={}ms",

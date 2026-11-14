@@ -1,5 +1,5 @@
 use crate::models::grok::{GrokAccountView, GrokOAuthStartResponse};
-use crate::modules::{config, grok_account, grok_oauth, logger};
+use crate::modules::{config, grok_account, grok_oauth, logger, opencode_auth, process};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -152,6 +152,10 @@ pub(crate) fn parse_grok_client_version(value: &str) -> Option<String> {
 
 pub(crate) async fn detect_grok_client_version() -> Option<String> {
     let (path, _) = resolve_grok_cli_path().ok()?;
+    detect_grok_client_version_at_path(&path).await
+}
+
+async fn detect_grok_client_version_at_path(path: &Path) -> Option<String> {
     let mut command = tokio::process::Command::new(path);
     command
         .arg("--version")
@@ -285,6 +289,85 @@ mod tests {
     }
 
     #[cfg(unix)]
+    struct TestGrokCli {
+        directory: std::path::PathBuf,
+        path: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl TestGrokCli {
+        fn new(body: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let directory = std::env::temp_dir().join(format!(
+                "cockpit-grok-version-test-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir(&directory).expect("create test directory");
+            let path = directory.join("grok");
+            std::fs::write(
+                &path,
+                format!("#!/bin/sh\n[ \"$1\" = --version ] || exit 2\n{body}\n"),
+            )
+            .expect("write fake CLI");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("make fake CLI executable");
+            Self { directory, path }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TestGrokCli {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detects_grok_client_version_from_fake_cli() {
+        for (body, expected) in [
+            ("echo 'grok 1.0.46 (2765805b9442) [stable]'", Some("1.0.46")),
+            ("echo 'grok v1.0.47' >&2", Some("1.0.47")),
+            ("echo 'grok 0.2.93'", Some("0.2.93")),
+            ("echo 'grok unknown'", None),
+            ("echo 'grok 1.0.46'; exit 1", None),
+        ] {
+            let cli = TestGrokCli::new(body);
+            assert_eq!(
+                super::detect_grok_client_version_at_path(&cli.path)
+                    .await
+                    .as_deref(),
+                expected,
+                "fake CLI body: {body}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_grok_cli_has_no_detected_version() {
+        let cli = TestGrokCli::new("echo 'grok 1.0.46'");
+        std::fs::remove_file(&cli.path).expect("remove fake CLI");
+        assert_eq!(
+            super::detect_grok_client_version_at_path(&cli.path).await,
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unresponsive_grok_cli_has_no_detected_version() {
+        let cli = TestGrokCli::new("exec sleep 30");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            super::detect_grok_client_version_at_path(&cli.path).await,
+            None
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
     #[test]
     fn rejects_non_executable_cli_file() {
         use std::os::unix::fs::PermissionsExt;
@@ -302,18 +385,49 @@ mod tests {
 }
 
 #[tauri::command]
-pub fn list_grok_accounts() -> Result<Vec<GrokAccountView>, String> {
-    grok_account::list_accounts_checked()
+pub async fn list_grok_accounts() -> Result<Vec<GrokAccountView>, String> {
+    // Disk/key access and recovery scans must not run on the UI thread. Keep
+    // the permit in the worker after a timeout so retries cannot pile up jobs.
+    static LIST_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+    let permit = LIST_GATE
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "Grok 账号正在读取，请稍后重试".to_string())?;
+    let worker = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        grok_account::list_accounts_checked()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(15), worker)
+        .await
+        .map_err(|_| "读取 Grok 账号超时，请重试；原数据未修改".to_string())?
+        .map_err(|error| format!("读取 Grok 账号任务失败: {}", error))?
 }
 
 #[tauri::command]
-pub fn delete_grok_account(account_id: String) -> Result<(), String> {
-    grok_account::remove_account(&account_id)
+pub async fn delete_grok_account(account_id: String) -> Result<(), String> {
+    let source_id = account_id.clone();
+    let deletion =
+        tauri::async_runtime::spawn_blocking(move || grok_account::remove_account(&source_id))
+            .await
+            .map_err(|error| format!("删除 Grok 账号任务失败: {}", error))?;
+    // Even a partial delete (for example an index-write failure after file removal) must revoke
+    // the old runtime credential. Retrying is safe because removal is idempotent.
+    let revocation =
+        crate::modules::codex_local_access::sync_grok_upstream_auth_files(account_id).await;
+    match (deletion, revocation) {
+        (Err(first), Err(second)) => Err(format!("{}; {}", first, second)),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 #[tauri::command]
-pub fn delete_grok_accounts(account_ids: Vec<String>) -> Result<(), String> {
-    grok_account::remove_accounts(&account_ids)
+pub async fn delete_grok_accounts(account_ids: Vec<String>) -> Result<(), String> {
+    for account_id in account_ids {
+        delete_grok_account(account_id).await?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -322,8 +436,12 @@ pub fn import_grok_from_json(json_content: String) -> Result<Vec<GrokAccountView
 }
 
 #[tauri::command]
-pub fn add_grok_account_with_api_key(api_key: String) -> Result<GrokAccountView, String> {
-    grok_account::upsert_api_key(&api_key)
+pub fn add_grok_account_with_api_key(
+    api_key: String,
+    api_base_url: Option<String>,
+    api_model: Option<String>,
+) -> Result<GrokAccountView, String> {
+    grok_account::upsert_api_key(&api_key, api_base_url.as_deref(), api_model.as_deref())
 }
 
 #[tauri::command]
@@ -418,16 +536,63 @@ pub async fn refresh_all_grok_accounts(app: AppHandle) -> Result<i32, String> {
     Ok(success)
 }
 
+fn apply_grok_switch_opencode_projection(account_id: &str, user_config: &config::UserConfig) {
+    let mut opencode_updated = false;
+    if user_config.grok_opencode_auth_overwrite_on_switch {
+        match grok_account::load_account(account_id) {
+            Some(account) => match opencode_auth::replace_xai_entry_from_grok(&account) {
+                Ok(()) => {
+                    opencode_updated = true;
+                }
+                Err(e) => {
+                    logger::log_warn(&format!("OpenCode auth.json 更新跳过: {}", e));
+                }
+            },
+            None => {
+                logger::log_warn(&format!(
+                    "OpenCode auth.json 更新跳过: Grok 账号不存在: {}",
+                    account_id
+                ));
+            }
+        }
+    } else {
+        logger::log_info("已关闭切换 Grok 时覆盖 OpenCode 登录信息");
+    }
+
+    if user_config.grok_opencode_sync_on_switch {
+        if user_config.grok_opencode_auth_overwrite_on_switch && opencode_updated {
+            if process::is_opencode_running() {
+                if let Err(e) = process::close_opencode(20) {
+                    logger::log_warn(&format!("OpenCode 关闭失败: {}", e));
+                }
+            } else {
+                logger::log_info("OpenCode 未在运行，准备启动");
+            }
+            if let Err(e) = process::start_opencode_with_path(Some(&user_config.opencode_app_path))
+            {
+                logger::log_warn(&format!("OpenCode 启动失败: {}", e));
+            }
+        } else if !user_config.grok_opencode_auth_overwrite_on_switch {
+            logger::log_info("OpenCode 登录覆盖已关闭，跳过自动重启");
+        } else {
+            logger::log_info("OpenCode 未更新 auth.json，跳过启动/重启");
+        }
+    } else {
+        logger::log_info("已关闭 OpenCode 自动重启");
+    }
+}
+
 #[tauri::command]
 pub fn switch_grok_account(app: AppHandle, account_id: String) -> Result<String, String> {
-    let sync_official = config::get_user_config().grok_sync_official_auth_on_switch;
-    let message = if sync_official {
+    let user_config = config::get_user_config();
+    let message = if user_config.grok_sync_official_auth_on_switch {
         let email = grok_account::inject_to_default(&account_id)?;
         format!("已同步官方登录: {}", email)
     } else {
         let (email, home) = grok_account::prepare_account_home(&account_id)?;
         format!("已准备独立目录: {} ({})", email, home.display())
     };
+    apply_grok_switch_opencode_projection(&account_id, &user_config);
     let _ = crate::modules::tray::update_tray_menu(&app);
     Ok(message)
 }

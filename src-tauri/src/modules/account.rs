@@ -1,8 +1,5 @@
-use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use base64::{engine::general_purpose, Engine as _};
-use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use crate::modules::antigravity_account_index_store::{AccountIndexStore, IndexRead, LEGACY_FILE};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -13,10 +10,35 @@ use uuid::Uuid;
 
 use crate::models::{Account, AccountIndex, AccountSummary, QuotaData, QuotaErrorInfo, TokenData};
 use crate::modules;
+use crate::modules::quota::{summary_bucket_family, SummaryBucketFamily};
 
-static ACCOUNT_INDEX_LOCK: std::sync::LazyLock<Mutex<()>> =
-    std::sync::LazyLock::new(|| Mutex::new(()));
+// The desktop and IDE entry points share the current-account index and may
+// target the same legacy client database.
+pub(crate) static ANTIGRAVITY_SWITCH_GATE: std::sync::LazyLock<
+    std::sync::Arc<tokio::sync::Semaphore>,
+> = std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+
+pub(crate) fn try_begin_antigravity_switch(
+    gate: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+    gate.clone()
+        .try_acquire_owned()
+        .map_err(|_| "ANTIGRAVITY_SWITCH_BUSY".to_string())
+}
+
 static AUTO_SWITCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct AutoSwitchGuard<'a>(&'a AtomicBool);
+impl<'a> AutoSwitchGuard<'a> {
+    fn acquire(flag: &'a AtomicBool) -> Option<Self> {
+        (!flag.swap(true, Ordering::SeqCst)).then(|| Self(flag))
+    }
+}
+impl Drop for AutoSwitchGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 static QUOTA_ALERT_LAST_SENT: std::sync::LazyLock<Mutex<HashMap<String, i64>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static LIST_ACCOUNTS_CACHE: std::sync::LazyLock<Mutex<Option<ListAccountsCacheEntry>>> =
@@ -27,27 +49,7 @@ static LIST_ACCOUNTS_LOAD_LOCK: std::sync::LazyLock<Mutex<()>> =
 const QUOTA_ALERT_COOLDOWN_SECONDS: i64 = 300;
 const LIST_ACCOUNTS_CACHE_TTL_MS: u64 = 800;
 
-// 使用与 AntigravityCockpit 插件相同的数据目录
-const DATA_DIR: &str = ".antigravity_cockpit";
-const DEV_DATA_DIR: &str = ".antigravity_cockpit_dev";
-const DATA_DIR_ENV: &str = "COCKPIT_TOOLS_DATA_DIR";
-const PROFILE_ENV: &str = "COCKPIT_TOOLS_PROFILE";
-
-const ACCOUNTS_INDEX: &str = "accounts.json";
 const ACCOUNTS_DIR: &str = "accounts";
-const ACCOUNT_TOKEN_KEY_FILE: &str = "account-token.key";
-const ACCOUNT_TOKEN_ENCRYPTION_VERSION: u32 = 1;
-const ACCOUNT_TOKEN_ROTATION_SECONDS: i64 = 30 * 24 * 60 * 60;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EncryptedTokenEnvelope {
-    version: u32,
-    algorithm: String,
-    key_id: String,
-    nonce: String,
-    ciphertext: String,
-    encrypted_at: i64,
-}
 
 #[derive(Clone)]
 struct ListAccountsCacheEntry {
@@ -86,177 +88,107 @@ fn write_list_accounts_cache(accounts: &[Account]) {
     }
 }
 
-fn account_token_key_path() -> Result<PathBuf, String> {
-    Ok(get_data_dir()?.join(ACCOUNT_TOKEN_KEY_FILE))
-}
-
-fn read_or_create_account_token_master_key() -> Result<[u8; 32], String> {
-    let key_path = account_token_key_path()?;
-    if key_path.exists() {
-        let raw = fs::read_to_string(&key_path)
-            .map_err(|e| format!("读取账号 token 加密密钥失败: {}", e))?;
-        let bytes = general_purpose::STANDARD
-            .decode(raw.trim())
-            .map_err(|e| format!("解析账号 token 加密密钥失败: {}", e))?;
-        if bytes.len() != 32 {
-            return Err("账号 token 加密密钥长度无效".to_string());
-        }
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&bytes);
-        return Ok(key);
-    }
-
-    let mut key = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
-    let encoded = general_purpose::STANDARD.encode(key);
-    crate::modules::atomic_write::write_string_atomic(&key_path, &encoded)
-        .map_err(|e| format!("写入账号 token 加密密钥失败: {}", e))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
-    }
-    Ok(key)
-}
-
-fn account_token_cipher() -> Result<Aes256Gcm, String> {
-    let master_key = read_or_create_account_token_master_key()?;
-    Aes256Gcm::new_from_slice(&master_key).map_err(|e| format!("初始化账号 token 加密失败: {}", e))
-}
-
-fn encrypt_token_value(token: &TokenData) -> Result<EncryptedTokenEnvelope, String> {
-    let cipher = account_token_cipher()?;
-    let plaintext =
-        serde_json::to_vec(token).map_err(|e| format!("序列化账号 token 失败: {}", e))?;
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
-        .map_err(|e| format!("加密账号 token 失败: {:?}", e))?;
-    Ok(EncryptedTokenEnvelope {
-        version: ACCOUNT_TOKEN_ENCRYPTION_VERSION,
-        algorithm: "AES-256-GCM".to_string(),
-        key_id: "local-account-token-key-v1".to_string(),
-        nonce: general_purpose::STANDARD.encode(nonce_bytes),
-        ciphertext: general_purpose::STANDARD.encode(ciphertext),
-        encrypted_at: chrono::Utc::now().timestamp(),
-    })
-}
-
-fn decrypt_token_envelope(envelope: &EncryptedTokenEnvelope) -> Result<TokenData, String> {
-    if envelope.version != ACCOUNT_TOKEN_ENCRYPTION_VERSION {
-        return Err("账号 token 加密版本不受支持".to_string());
-    }
-    let cipher = account_token_cipher()?;
-    let nonce = general_purpose::STANDARD
-        .decode(envelope.nonce.trim())
-        .map_err(|e| format!("解析账号 token nonce 失败: {}", e))?;
-    if nonce.len() != 12 {
-        return Err("账号 token nonce 长度无效".to_string());
-    }
-    let ciphertext = general_purpose::STANDARD
-        .decode(envelope.ciphertext.trim())
-        .map_err(|e| format!("解析账号 token 密文失败: {}", e))?;
-    let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
-        .map_err(|e| format!("解密账号 token 失败: {:?}", e))?;
-    serde_json::from_slice::<TokenData>(&plaintext)
-        .map_err(|e| format!("解析账号 token 明文失败: {}", e))
-}
-
-fn should_rotate_token_envelope(envelope: &EncryptedTokenEnvelope) -> bool {
-    chrono::Utc::now().timestamp() - envelope.encrypted_at > ACCOUNT_TOKEN_ROTATION_SECONDS
-}
-
 fn serialize_account_for_storage(account: &Account) -> Result<String, String> {
-    let mut value =
-        serde_json::to_value(account).map_err(|e| format!("序列化账号数据失败: {}", e))?;
-    let Some(object) = value.as_object_mut() else {
-        return Err("账号数据结构无效".to_string());
-    };
-    object.remove("token");
-    object.insert(
-        "token_encrypted".to_string(),
-        serde_json::to_value(encrypt_token_value(&account.token)?)
-            .map_err(|e| format!("序列化账号 token 密文失败: {}", e))?,
-    );
-    serde_json::to_string_pretty(&value).map_err(|e| format!("序列化账号数据失败: {}", e))
+    crate::modules::secure_account_storage::serialize_account_file("antigravity", account)
 }
 
-fn deserialize_account_from_storage(account_path: &PathBuf, content: &str) -> Result<Account, String> {
-    let mut value = serde_json::from_str::<serde_json::Value>(content)
-        .map_err(|e| format!("解析账号数据失败: {}", e))?;
-    let mut needs_migration = false;
-    let mut needs_rotation = false;
+fn deserialize_account_from_storage(
+    account_path: &PathBuf,
+    content: &str,
+) -> Result<Account, String> {
+    use sha2::{Digest, Sha256};
 
-    if value.get("token").is_none() {
-        let encrypted = value
-            .get("token_encrypted")
-            .cloned()
-            .ok_or_else(|| "账号数据缺少 token".to_string())?;
-        let envelope = serde_json::from_value::<EncryptedTokenEnvelope>(encrypted)
-            .map_err(|e| format!("解析账号 token 密文失败: {}", e))?;
-        let token = decrypt_token_envelope(&envelope)?;
-        if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "token".to_string(),
-                serde_json::to_value(token).map_err(|e| format!("还原账号 token 失败: {}", e))?,
-            );
+    let mut source_content = content.to_string();
+    let (account, needs_rewrite) = match decode_account_storage_snapshot(content) {
+        Ok(decoded) => decoded,
+        Err(original_error) => {
+            let backup_path = account_path.with_extension("json.bak");
+            let backup = match fs::read_to_string(&backup_path) {
+                Ok(backup) => backup,
+                Err(_) => return Err(original_error),
+            };
+            // A JSON envelope alone is not a valid backup: decrypt and decode
+            // it before touching either file, and reject another account's data.
+            let decoded = match decode_account_storage_snapshot(&backup) {
+                Ok(decoded)
+                    if account_path.file_stem().and_then(|name| name.to_str())
+                        == Some(decoded.0.id.as_str()) =>
+                {
+                    decoded
+                }
+                _ => return Err(original_error),
+            };
+            let restored = modules::atomic_write::restore_string_atomic_if_hash_matches(
+                account_path,
+                Sha256::digest(content.as_bytes()).into(),
+                &backup,
+            )?;
+            if restored {
+                modules::logger::log_warn(&format!(
+                    "[Antigravity Account] 已从验证过的备份恢复账号: path={}",
+                    account_path.display()
+                ));
+                source_content = backup;
+                decoded
+            } else {
+                // A concurrent save won. Never replace that newer account with
+                // our backup, and bound recovery to one attempt.
+                source_content = fs::read_to_string(account_path)
+                    .map_err(|error| format!("重新读取账号数据失败: {error}"))?;
+                decode_account_storage_snapshot(&source_content)?
+            }
         }
-        needs_rotation = should_rotate_token_envelope(&envelope);
-    } else {
-        needs_migration = true;
-    }
-
-    if let Some(object) = value.as_object_mut() {
-        object.remove("token_encrypted");
-    }
-
-    let account = serde_json::from_value::<Account>(value)
-        .map_err(|e| format!("解析账号数据失败: {}", e))?;
-
-    if needs_migration || needs_rotation {
+    };
+    if needs_rewrite {
         let account_for_rewrite = account.clone();
         modules::deferred_account_rewrite::schedule_account_rewrite_if_unchanged(
             "antigravity",
             account_for_rewrite.id.clone(),
             account_path.clone(),
-            content.as_bytes(),
+            source_content.as_bytes(),
             move || serialize_account_for_storage(&account_for_rewrite),
         );
     }
-
     Ok(account)
+}
+
+fn decode_account_storage_snapshot(content: &str) -> Result<(Account, bool), String> {
+    // Windows editors / legacy exports may prepend a UTF-8 BOM. Normalize it
+    // before classifying the format so a valid current account is never rolled
+    // back to an older .bak just because serde_json rejected the prefix.
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let mut value = serde_json::from_str::<serde_json::Value>(content)
+        .map_err(|e| format!("解析账号数据失败: {}", e))?;
+    if value.get("ciphertext").is_some() {
+        return modules::secure_account_storage::deserialize_encrypted_snapshot_with_rotation(
+            content,
+        );
+    }
+    // 兼容历史明文详情与仅 token 加密的详情；读取成功后后台迁移为整文件密文。
+    modules::account_file_crypto::restore_legacy_antigravity_token(&get_data_dir()?, &mut value)?;
+
+    let account =
+        serde_json::from_value::<Account>(value).map_err(|e| format!("解析账号数据失败: {}", e))?;
+    Ok((account, true))
 }
 
 /// 获取数据目录路径
 pub fn is_dev_profile() -> bool {
-    std::env::var(PROFILE_ENV)
-        .map(|value| value.trim().eq_ignore_ascii_case("dev"))
-        .unwrap_or(false)
+    modules::data_paths::is_dev_profile()
 }
 
 pub fn resolve_data_dir() -> Result<PathBuf, String> {
-    if let Ok(raw) = std::env::var(DATA_DIR_ENV) {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-
-    let home = dirs::home_dir().ok_or("无法获取用户主目录")?;
-    let dir_name = if is_dev_profile() {
-        DEV_DATA_DIR
-    } else {
-        DATA_DIR
-    };
-    Ok(home.join(dir_name))
+    modules::data_paths::resolve_data_dir()
 }
 
 pub fn get_data_dir() -> Result<PathBuf, String> {
     // #816: tests can isolate storage via env without touching real user data.
     // Prefer COCKPIT_TOOLS_TEST_DATA_DIR (community PR name); keep COCKPIT_TEST_DATA_DIR alias.
-    for key in ["COCKPIT_TOOLS_TEST_DATA_DIR", "COCKPIT_TEST_DATA_DIR", "COCKPIT_TOOLS_DATA_DIR"] {
+    for key in [
+        "COCKPIT_TOOLS_TEST_DATA_DIR",
+        "COCKPIT_TEST_DATA_DIR",
+        "COCKPIT_TOOLS_DATA_DIR",
+    ] {
         if let Ok(override_dir) = std::env::var(key) {
             let override_dir = override_dir.trim();
             if !override_dir.is_empty() {
@@ -270,6 +202,9 @@ pub fn get_data_dir() -> Result<PathBuf, String> {
         }
     }
 
+    #[cfg(test)]
+    let data_dir = crate::modules::test_support::fallback_data_dir();
+    #[cfg(not(test))]
     let data_dir = resolve_data_dir()?;
 
     if !data_dir.exists() {
@@ -292,7 +227,6 @@ pub fn get_accounts_dir() -> Result<PathBuf, String> {
 }
 
 fn repair_account_index_from_details(reason: &str) -> Result<Option<AccountIndex>, String> {
-    let index_path = get_data_dir()?.join(ACCOUNTS_INDEX);
     let accounts_dir = get_accounts_dir()?;
     let mut accounts = crate::modules::account_index_repair::load_accounts_from_details(
         &accounts_dir,
@@ -323,17 +257,7 @@ fn repair_account_index_from_details(reason: &str) -> Result<Option<AccountIndex
         .collect();
     index.current_account_id = None;
 
-    let backup_path = crate::modules::account_index_repair::backup_existing_index(&index_path)
-        .unwrap_or_else(|err| {
-            modules::logger::log_warn(&format!(
-                "自动修复账号索引前备份失败，继续尝试重建: path={}, error={}",
-                index_path.display(),
-                err
-            ));
-            None
-        });
-
-    if let Err(err) = save_account_index(&index) {
+    if let Err(err) = save_account_index_locked(&index) {
         modules::logger::log_warn(&format!(
             "自动修复账号索引保存失败，将以内存结果继续运行: reason={}, recovered_accounts={}, error={}",
             reason,
@@ -343,93 +267,151 @@ fn repair_account_index_from_details(reason: &str) -> Result<Option<AccountIndex
     }
 
     modules::logger::log_warn(&format!(
-        "检测到账号索引异常，已根据详情文件自动重建: reason={}, recovered_accounts={}, backup_path={}",
-        reason,
-        index.accounts.len(),
-        backup_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "-".to_string())
+        "已根据账号详情重建索引并保留旧文件: reason={}, recovered_accounts={}",
+        reason, index.accounts.len(),
     ));
 
     Ok(Some(index))
 }
 
-/// 加载账号索引
+fn index_store() -> Result<AccountIndexStore, String> {
+    Ok(AccountIndexStore::new(get_data_dir()?))
+}
+
+fn lock_account_index() -> Result<fs::File, String> {
+    index_store()?.lock_writes()
+}
+
 pub fn load_account_index() -> Result<AccountIndex, String> {
-    let data_dir = get_data_dir()?;
-    let index_path = data_dir.join(ACCOUNTS_INDEX);
-
-    if !index_path.exists() {
-        if let Some(index) = repair_account_index_from_details("索引文件不存在")? {
+    let store = index_store()?;
+    match store.load()? {
+        IndexRead::Active(index) => return Ok(index),
+        IndexRead::Legacy(index) if !index.accounts.is_empty() => {
+            schedule_index_store(store);
             return Ok(index);
         }
-        return Ok(AccountIndex::new());
+        _ => {}
     }
+    let _lock = store.lock_writes()?;
+    load_account_index_locked()
+}
 
-    let content =
-        fs::read_to_string(&index_path).map_err(|e| format!("读取账号索引失败: {}", e))?;
-
-    if content.trim().is_empty() {
-        if let Some(index) = repair_account_index_from_details("索引文件为空")? {
-            return Ok(index);
-        }
-        return Ok(AccountIndex::new());
-    }
-
-    match crate::modules::atomic_write::parse_json_with_auto_restore::<AccountIndex>(
-        &index_path,
-        &content,
-    ) {
-        Ok(index) => {
-            if index.accounts.is_empty() {
-                if let Some(repaired) = repair_account_index_from_details("索引账号列表为空")?
-                {
-                    return Ok(repaired);
-                }
-            }
+fn load_account_index_locked() -> Result<AccountIndex, String> {
+    let store = index_store()?;
+    match store.load()? {
+        IndexRead::Active(index) => Ok(index),
+        IndexRead::Legacy(index) if !index.accounts.is_empty() => {
+            schedule_index_store(store);
             Ok(index)
         }
-        Err(e) => {
-            if let Some(index) = repair_account_index_from_details("索引文件损坏")? {
+        IndexRead::Legacy(index) => Ok(
+            repair_account_index_from_details("索引账号列表为空")?.unwrap_or(index),
+        ),
+        IndexRead::Missing => Ok(
+            repair_account_index_from_details("旧索引缺失或为空")?.unwrap_or_default(),
+        ),
+        IndexRead::InvalidLegacy(error) => {
+            if let Some(index) = repair_account_index_from_details("旧索引损坏")? {
                 return Ok(index);
             }
             Err(crate::error::file_corrupted_error(
-                ACCOUNTS_INDEX,
-                &index_path.to_string_lossy(),
-                &e.to_string(),
+                LEGACY_FILE,
+                &store.legacy_path().to_string_lossy(),
+                &error,
             ))
         }
     }
 }
 
-/// 保存账号索引
-pub fn save_account_index(index: &AccountIndex) -> Result<(), String> {
-    let data_dir = get_data_dir()?;
-    let index_path = data_dir.join(ACCOUNTS_INDEX);
-
-    let content =
-        serde_json::to_string_pretty(index).map_err(|e| format!("序列化账号索引失败: {}", e))?;
-
-    crate::modules::atomic_write::write_string_atomic(&index_path, &content)
-        .map_err(|e| format!("写入账号索引失败: {}", e))?;
+fn save_account_index_locked(index: &AccountIndex) -> Result<(), String> {
+    index_store()?.replace(index)?;
     invalidate_list_accounts_cache();
+    Ok(())
+}
+
+#[cfg(test)]
+fn save_account_index(index: &AccountIndex) -> Result<(), String> {
+    let _lock = lock_account_index()?;
+    save_account_index_locked(index)
+}
+
+fn schedule_index_store(store: AccountIndexStore) {
+    modules::background_maintenance::schedule(store.migration_key(), move || store.migrate_batch());
+}
+
+pub fn schedule_index_migration() -> Result<(), String> {
+    schedule_index_store(index_store()?);
     Ok(())
 }
 
 /// 加载账号数据
 pub fn load_account(account_id: &str) -> Result<Account, String> {
+    load_account_if_present(account_id)?.ok_or_else(|| format!("账号不存在: {}", account_id))
+}
+
+fn load_account_if_present(account_id: &str) -> Result<Option<Account>, String> {
     let accounts_dir = get_accounts_dir()?;
     let account_path = accounts_dir.join(format!("{}.json", account_id));
+    let content = match fs::read_to_string(&account_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取账号数据失败: {}", error)),
+    };
 
-    if !account_path.exists() {
-        return Err(format!("账号不存在: {}", account_id));
+    let mut account = deserialize_account_from_storage(&account_path, &content)
+        .map_err(|error| format!("{error} (account file: {account_id}.json)"))?;
+    if account.token.project_id.as_deref() == Some("aicode-consumers") {
+        account.token.project_id = None;
     }
-
-    let content =
-        fs::read_to_string(&account_path).map_err(|e| format!("读取账号数据失败: {}", e))?;
-
-    deserialize_account_from_storage(&account_path, &content)
+    if let Some(ref mut q) = account.quota {
+        if q.project_id.as_deref() == Some("aicode-consumers") {
+            q.project_id = None;
+        }
+    }
+    // 若账号没有真实 project_id，清洗掉历史残留的 is_gcp_tos 假标记
+    if account.token.project_id.is_none() {
+        account.token.is_gcp_tos = None;
+    }
+    if let Some(ref mut q) = account.quota {
+        if q.project_id.is_none() {
+            q.is_gcp_tos = None;
+        }
+    }
+    // 若账号已有可用模型配额，但残留了由 retrieveUserQuotaSummary 产生的假性 SUBSCRIPTION_REQUIRED 错误，自动修复
+    if let Some(ref q) = account.quota {
+        if !q.models.is_empty() {
+            let is_spurious = account
+                .quota_error
+                .as_ref()
+                .map(|e| {
+                    e.reason.as_deref() == Some("SUBSCRIPTION_REQUIRED")
+                        || e.message.contains("valid license")
+                })
+                .unwrap_or(false);
+            if is_spurious {
+                account.quota_error = None;
+                if account.disabled_reason.as_deref() == Some("subscription_required") {
+                    account.disabled_reason = None;
+                    if account.disabled {
+                        account.disabled = false;
+                        account.disabled_at = None;
+                    }
+                }
+            }
+        }
+    }
+    // 同步：若 quota_error 明确要求网页验证，确保 disabled_reason 同步为 verification_required
+    if account.disabled_reason.is_none() {
+        if let Some(ref err) = account.quota_error {
+            if err.reason.as_deref() == Some("VALIDATION_REQUIRED")
+                || err.validation_url.is_some()
+                || err.message.contains("Verify your account")
+            {
+                account.disabled_reason = Some("verification_required".to_string());
+            }
+        }
+    }
+    Ok(Some(account))
 }
 
 /// 保存账号数据
@@ -437,10 +419,8 @@ pub fn save_account(account: &Account) -> Result<(), String> {
     let accounts_dir = get_accounts_dir()?;
     let account_path = accounts_dir.join(format!("{}.json", account.id));
 
-    let content = serialize_account_for_storage(account)?;
-
-    crate::modules::atomic_write::write_string_atomic(&account_path, &content)
-        .map_err(|e| format!("保存账号数据失败: {}", e))?;
+    crate::modules::secure_account_storage::write_account_preserving_switch_time(
+        &account_path, "antigravity", account)?;
     invalidate_list_accounts_cache();
     Ok(())
 }
@@ -479,17 +459,72 @@ pub fn update_account_tags(account_id: &str, tags: Vec<String>) -> Result<Accoun
     Ok(account)
 }
 
-/// 更新账号备注
-pub fn update_account_notes(account_id: &str, notes: String) -> Result<Account, String> {
-    let mut account = load_account(account_id)?;
-    let trimmed = notes.trim().to_string();
-    account.notes = if trimmed.is_empty() {
+fn normalize_optional_note_value(value: String) -> Option<String> {
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
         None
     } else {
         Some(trimmed)
-    };
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AccountNoteUpdate {
+    pub note: Option<String>,
+    pub two_factor_secret: Option<String>,
+    pub account_password: Option<String>,
+    pub phone_number: Option<String>,
+    pub mail_url: Option<String>,
+    pub aux_email: Option<String>,
+}
+
+impl AccountNoteUpdate {
+    pub fn apply_to(self, account: &mut Account) {
+        if let Some(value) = self.note {
+            account.notes = normalize_optional_note_value(value);
+        }
+        if let Some(value) = self.two_factor_secret {
+            account.two_factor_secret = normalize_optional_note_value(value);
+        }
+        if let Some(value) = self.account_password {
+            account.account_password = normalize_optional_note_value(value);
+        }
+        if let Some(value) = self.phone_number {
+            account.phone_number = normalize_optional_note_value(value);
+        }
+        if let Some(value) = self.mail_url {
+            account.mail_url = normalize_optional_note_value(value);
+        }
+        if let Some(value) = self.aux_email {
+            account.aux_email = normalize_optional_note_value(value);
+        }
+    }
+}
+
+pub fn update_account_note(account_id: &str, update: AccountNoteUpdate) -> Result<Account, String> {
+    let mut account = load_account(account_id)?;
+    update.apply_to(&mut account);
     save_account(&account)?;
     Ok(account)
+}
+
+pub fn update_account_notes(account_id: &str, notes: String) -> Result<Account, String> {
+    update_account_note(
+        account_id,
+        AccountNoteUpdate {
+            note: Some(notes),
+            ..Default::default()
+        },
+    )
+}
+
+/// OAuth 完成后将授权前填写的备注组一次性写入刚保存的账号。
+pub fn apply_account_note_after_oauth(
+    account: &mut Account,
+    update: AccountNoteUpdate,
+) -> Result<(), String> {
+    update.apply_to(account);
+    save_account(account)
 }
 
 /// 列出所有账号
@@ -550,7 +585,7 @@ fn is_strict_account_identity_match(existing: &Account, email: &str, token: &Tok
         }
     }
 
-    if existing.email == email {
+    if existing.email.eq_ignore_ascii_case(email) {
         if let Some(project_id) = non_empty(token.project_id.as_deref()) {
             if non_empty(existing.token.project_id.as_deref()) == Some(project_id) {
                 return true;
@@ -561,12 +596,26 @@ fn is_strict_account_identity_match(existing: &Account, email: &str, token: &Tok
     false
 }
 
+/// 生成基于邮箱的确定性账号存储 ID（与 Codex 等平台对齐）
+pub fn build_account_storage_id(email: &str) -> String {
+    let seed = email.trim().to_lowercase();
+    format!("antigravity_{:x}", md5::compute(seed.as_bytes()))
+}
+
 fn find_matching_account_id(
     index: &AccountIndex,
     email: &str,
     token: &TokenData,
 ) -> Result<Option<String>, String> {
+    let normalized_email = email.trim();
+    let generated_id = build_account_storage_id(normalized_email);
+    let mut email_matches: Vec<Account> = Vec::new();
+
     for summary in &index.accounts {
+        if summary.id == generated_id {
+            return Ok(Some(summary.id.clone()));
+        }
+
         let existing = match load_account(&summary.id) {
             Ok(account) => account,
             Err(err) => {
@@ -578,44 +627,116 @@ fn find_matching_account_id(
             }
         };
 
-        if is_strict_account_identity_match(&existing, email, token) {
+        if is_strict_account_identity_match(&existing, normalized_email, token) {
             return Ok(Some(existing.id));
+        }
+
+        if existing.email.trim().eq_ignore_ascii_case(normalized_email) {
+            email_matches.push(existing);
+        }
+    }
+
+    if email_matches.len() == 1 {
+        modules::logger::log_info(&format!(
+            "账号匹配走单邮箱覆盖路径: email={}, id={}",
+            normalized_email, email_matches[0].id
+        ));
+        return Ok(Some(email_matches.remove(0).id));
+    }
+
+    if email_matches.len() > 1 {
+        if let Some(target) = email_matches.iter().find(|acc| acc.pending_oauth) {
+            return Ok(Some(target.id.clone()));
+        }
+        let target_pid = non_empty(token.project_id.as_deref());
+        if let Some(pid) = target_pid {
+            if let Some(target) = email_matches
+                .iter()
+                .find(|acc| non_empty(acc.token.project_id.as_deref()) == Some(pid))
+            {
+                return Ok(Some(target.id.clone()));
+            }
+        }
+        let mut sorted = email_matches;
+        sorted.sort_by_key(|acc| (acc.disabled, std::cmp::Reverse(acc.last_used)));
+        if let Some(best) = sorted.first() {
+            return Ok(Some(best.id.clone()));
         }
     }
 
     Ok(None)
 }
 
-/// 添加账号
+/// 添加账号（若已存在同邮箱老账号则执行更新覆盖）
 pub fn add_account(
     email: String,
     name: Option<String>,
     token: TokenData,
 ) -> Result<Account, String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
+    upsert_account(email, name, token)
+}
 
-    if find_matching_account_id(&index, &email, &token)?.is_some() {
-        return Err(format!("账号已存在: {}", email));
+pub fn is_pending_oauth_account(account: &Account) -> bool {
+    account.pending_oauth
+}
+
+pub fn create_pending_oauth_account(
+    email: String,
+    update: AccountNoteUpdate,
+) -> Result<Account, String> {
+    let email = email.trim().to_string();
+    if email.is_empty() || !email.contains('@') {
+        return Err("账号邮箱不能为空或格式无效".to_string());
     }
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
+    let target_id = build_account_storage_id(&email);
+    let existing = index
+        .accounts
+        .iter()
+        .find(|item| item.email.trim().eq_ignore_ascii_case(&email));
+    let loaded = existing
+        .map(|item| load_account_if_present(&item.id))
+        .transpose()?
+        .flatten();
+    let mut account = match loaded {
+        Some(mut account) => {
+            account.email = email.clone();
+            account
+        }
+        None => {
+            let mut account = Account::new(
+                existing.map_or(target_id, |item| item.id.clone()),
+                email.clone(),
+                TokenData::new(String::new(), String::new(), 0, Some(email), None, None),
+            );
+            if let Some(item) = existing {
+                account.name = item.name.clone();
+                account.created_at = item.created_at;
+            }
+            account.pending_oauth = true;
+            account
+        }
+    };
 
-    let account_id = Uuid::new_v4().to_string();
-    let mut account = Account::new(account_id.clone(), email.clone(), token);
-    account.name = name.clone();
+    update.apply_to(&mut account);
+    account.update_last_used();
 
     save_account(&account)?;
-
-    index.accounts.push(AccountSummary {
-        id: account_id.clone(),
-        email: email.clone(),
-        name: name.clone(),
-        created_at: account.created_at,
-        last_used: account.last_used,
-    });
-
-    save_account_index(&index)?;
+    if let Some(item) = index.accounts.iter_mut().find(|item| item.id == account.id) {
+        item.email = account.email.clone();
+        item.name = account.name.clone();
+        item.last_used = account.last_used;
+    } else {
+        index.accounts.push(AccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            name: account.name.clone(),
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+    }
+    save_account_index_locked(&index)?;
 
     Ok(account)
 }
@@ -626,59 +747,96 @@ pub fn upsert_account(
     name: Option<String>,
     token: TokenData,
 ) -> Result<Account, String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
+    let email = email.trim().to_string();
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
+    let existing_account_id = index
+        .accounts
+        .iter()
+        .filter_map(|summary| load_account(&summary.id).ok())
+        .find(|account| account.pending_oauth && account.email.trim().eq_ignore_ascii_case(&email))
+        .map(|account| account.id)
+        .or(find_matching_account_id(&index, &email, &token)?)
+        .or_else(|| {
+            index
+                .accounts
+                .iter()
+                .find(|s| s.email.trim().eq_ignore_ascii_case(&email))
+                .map(|s| s.id.clone())
+        });
 
-    let existing_account_id = find_matching_account_id(&index, &email, &token)?;
-
-    if let Some(account_id) = existing_account_id {
-        match load_account(&account_id) {
-            Ok(mut account) => {
-                account.token = token;
-                account.name = name.clone();
-                if account.disabled {
-                    account.disabled = false;
-                    account.disabled_reason = None;
-                    account.disabled_at = None;
+    // Existing IDs are referenced by instances, wakeup tasks and groups. Reimport
+    // updates credentials in place; deterministic IDs apply only to new accounts.
+    let mut account = if let Some(account_id) = existing_account_id {
+        let mut account = match load_account_if_present(&account_id)? {
+            Some(account) => account,
+            None => {
+                let mut account = Account::new(account_id.clone(), email.clone(), token.clone());
+                if let Some(item) = index.accounts.iter().find(|item| item.id == account_id) {
+                    account.name = item.name.clone();
+                    account.created_at = item.created_at;
                 }
-                account.update_last_used();
-                save_account(&account)?;
-
-                if let Some(idx_summary) = index.accounts.iter_mut().find(|s| s.id == account_id) {
-                    idx_summary.name = name;
-                    save_account_index(&index)?;
-                }
-
-                return Ok(account);
+                account
             }
-            Err(e) => {
-                modules::logger::log_warn(&format!("账号文件缺失，正在重建: {}", e));
-                let mut account = Account::new(account_id.clone(), email.clone(), token);
-                account.name = name.clone();
-                save_account(&account)?;
-
-                if let Some(idx_summary) = index.accounts.iter_mut().find(|s| s.id == account_id) {
-                    idx_summary.name = name;
-                    save_account_index(&index)?;
-                }
-
-                return Ok(account);
-            }
+        };
+        let mut next_token = token;
+        if next_token.project_id.is_none() {
+            next_token.project_id = account.token.project_id.clone();
         }
+        if next_token.project_id == account.token.project_id && next_token.is_gcp_tos.is_none() {
+            next_token.is_gcp_tos = account.token.is_gcp_tos;
+        }
+        if next_token.refresh_token == account.token.refresh_token && next_token.id_token.is_none()
+        {
+            next_token.id_token = account.token.id_token.clone();
+        }
+        if next_token.session_id.is_none() {
+            next_token.session_id = account.token.session_id.clone();
+        }
+        account.token = next_token;
+        account.email = email.clone();
+        if account.disabled {
+            account.disabled = false;
+            account.disabled_reason = None;
+            account.disabled_at = None;
+        } else if account.disabled_reason.as_deref() == Some("verification_required") {
+            account.disabled_reason = None;
+        }
+        account.quota_error = None;
+        account.update_last_used();
+        account
+    } else {
+        Account::new(build_account_storage_id(&email), email.clone(), token)
+    };
+    account.pending_oauth = false;
+    if name.is_some() {
+        account.name = name;
     }
-
-    drop(_lock);
-    add_account(email, name, token)
+    save_account(&account)?;
+    if let Some(summary) = index.accounts.iter_mut().find(|item| item.id == account.id) {
+        summary.email = account.email.clone();
+        summary.name = account.name.clone();
+        summary.last_used = account.last_used;
+    } else {
+        index.accounts.push(AccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            name: account.name.clone(),
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+    }
+    if index.current_account_id.is_none() {
+        index.current_account_id = Some(account.id.clone());
+    }
+    save_account_index_locked(&index)?;
+    Ok(account)
 }
 
 /// 删除账号
 pub fn delete_account(account_id: &str) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
 
     let original_len = index.accounts.len();
     index.accounts.retain(|s| s.id != account_id);
@@ -691,7 +849,7 @@ pub fn delete_account(account_id: &str) -> Result<(), String> {
         index.current_account_id = None;
     }
 
-    save_account_index(&index)?;
+    save_account_index_locked(&index)?;
 
     let accounts_dir = get_accounts_dir()?;
     let account_path = accounts_dir.join(format!("{}.json", account_id));
@@ -706,12 +864,8 @@ pub fn delete_account(account_id: &str) -> Result<(), String> {
 
 /// 批量删除账号
 pub fn delete_accounts(account_ids: &[String]) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
-
-    let accounts_dir = get_accounts_dir()?;
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
 
     for account_id in account_ids {
         index.accounts.retain(|s| &s.id != account_id);
@@ -720,21 +874,34 @@ pub fn delete_accounts(account_ids: &[String]) -> Result<(), String> {
             index.current_account_id = None;
         }
 
-        let account_path = accounts_dir.join(format!("{}.json", account_id));
-        if account_path.exists() {
-            let _ = crate::modules::atomic_write::remove_file_locked(&account_path);
-        }
+
     }
 
-    save_account_index(&index)
+    save_account_index_locked(&index)?;
+    let accounts_dir = get_accounts_dir()?;
+    let mut cleanup_error = None;
+    for account_id in account_ids {
+        let path = accounts_dir.join(format!("{account_id}.json"));
+        if let Err(error) = remove_deleted_account_file(&path) {
+            cleanup_error.get_or_insert(error);
+        }
+    }
+    match cleanup_error {
+        Some(error) => Err(format!("账号索引已更新，清理账号文件失败: {error}")),
+        None => Ok(()),
+    }
 }
+
+fn remove_deleted_account_file(path: &std::path::Path) -> Result<(), String> {
+    crate::modules::atomic_write::remove_file_locked(path).map(|_| ())
+}
+
+
 
 /// 重新排序账号列表
 pub fn reorder_accounts(account_ids: &[String]) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
 
     let id_to_summary: std::collections::HashMap<_, _> = index
         .accounts
@@ -757,13 +924,15 @@ pub fn reorder_accounts(account_ids: &[String]) -> Result<(), String> {
 
     index.accounts = new_accounts;
 
-    save_account_index(&index)
+    save_account_index_locked(&index)
 }
 
 /// 获取当前账号 ID
 pub fn get_current_account_id() -> Result<Option<String>, String> {
-    let index = load_account_index()?;
-    Ok(index.current_account_id)
+    if let Some(current) = index_store()?.active_current()? {
+        return Ok(current);
+    }
+    Ok(load_account_index()?.current_account_id)
 }
 
 /// 获取当前激活账号
@@ -779,12 +948,17 @@ pub fn get_current_account() -> Result<Option<Account>, String> {
 
 /// 设置当前激活账号 ID
 pub fn set_current_account_id(account_id: &str) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
-    index.current_account_id = Some(account_id.to_string());
-    save_account_index(&index)?;
+    let _lock = lock_account_index()?;
+    if index_store()?.set_active_current(account_id)? {
+        invalidate_list_accounts_cache();
+    } else {
+        let mut index = load_account_index_locked()?;
+        if !index.accounts.iter().any(|account| account.id == account_id) {
+            return Err(format!("找不到账号 ID: {account_id}"));
+        }
+        index.current_account_id = Some(account_id.to_string());
+        save_account_index_locked(&index)?;
+    }
 
     // 同时写入 current_account.json 供扩展读取
     if let Ok(account) = load_account(account_id) {
@@ -819,12 +993,23 @@ fn save_current_account_file(email: &str) -> Result<(), String> {
 
 /// 更新账号配额
 pub fn update_account_quota(account_id: &str, quota: QuotaData) -> Result<(), String> {
-    let mut account = load_account(account_id)?;
+    let _lock = lock_account_index()?;
+    let account = load_account(account_id)?;
+    save_account_quota(account, quota)
+}
+
+fn save_account_quota(mut account: Account, mut quota: QuotaData) -> Result<(), String> {
+    modules::quota::preserve_failed_quota_summary(&mut quota, account.quota.as_ref());
 
     // 容错：如果新获取的 models 为空，但之前有数据，保留原来的 models
     if quota.models.is_empty() {
         if let Some(ref existing_quota) = account.quota {
-            if !existing_quota.models.is_empty() {
+            if !existing_quota.models.is_empty()
+                && !quota.is_forbidden
+                && !existing_quota.is_forbidden
+                && existing_quota.project_id == quota.project_id
+                && existing_quota.subscription_tier == quota.subscription_tier
+            {
                 modules::logger::log_warn(&format!(
                     "⚠️ 新配额 models 为空，保留原有 {} 个模型数据",
                     existing_quota.models.len()
@@ -834,6 +1019,11 @@ pub fn update_account_quota(account_id: &str, quota: QuotaData) -> Result<(), St
                 merged_quota.subscription_tier = quota.subscription_tier.clone();
                 merged_quota.is_forbidden = quota.is_forbidden;
                 merged_quota.last_updated = quota.last_updated;
+                merged_quota.quota_summary_stale = true;
+                merged_quota.quota_summary_updated_at =
+                    existing_quota.quota_summary_updated_at.or_else(|| {
+                        (!existing_quota.quota_summary_stale).then_some(existing_quota.last_updated)
+                    });
                 account.update_quota(merged_quota);
                 account.usage_updated_at = Some(chrono::Utc::now().timestamp());
                 save_account(&account)?;
@@ -851,6 +1041,30 @@ pub fn update_account_quota(account_id: &str, quota: QuotaData) -> Result<(), St
     Ok(())
 }
 
+pub(super) async fn refresh_quota_after_wakeup(account_id: String) -> Result<(), String> {
+    let mut account = tokio::task::spawn_blocking(move || load_account(&account_id))
+        .await
+        .map_err(|error| error.to_string())??;
+    let quota = fetch_quota_with_fresh_token(&mut account, true)
+        .await
+        .map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || save_quota_after_wakeup(&account, quota))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn save_quota_after_wakeup(queried: &Account, quota: QuotaData) -> Result<(), String> {
+    let _lock = lock_account_index()?;
+    let latest = load_account(&queried.id)?;
+    if !same_oauth_credentials(&latest.token, &queried.token)
+        || latest.token.project_id != queried.token.project_id
+        || latest.quota.as_ref().is_some_and(|stored| stored.last_updated > quota.last_updated)
+    {
+        return Ok(());
+    }
+    save_account_quota(latest, quota)
+}
+
 #[derive(Serialize)]
 pub struct RefreshStats {
     pub total: usize,
@@ -863,6 +1077,69 @@ pub struct RefreshStats {
 pub enum QuotaRefreshTrigger {
     ManualBatch,
     Auto,
+}
+
+impl QuotaRefreshTrigger {
+    fn skip_cache(self) -> bool {
+        matches!(self, Self::ManualBatch)
+    }
+}
+
+#[cfg(test)]
+mod quota_refresh_cache_tests {
+    use super::*;
+
+    #[test]
+    fn manual_batch_bypasses_cache_while_automatic_refresh_reuses_it() {
+        assert!(QuotaRefreshTrigger::ManualBatch.skip_cache());
+        assert!(!QuotaRefreshTrigger::Auto.skip_cache());
+    }
+
+    #[test]
+    fn wakeup_quota_refresh_persists_reported_reset_and_preserves_newer_data() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        const KEY: &str = "COCKPIT_TOOLS_TEST_DATA_DIR";
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var(KEY, value),
+                    None => std::env::remove_var(KEY),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os(KEY));
+        std::env::set_var(KEY, dir.path());
+        let mut account = Account::new(
+            "fixture".into(),
+            "fixture@example.invalid".into(),
+            TokenData::new("access".into(), "refresh".into(), 3600, None, None, None),
+        );
+        save_account(&account).unwrap();
+        let snapshot = |last_updated, reset: &str| {
+            let mut quota = QuotaData::new();
+            quota.last_updated = last_updated;
+            quota.add_model("gemini-3-flash".into(), None, 80, reset.into());
+            quota
+        };
+        save_quota_after_wakeup(&account, snapshot(2, "2026-11-12T05:00:00Z")).unwrap();
+        save_quota_after_wakeup(&account, snapshot(1, "2026-11-12T04:00:00Z")).unwrap();
+        let current = load_account(&account.id).unwrap().quota.unwrap();
+        assert_eq!(current.last_updated, 2);
+        assert_eq!(current.models[0].reset_time, "2026-11-12T05:00:00Z");
+
+        let previous = account.clone();
+        account = load_account(&account.id).unwrap();
+        account.token.access_token = "reauthorized".into();
+        save_account(&account).unwrap();
+        save_quota_after_wakeup(&previous, snapshot(3, "2026-11-12T06:00:00Z")).unwrap();
+        let current = load_account(&account.id).unwrap();
+        assert_eq!(current.token.access_token, "reauthorized");
+        assert_eq!(current.quota.unwrap().last_updated, 2);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -909,13 +1186,85 @@ struct AutoSwitchGroupDefinition {
     id: String,
     name: String,
     models: Vec<String>,
+    summary_family: SummaryBucketFamily,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct AutoSwitchGroupQuota {
     id: String,
     name: String,
+    /// 综合值：min(5h, 周, 模型平均)，未启用分窗口阈值时使用
     percentage: i32,
+    five_hour: Option<i32>,
+    weekly: Option<i32>,
+    model_average: Option<i32>,
+}
+
+/// 分窗口阈值（类似 Codex 的 5h / 周 双阈值）；None 表示沿用单一阈值逻辑
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AutoSwitchWindowThresholds {
+    five_hour: i32,
+    weekly: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummaryWindow {
+    FiveHour,
+    Weekly,
+}
+
+fn summary_bucket_window(name: &str) -> Option<SummaryWindow> {
+    let normalized = name.trim().to_lowercase();
+    if normalized.ends_with("5h") {
+        Some(SummaryWindow::FiveHour)
+    } else if normalized.ends_with("weekly") {
+        Some(SummaryWindow::Weekly)
+    } else {
+        None
+    }
+}
+
+fn resolve_auto_switch_window_thresholds(
+    cfg: &crate::modules::config::UserConfig,
+) -> Option<AutoSwitchWindowThresholds> {
+    cfg.auto_switch_window_thresholds_enabled
+        .then(|| AutoSwitchWindowThresholds {
+            five_hour: normalize_auto_switch_threshold(cfg.auto_switch_five_hour_threshold),
+            weekly: normalize_auto_switch_threshold(cfg.auto_switch_weekly_threshold),
+        })
+}
+
+/// 返回命中阈值的最低百分比；未命中返回 None
+fn group_hit_percentage(
+    group: &AutoSwitchGroupQuota,
+    threshold: i32,
+    windows: Option<AutoSwitchWindowThresholds>,
+) -> Option<i32> {
+    let Some(windows) = windows else {
+        return (group.percentage <= threshold).then_some(group.percentage);
+    };
+    [
+        group.five_hour.filter(|p| *p <= windows.five_hour),
+        group.weekly.filter(|p| *p <= windows.weekly),
+        group.model_average.filter(|p| *p <= threshold),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
+fn group_is_switch_ready(
+    group: &AutoSwitchGroupQuota,
+    threshold: i32,
+    windows: Option<AutoSwitchWindowThresholds>,
+) -> bool {
+    let Some(windows) = windows else {
+        return group.percentage > 0 && group.percentage >= threshold;
+    };
+    let ready = |value: Option<i32>, limit: i32| value.map_or(true, |p| p > 0 && p >= limit);
+    ready(group.five_hour, windows.five_hour)
+        && ready(group.weekly, windows.weekly)
+        && ready(group.model_average, threshold)
 }
 
 #[derive(Debug, Clone)]
@@ -967,9 +1316,26 @@ fn available_ai_credits(account: &Account) -> Option<f64> {
 fn default_auto_switch_groups() -> Vec<AutoSwitchGroupDefinition> {
     vec![
         AutoSwitchGroupDefinition {
+            id: "g4_argon".into(),
+            name: "Gemini 4 Argon".into(),
+            summary_family: SummaryBucketFamily::Argon,
+            models: vec![
+                "gemini-4-argon".into(),
+                "gemini-4-argon-medium".into(),
+                "gemini-4-argon-high".into(),
+            ],
+        },
+        AutoSwitchGroupDefinition {
             id: "claude_45".to_string(),
             name: "Claude".to_string(),
+            summary_family: SummaryBucketFamily::Claude,
             models: vec![
+                "claude-opus-5-5".into(),
+                "claude-opus-5-5-medium".into(),
+                "claude-opus-5-5-high".into(),
+                "claude-sonnet-5-5".into(),
+                "claude-sonnet-5-5-medium".into(),
+                "claude-sonnet-5-5-high".into(),
                 "claude-opus-4-6-thinking".to_string(),
                 "claude-opus-4-6".to_string(),
                 "claude-opus-4-5-thinking".to_string(),
@@ -989,6 +1355,7 @@ fn default_auto_switch_groups() -> Vec<AutoSwitchGroupDefinition> {
         AutoSwitchGroupDefinition {
             id: "g3_pro".to_string(),
             name: "Gemini Pro".to_string(),
+            summary_family: SummaryBucketFamily::Gemini,
             models: vec![
                 "gemini-3.1-pro-high".to_string(),
                 "gemini-3.1-pro-low".to_string(),
@@ -1005,7 +1372,13 @@ fn default_auto_switch_groups() -> Vec<AutoSwitchGroupDefinition> {
         AutoSwitchGroupDefinition {
             id: "g3_flash".to_string(),
             name: "Gemini Flash".to_string(),
+            summary_family: SummaryBucketFamily::Gemini,
             models: vec![
+                "gemini-3.8-flash".into(),
+                "gemini-3.8-flash-low".into(),
+                "gemini-3.8-flash-medium".into(),
+                "gemini-3.8-flash-high".into(),
+                "MODEL_PLACEHOLDER_M318".into(),
                 "gemini-3-flash".to_string(),
                 "gemini-3.1-flash".to_string(),
                 "gemini-3-flash-image".to_string(),
@@ -1116,6 +1489,23 @@ fn resolve_monitored_auto_switch_groups(
 
 fn normalize_model_for_group_match(value: &str) -> String {
     let normalized = value.trim().to_lowercase();
+    if normalized.starts_with("gemini-4-argon")
+        || matches!(
+            normalized.as_str(),
+            "argon:weekly" | "gemini-argon-wtu-weekly"
+        )
+    {
+        return "gemini-4-argon".into();
+    }
+    if normalized.starts_with("gemini-3.8-flash") {
+        return "gemini-3.8-flash".into();
+    }
+    if normalized.starts_with("claude-sonnet-5-5") {
+        return "claude-sonnet-5-5".into();
+    }
+    if normalized.starts_with("claude-opus-5-5") {
+        return "claude-opus-5-5".into();
+    }
     if normalized.is_empty() {
         return normalized;
     }
@@ -1157,7 +1547,26 @@ fn collect_group_quotas(
         .filter_map(|group| {
             let mut sum = 0i32;
             let mut count = 0usize;
+            let mut summary_min: Option<i32> = None;
+            let mut five_hour: Option<i32> = None;
+            let mut weekly: Option<i32> = None;
+            let take_min = |slot: &mut Option<i32>, value: i32| {
+                *slot = Some(slot.map_or(value, |current| current.min(value)));
+            };
             for model in &quota.models {
+                if let Some(family) = summary_bucket_family(&model.name) {
+                    if family == group.summary_family && !quota.quota_summary_stale {
+                        take_min(&mut summary_min, model.percentage);
+                        match summary_bucket_window(&model.name) {
+                            Some(SummaryWindow::FiveHour) => {
+                                take_min(&mut five_hour, model.percentage)
+                            }
+                            Some(SummaryWindow::Weekly) => take_min(&mut weekly, model.percentage),
+                            None => {}
+                        }
+                    }
+                    continue;
+                }
                 if group
                     .models
                     .iter()
@@ -1167,16 +1576,33 @@ fn collect_group_quotas(
                     count += 1;
                 }
             }
-            if count == 0 {
-                return None;
-            }
-            let average = ((sum as f64) / (count as f64)).round() as i32;
+            let model_average = (count > 0).then(|| ((sum as f64) / (count as f64)).round() as i32);
+            let percentage = summary_min.into_iter().chain(model_average).min()?;
             Some(AutoSwitchGroupQuota {
                 id: group.id.clone(),
                 name: group.name.clone(),
-                percentage: average,
+                percentage,
+                five_hour,
+                weekly,
+                model_average,
             })
         })
+        .collect()
+}
+
+// Newly added default groups must not exclude accounts whose current client
+// does not report that model family. Explicit selected-group rules stay strict.
+fn reported_auto_switch_groups(
+    scope: &str,
+    groups: Vec<AutoSwitchGroupDefinition>,
+    reported: &[AutoSwitchGroupQuota],
+) -> Vec<AutoSwitchGroupDefinition> {
+    if scope != AUTO_SWITCH_SCOPE_ANY_GROUP || reported.is_empty() {
+        return groups;
+    }
+    groups
+        .into_iter()
+        .filter(|group| reported.iter().any(|quota| quota.id == group.id))
         .collect()
 }
 
@@ -1187,6 +1613,7 @@ fn evaluate_auto_switch_trigger(
     monitored_groups: &[AutoSwitchGroupDefinition],
     credits_enabled: bool,
     credits_threshold: i32,
+    windows: Option<AutoSwitchWindowThresholds>,
 ) -> Option<AutoSwitchTriggerContext> {
     if monitored_groups.is_empty() {
         return None;
@@ -1243,14 +1670,14 @@ fn evaluate_auto_switch_trigger(
     let hit_groups: Vec<modules::antigravity_switch_history::AntigravityAutoSwitchHitGroup> =
         group_quotas
             .into_iter()
-            .filter(|group| group.percentage <= threshold)
-            .map(
-                |group| modules::antigravity_switch_history::AntigravityAutoSwitchHitGroup {
+            .filter_map(|group| {
+                let percentage = group_hit_percentage(&group, threshold, windows)?;
+                Some(modules::antigravity_switch_history::AntigravityAutoSwitchHitGroup {
                     group_id: group.id,
                     group_name: group.name,
-                    percentage: group.percentage,
-                },
-            )
+                    percentage,
+                })
+            })
             .collect();
     let current_credits_remaining = if credits_enabled {
         available_ai_credits(account)
@@ -1294,6 +1721,7 @@ fn can_be_auto_switch_candidate(
     monitored_groups: &[AutoSwitchGroupDefinition],
     credits_enabled: bool,
     credits_threshold: i32,
+    windows: Option<AutoSwitchWindowThresholds>,
 ) -> bool {
     if account.id == current_id || account.disabled {
         return false;
@@ -1313,7 +1741,7 @@ fn can_be_auto_switch_candidate(
     }
     if !group_quotas
         .iter()
-        .all(|group| group.percentage >= threshold)
+        .all(|group| group_is_switch_ready(group, threshold, windows))
     {
         return false;
     }
@@ -1625,7 +2053,14 @@ pub fn run_quota_alert_if_needed() -> Result<Option<QuotaAlertPayload>, String> 
     Ok(Some(payload))
 }
 
-async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
+async fn run_auto_switch_if_needed_inner<F, Fut>(
+    current_account_id: Option<String>,
+    switch: F,
+) -> Result<Option<Account>, String>
+where
+    F: FnOnce(String, modules::antigravity_switch_history::AntigravityAutoSwitchReason) -> Fut,
+    Fut: std::future::Future<Output = Result<Account, String>>,
+{
     let cfg = crate::modules::config::get_user_config();
     if !cfg.auto_switch_enabled {
         return Ok(None);
@@ -1635,6 +2070,7 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
     let credits_enabled = cfg.auto_switch_credits_enabled;
     let credits_threshold =
         normalize_auto_switch_credits_threshold(cfg.auto_switch_credits_threshold);
+    let windows = resolve_auto_switch_window_thresholds(&cfg);
     let scope_mode = normalize_auto_switch_scope_mode(&cfg.auto_switch_scope_mode);
     let account_scope_mode =
         normalize_auto_switch_account_scope_mode(&cfg.auto_switch_account_scope_mode);
@@ -1648,7 +2084,7 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
         modules::logger::log_warn("[AutoSwitch] 可监控模型分组为空，跳过自动切号");
         return Ok(None);
     }
-    let current_id = match get_current_account_id()? {
+    let current_id = match current_account_id {
         Some(id) => id,
         None => return Ok(None),
     };
@@ -1679,6 +2115,9 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
         None => return Ok(None),
     };
 
+    let reported = collect_group_quotas(current, &monitored_groups);
+    let monitored_groups = reported_auto_switch_groups(&scope_mode, monitored_groups, &reported);
+
     let Some(trigger_context) = evaluate_auto_switch_trigger(
         current,
         threshold,
@@ -1686,6 +2125,7 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
         &monitored_groups,
         credits_enabled,
         credits_threshold,
+        windows,
     ) else {
         return Ok(None);
     };
@@ -1701,6 +2141,7 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
                 &monitored_groups,
                 credits_enabled,
                 credits_threshold,
+                windows,
             )
         })
         .collect();
@@ -1723,10 +2164,11 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
 
     let target = &candidates[0];
     modules::logger::log_info(&format!(
-        "[AutoSwitch] 触发自动切号: current_id={}, target_id={}, threshold={}%, credits_enabled={}, credits_threshold={}, current_credits={:?}, scope={}, rule={}",
+        "[AutoSwitch] 触发自动切号: current_id={}, target_id={}, threshold={}%, windows={:?}, credits_enabled={}, credits_threshold={}, current_credits={:?}, scope={}, rule={}",
         current_id,
         target.id,
         threshold,
+        windows,
         credits_enabled,
         credits_threshold,
         trigger_context.current_credits_remaining,
@@ -1734,33 +2176,64 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
         trigger_context.rule
     ));
 
-    let switched = if cfg.antigravity_dual_switch_no_restart_enabled {
-        switch_account_dual_no_restart(
-            &target.id,
-            "auto",
-            "tools.account.auto_switch",
-            "auto_switch",
-            Some(reason_snapshot),
-        )
-        .await?
-    } else {
-        let switched = switch_account_internal(&target.id).await?;
-        modules::websocket::broadcast_account_switched(&switched.id, &switched.email);
-        switched
-    };
+    let switched = switch(target.id.clone(), reason_snapshot).await?;
     modules::websocket::broadcast_data_changed("auto_switch");
     Ok(Some(switched))
 }
 
-pub async fn run_auto_switch_if_needed() -> Result<Option<Account>, String> {
-    if AUTO_SWITCH_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+pub(crate) async fn execute_ide_auto_switch(
+    account_id: String,
+    reason_snapshot: modules::antigravity_switch_history::AntigravityAutoSwitchReason,
+) -> Result<Account, String> {
+    let cfg = crate::modules::config::get_user_config();
+    let switched =
+        if cfg.antigravity_launch_on_switch && cfg.antigravity_dual_switch_no_restart_enabled {
+            switch_account_dual_no_restart(
+                &account_id,
+                "auto",
+                "tools.account.auto_switch",
+                "auto_switch",
+                Some(reason_snapshot),
+            )
+            .await?
+        } else {
+            let switched = switch_account_internal(&account_id).await?;
+            modules::websocket::broadcast_account_switched(&switched.id, &switched.email);
+            switched
+        };
+    Ok(switched)
+}
+
+pub(crate) async fn run_auto_switch_if_needed<F, Fut>(
+    current_account_id: Option<String>,
+    switch: F,
+) -> Result<Option<Account>, String>
+where
+    F: FnOnce(String, modules::antigravity_switch_history::AntigravityAutoSwitchReason) -> Fut,
+    Fut: std::future::Future<Output = Result<Account, String>>,
+{
+    let Some(_guard) = AutoSwitchGuard::acquire(&AUTO_SWITCH_IN_PROGRESS) else {
         modules::logger::log_info("[AutoSwitch] 自动切号进行中，跳过本次检查");
         return Ok(None);
-    }
+    };
 
-    let result = run_auto_switch_if_needed_inner().await;
-    AUTO_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
-    result
+    // Cancellation must release single-flight ownership as well as success/error.
+    run_auto_switch_if_needed_inner(current_account_id, switch).await
+}
+
+#[cfg(test)]
+mod auto_switch_guard_tests {
+    use super::*;
+    #[test]
+    fn single_flight_releases_on_completion_or_cancellation() {
+        let flag = AtomicBool::new(false);
+        let guard = AutoSwitchGuard::acquire(&flag).unwrap();
+        assert!(AutoSwitchGuard::acquire(&flag).is_none());
+        assert!(flag.load(Ordering::SeqCst));
+        drop(guard);
+        assert!(!flag.load(Ordering::SeqCst));
+        assert!(AutoSwitchGuard::acquire(&flag).is_some());
+    }
 }
 
 /// 批量刷新所有账号配额
@@ -1771,20 +2244,29 @@ pub async fn refresh_all_quotas_logic(
     use std::sync::Arc;
     use tokio::sync::Semaphore;
 
-    const MAX_CONCURRENT: usize = 5;
+    // 自动刷新与手动单账号刷新保持相同的请求节奏，避免多个账号同时触发
+    // loadCodeAssist/fetchAvailableModels/retrieveUserQuotaSummary，导致服务端
+    // 短时限流或网络连接争用。手动批量刷新仍保留较高并发，避免改变用户主动
+    // 操作的响应速度。
+    const MANUAL_MAX_CONCURRENT: usize = 5;
+    const AUTO_MAX_CONCURRENT: usize = 1;
     let start = std::time::Instant::now();
     let trigger_label = match trigger {
         QuotaRefreshTrigger::ManualBatch => "manual_batch",
         QuotaRefreshTrigger::Auto => "auto",
     };
 
+    let max_concurrent = match trigger {
+        QuotaRefreshTrigger::ManualBatch => MANUAL_MAX_CONCURRENT,
+        QuotaRefreshTrigger::Auto => AUTO_MAX_CONCURRENT,
+    };
     modules::logger::log_info(&format!(
         "开始批量刷新所有账号配额 (trigger={}, 并发模式, 最大并发: {})",
-        trigger_label, MAX_CONCURRENT
+        trigger_label, max_concurrent
     ));
     let accounts = list_accounts()?;
 
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
 
     let tasks: Vec<_> = accounts
         .into_iter()
@@ -1795,7 +2277,14 @@ pub async fn refresh_all_quotas_logic(
                     return false;
                 }
                 if let Some(ref q) = account.quota {
-                    if q.is_forbidden {
+                    if q.is_forbidden
+                        && account.quota_error.as_ref().is_some_and(|error| {
+                            modules::quota::is_explicit_quota_denial(
+                                error.reason.as_deref(),
+                                error.validation_url.as_deref(),
+                            )
+                        })
+                    {
                         modules::logger::log_info("  - Skipping Forbidden account (auto)");
                         return false;
                     }
@@ -1809,11 +2298,16 @@ pub async fn refresh_all_quotas_logic(
             let permit = semaphore.clone();
             async move {
                 let _guard = permit.acquire().await.unwrap();
-                match fetch_quota_with_fresh_token(&mut account, false).await {
+                match fetch_quota_with_fresh_token(&mut account, trigger.skip_cache()).await {
                     Ok(quota) => {
+                        let unresolved_forbidden = account.quota_error.as_ref().filter(|error| {
+                            error.code == Some(403) && !quota.is_forbidden && quota.models.is_empty()
+                        });
                         if let Err(e) = update_account_quota(&account_id, quota) {
                             let msg = format!("Account {}: Save quota failed - {}", email, e);
                             Err(msg)
+                        } else if let Some(error) = unresolved_forbidden {
+                            Err(format!("Account {}: Fetch quota failed - {}", email, error.message))
                         } else {
                             Ok(())
                         }
@@ -1860,6 +2354,58 @@ pub async fn refresh_all_quotas_logic(
     })
 }
 
+fn same_oauth_credentials(left: &TokenData, right: &TokenData) -> bool {
+    left.access_token == right.access_token
+        && left.refresh_token == right.refresh_token
+        && left.expiry_timestamp == right.expiry_timestamp
+        && left.id_token == right.id_token
+        && left.oauth_client_key == right.oauth_client_key
+}
+
+async fn merge_quota_refresh_state(
+    account: &mut Account,
+    expected_token: &TokenData,
+) -> crate::error::AppResult<()> {
+    let mut pending = account.clone();
+    let expected = expected_token.clone();
+    *account = tokio::task::spawn_blocking(move || {
+        merge_quota_refresh_state_blocking(&mut pending, &expected)?;
+        Ok::<_, crate::error::AppError>(pending)
+    })
+    .await
+    .map_err(|error| crate::error::AppError::Account(error.to_string()))??;
+    Ok(())
+}
+
+fn merge_quota_refresh_state_blocking(
+    account: &mut Account,
+    expected_token: &TokenData,
+) -> crate::error::AppResult<()> {
+    use crate::error::AppError;
+
+    let _lock = lock_account_index().map_err(AppError::Account)?;
+    let mut latest = load_account(&account.id).map_err(AppError::Account)?;
+    if !same_oauth_credentials(&latest.token, expected_token) {
+        return Err(AppError::Account(
+            "Antigravity OAuth credentials changed during quota refresh".to_owned(),
+        ));
+    }
+    if latest.token.project_id != expected_token.project_id {
+        account.token.project_id = latest.token.project_id.clone();
+    }
+    if latest.token.is_gcp_tos != expected_token.is_gcp_tos {
+        account.token.is_gcp_tos = latest.token.is_gcp_tos;
+    }
+    latest.token = account.token.clone();
+    latest.quota_error = account.quota_error.clone();
+    latest.disabled = account.disabled;
+    latest.disabled_at = account.disabled_at;
+    latest.disabled_reason = account.disabled_reason.clone();
+    save_account(&latest).map_err(AppError::Account)?;
+    *account = latest;
+    Ok(())
+}
+
 /// 配额查询，并在查询前确保 Token 有效
 /// skip_cache: 是否跳过缓存，单个账号刷新应传 true
 pub async fn fetch_quota_with_fresh_token(
@@ -1869,58 +2415,121 @@ pub async fn fetch_quota_with_fresh_token(
     use crate::error::AppError;
     use crate::modules::oauth;
 
-    let token = match oauth::ensure_fresh_token(&account.token).await {
+    let mut expected_token = account.token.clone();
+    let token = match oauth::ensure_fresh_token(&expected_token).await {
         Ok(t) => t,
         Err(e) => {
             if e.contains("invalid_grant") {
                 account.disabled = true;
                 account.disabled_at = Some(chrono::Utc::now().timestamp());
                 account.disabled_reason = Some(format!("invalid_grant: {}", e));
-                let _ = save_account(account);
             }
             account.quota_error = Some(QuotaErrorInfo {
                 code: None,
                 message: format!("OAuth error: {}", e),
+                reason: if e.contains("invalid_grant") {
+                    Some("invalid_grant".to_string())
+                } else {
+                    None
+                },
+                validation_url: None,
                 timestamp: chrono::Utc::now().timestamp(),
             });
-            let _ = save_account(account);
+            merge_quota_refresh_state(account, &expected_token).await?;
             return Err(AppError::OAuth(e));
         }
     };
 
-    if token.access_token != account.token.access_token {
-        account.token = token.clone();
-        let _ = upsert_account(account.email.clone(), account.name.clone(), token.clone());
+    if !same_oauth_credentials(&token, &expected_token) {
+        account.token = token;
+        merge_quota_refresh_state(account, &expected_token).await?;
+        expected_token = account.token.clone();
     }
 
-    let result =
+    let (metadata, result) =
         modules::quota::fetch_quota_for_token(&account.token, &account.email, skip_cache).await;
+    // loadCodeAssist and the quota endpoints are separate requests. Persist any
+    // project data it returned even if fetching model quotas subsequently failed.
+    apply_project_metadata(&mut account.token, &metadata);
     match result {
         Ok(payload) => {
             // 配额获取成功，Token 有效
             // 只解除 invalid_grant 类禁用，其他（verification_required / tos_violation / unknown）不解除
-            if account.is_invalid_grant_disabled() {
+            if account.is_invalid_grant_disabled()
+                && !payload.quota.is_forbidden
+                && (payload.error.is_none() || !payload.quota.models.is_empty())
+            {
                 modules::logger::log_info(&format!(
                     "账号配额获取成功，自动解除禁用状态: {}",
                     account.email
                 ));
                 account.clear_disabled();
             }
-            account.quota_error = payload.error.map(|err| QuotaErrorInfo {
-                code: err.code,
-                message: err.message,
-                timestamp: chrono::Utc::now().timestamp(),
-            });
-            let _ = save_account(account);
+            let is_stale = payload.quota.quota_summary_stale;
+            if let Some(ref err) = payload.error {
+                account.quota_error = Some(QuotaErrorInfo {
+                    code: err.code,
+                    message: err.message.clone(),
+                    reason: err.reason.clone(),
+                    validation_url: err.validation_url.as_deref().map(|u| {
+                        crate::modules::quota::format_google_validation_url(u, &account.email)
+                    }),
+                    timestamp: chrono::Utc::now().timestamp(),
+                });
+
+                if err.reason.as_deref() == Some("VALIDATION_REQUIRED")
+                    || err.message.contains("Verify your account")
+                {
+                    modules::logger::log_warn(&format!(
+                        "账号需要重新授权/验证 (VALIDATION_REQUIRED): {}",
+                        account.email
+                    ));
+                    account.disabled_reason = Some("verification_required".to_string());
+                } else if err.reason.as_deref() == Some("SUBSCRIPTION_REQUIRED") {
+                    modules::logger::log_warn(&format!(
+                        "账号需要有效订阅 (SUBSCRIPTION_REQUIRED): {}",
+                        account.email
+                    ));
+                    account.disabled_reason = Some("subscription_required".to_string());
+                }
+            } else if !is_stale {
+                account.quota_error = None;
+                // 配额获取成功且无部分错误，且非历史缓存兜底，如果之前是 verification_required / subscription_required，自动解除
+                if account.disabled_reason.as_deref() == Some("verification_required")
+                    || account.disabled_reason.as_deref() == Some("subscription_required")
+                {
+                    modules::logger::log_info(&format!(
+                        "账号配额获取成功，自动解除状态: email={}, reason={:?}",
+                        account.email, account.disabled_reason
+                    ));
+                    account.disabled_reason = None;
+                    if account.disabled {
+                        account.disabled = false;
+                        account.disabled_at = None;
+                    }
+                }
+            }
+
+            merge_quota_refresh_state(account, &expected_token).await?;
             Ok(payload.quota)
         }
         Err(err) => {
+            let err_msg = err.to_string();
+            let mut reason: Option<String> = None;
+            if err_msg.contains("Verify your account") {
+                reason = Some("VALIDATION_REQUIRED".to_string());
+                account.disabled_reason = Some("verification_required".to_string());
+            } else if err_msg.contains("invalid_grant") {
+                reason = Some("invalid_grant".to_string());
+            }
             account.quota_error = Some(QuotaErrorInfo {
                 code: None,
-                message: err.to_string(),
+                message: err_msg,
+                reason,
+                validation_url: None,
                 timestamp: chrono::Utc::now().timestamp(),
             });
-            let _ = save_account(account);
+            merge_quota_refresh_state(account, &expected_token).await?;
             Err(err)
         }
     }
@@ -1938,61 +2547,29 @@ pub async fn switch_account_internal(account_id: &str) -> Result<Account, String
         return switch_account_local_no_restart(account_id).await;
     }
 
-    // 路径缺失时不执行关闭/注入，避免破坏当前运行态。
-    modules::process::ensure_antigravity_launch_path_configured()?;
-
-    // 1. 加载并验证账号存在
-    let mut account = prepare_account_for_injection(account_id).await?;
-    modules::logger::log_info("[Switch] 正在切换到账号");
-
-    // 3. 更新工具内部状态
-    set_current_account_id(account_id)?;
-    account.update_last_used();
-    save_account(&account)?;
-
-    // 5. 同步更新默认实例绑定账号，确保默认实例注入目标明确
-    if let Err(e) = modules::instance::update_default_settings(
-        Some(Some(account_id.to_string())),
-        None,
-        Some(false),
-    ) {
-        modules::logger::log_warn(&format!("[Switch] 更新默认实例绑定账号失败: {}", e));
-    }
-
-    // 6. 对齐默认实例启动逻辑：按默认实例目录关闭受管进程，再注入默认实例目录
-    let default_dir = modules::instance::get_default_user_data_dir()?;
-    let default_dir_str = default_dir.to_string_lossy().to_string();
-    modules::process::close_antigravity_instances(&[default_dir_str], 20)?;
-    let _ = modules::instance::update_default_pid(None);
-    modules::instance::inject_account_to_profile(&default_dir, account_id)?;
-
-    // 7. 启动 Antigravity IDE（带默认实例自定义启动参数；启动失败不阻断切号，保持原行为）
-    modules::logger::log_info("[Switch] 正在启动 Antigravity IDE 默认实例...");
-    let default_settings = modules::instance::load_default_settings()?;
-    let extra_args = modules::process::parse_extra_args(&default_settings.extra_args);
-    let launch_result = if extra_args.is_empty() {
-        modules::process::start_antigravity()
-    } else {
-        modules::process::start_antigravity_with_args("", &extra_args)
-    };
-    match launch_result {
-        Ok(pid) => {
-            let _ = modules::instance::update_default_pid(Some(pid));
+    let result = perform_ide_switch(account_id, true, false).await?;
+    let IdeSwitchResult {
+        account,
+        launch_error,
+        shared,
+        ..
+    } = result;
+    if let Some(error) = launch_error {
+        if shared {
+            modules::websocket::broadcast_account_switched(&account.id, &account.email);
+            return Err(format!("账号已切换，但启动 Antigravity IDE 失败: {error}"));
         }
-        Err(e) => {
-            modules::logger::log_warn(&format!("[Switch] Antigravity IDE 启动失败: {}", e));
-            // 不中断流程，允许用户手动启动
-        }
+        modules::logger::log_warn(&format!("[Switch] Antigravity IDE 启动失败: {error}"));
     }
-
-    modules::logger::log_info("[Switch] 账号切换完成");
     Ok(account)
 }
 
 fn persist_switch_history(item: modules::antigravity_switch_history::AntigravitySwitchHistoryItem) {
-    if let Err(err) = modules::antigravity_switch_history::add_history_item(item) {
-        modules::logger::log_warn(&format!("写入 Antigravity IDE 切号记录失败: {}", err));
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = modules::antigravity_switch_history::add_history_item(item) {
+            modules::logger::log_warn(&format!("保存 Antigravity 切号记录失败: {error}"));
+        }
+    });
 }
 
 fn ensure_antigravity_running_for_no_restart_switch() -> Result<bool, String> {
@@ -2059,11 +2636,23 @@ pub async fn switch_account_dual_no_restart(
         .unwrap_or_else(|_| account_id.to_string());
 
     let local_started = Instant::now();
-    let local_result = switch_account_local_no_restart(account_id).await;
+    let local_result = perform_ide_switch(account_id, false, true).await;
     let local_duration_ms = local_started.elapsed().as_millis() as u64;
 
-    let account = match local_result {
-        Ok(account) => account,
+    let (account, _permit) = match local_result {
+        Ok(IdeSwitchResult {
+            account,
+            launch_error,
+            shared: true,
+            ..
+        }) => {
+            modules::websocket::broadcast_account_switched(&account.id, &account.email);
+            if let Some(error) = launch_error {
+                return Err(format!("账号已切换，但启动 Antigravity IDE 失败: {error}"));
+            }
+            return Ok(account);
+        }
+        Ok(result) => (result.account, result.permit),
         Err(error) => {
             persist_switch_history(
                 modules::antigravity_switch_history::AntigravitySwitchHistoryItem {
@@ -2247,50 +2836,615 @@ pub async fn switch_account_dual_no_restart(
 }
 
 /// 本地切号（不关闭/不重启 Antigravity IDE）
-/// 流程：Token刷新 + 本地状态更新 + 默认实例注入
 pub async fn switch_account_local_no_restart(account_id: &str) -> Result<Account, String> {
-    modules::logger::log_info(&format!(
-        "[Switch][NoRestart] 开始本地切号: account_id={}",
-        account_id
-    ));
+    switch_account_ide(account_id, false)
+        .await
+        .map(|(account, _)| account)
+}
 
-    let mut account = prepare_account_for_injection(account_id).await?;
-    account.update_last_used();
-    save_account(&account)?;
+pub async fn switch_account_ide(
+    account_id: &str,
+    launch: bool,
+) -> Result<(Account, Option<String>), String> {
+    perform_ide_switch(account_id, launch, false)
+        .await
+        .map(|result| (result.account, result.launch_error))
+}
 
-    set_current_account_id(account_id)?;
+struct IdeSwitchResult {
+    account: Account,
+    launch_error: Option<String>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    shared: bool,
+}
 
-    if let Err(e) = modules::instance::update_default_settings(
-        Some(Some(account_id.to_string())),
-        None,
-        Some(false),
-    ) {
-        modules::logger::log_warn(&format!(
-            "[Switch][NoRestart] 更新默认实例绑定账号失败: {}",
-            e
-        ));
+async fn perform_ide_switch(
+    account_id: &str,
+    launch: bool,
+    dual_no_restart: bool,
+) -> Result<IdeSwitchResult, String> {
+    let permit = try_begin_antigravity_switch(&ANTIGRAVITY_SWITCH_GATE)?;
+    let account = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        prepare_account_for_injection(account_id),
+    )
+    .await
+    .map_err(|_| "ANTIGRAVITY_SWITCH_PREPARATION_TIMEOUT".to_string())??;
+
+    tokio::task::spawn_blocking(move || {
+        if crate::commands::system::antigravity_ide_uses_shared_credentials() {
+            let (account, launch_error) = modules::antigravity_shared_switch::switch(
+                &account,
+                modules::antigravity_shared_switch::SwitchTarget::Ide,
+                launch || dual_no_restart,
+                true,
+            )?;
+            return Ok(IdeSwitchResult {
+                account,
+                launch_error,
+                permit,
+                shared: true,
+            });
+        }
+        if launch {
+            modules::process::ensure_antigravity_launch_path_configured()?;
+        }
+        let default_dir = modules::instance::get_default_user_data_dir()?;
+        if launch {
+            let default_dir_str = default_dir.to_string_lossy().into_owned();
+            modules::process::close_antigravity_instances(&[default_dir_str], 20)?;
+            let _ = modules::instance::update_default_pid(None);
+        }
+        modules::instance::inject_account_to_profile_with_account(&default_dir, &account)?;
+        for target_dir in modules::instance::get_all_antigravity_user_data_dirs() {
+            if target_dir != default_dir {
+                if let Err(error) =
+                    modules::instance::inject_account_to_profile_with_account(&target_dir, &account)
+                {
+                    modules::logger::log_warn(&format!(
+                        "[Switch] 注入目录 {} 失败: {error}",
+                        target_dir.display()
+                    ));
+                }
+            }
+        }
+
+        let account = commit_switched_account(&account.id)
+            .map_err(|error| format!("ANTIGRAVITY_SWITCH_STATE_SAVE_FAILED: {error}"))?;
+        if let Err(error) = modules::instance::update_default_settings(
+            Some(Some(account.id.clone())),
+            None,
+            Some(false),
+        ) {
+            modules::logger::log_warn(&format!("[Switch] 更新默认实例绑定账号失败: {error}"));
+        }
+
+        let launch_error = if launch {
+            let result = modules::instance::load_default_settings().and_then(|settings| {
+                let args = modules::process::parse_extra_args(&settings.extra_args);
+                if args.is_empty() {
+                    modules::process::start_antigravity()
+                } else {
+                    modules::process::start_antigravity_with_args("", &args)
+                }
+            });
+            match result {
+                Ok(pid) => {
+                    if let Err(error) = modules::instance::update_default_pid(Some(pid)) {
+                        modules::logger::log_warn(&format!("[Switch] 更新 IDE PID 失败: {error}"));
+                    }
+                    None
+                }
+                Err(error) => Some(error),
+            }
+        } else {
+            None
+        };
+        Ok(IdeSwitchResult {
+            account,
+            launch_error,
+            permit,
+            shared: false,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub(crate) fn commit_switched_account(account_id: &str) -> Result<Account, String> {
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
+    if !index.accounts.iter().any(|account| account.id == account_id) {
+        return Err(format!("找不到账号 ID: {account_id}"));
     }
-
-    let default_dir = modules::instance::get_default_user_data_dir()?;
-    modules::instance::inject_account_to_profile(&default_dir, account_id)?;
-
-    modules::logger::log_info(&format!(
-        "[Switch][NoRestart] 本地切号完成: {}",
-        account.email
-    ));
+    let mut account = load_account(account_id)?;
+    account.update_last_used();
+    account.last_switched_at = Some(account.last_used);
+    save_account(&account)?;
+    index.current_account_id = Some(account_id.to_string());
+    save_account_index_locked(&index)?;
+    let _ = save_current_account_file(&account.email);
     Ok(account)
 }
 
-/// 准备账号注入：确保 Token 新鲜并落盘
+/// 准备账号注入：确保 Token 新鲜并补齐必要元数据后落盘
 pub async fn prepare_account_for_injection(account_id: &str) -> Result<Account, String> {
-    let mut account = load_account(account_id)?;
-    let fresh_token = modules::oauth::ensure_fresh_token(&account.token)
+    let account_id = account_id.to_owned();
+    let mut account = {
+        let account_id = account_id.clone();
+        tokio::task::spawn_blocking(move || load_account(&account_id))
+            .await
+            .map_err(|error| error.to_string())??
+    };
+    let original_token = account.token.clone();
+    let fresh_token = modules::oauth::ensure_fresh_token(&original_token)
         .await
         .map_err(|e| format!("Token 刷新失败: {}", e))?;
-    if fresh_token.access_token != account.token.access_token {
-        modules::logger::log_info("[Account] Token 已刷新");
-        account.token = fresh_token.clone();
-        save_account(&account)?;
+    let refreshed = !same_oauth_credentials(&fresh_token, &original_token);
+    account.token = fresh_token;
+    let mut token_changed = refreshed;
+
+    // 全链路确保 is_gcp_tos 与 project_id 已被探测和沉淀
+    let needs_probe = account.token.is_gcp_tos.is_none()
+        || (account.token.is_gcp_tos == Some(true) && account.token.project_id.is_none());
+    if needs_probe {
+        modules::logger::log_info(&format!(
+            "[Account] 准备注入时发现缺少 GCP ToS 或 ProjectId 元数据，执行自动探测: {}",
+            account.email
+        ));
+        let meta =
+            modules::quota::fetch_project_metadata_for_token(&account.token, &account.email).await;
+        token_changed |= apply_project_metadata(&mut account.token, &meta);
     }
-    Ok(account)
+
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock_account_index()?;
+        let mut latest = load_account(&account_id)?;
+        if token_changed && same_oauth_credentials(&latest.token, &original_token) {
+            if refreshed {
+                latest.token.access_token = account.token.access_token;
+                latest.token.refresh_token = account.token.refresh_token;
+                latest.token.expires_in = account.token.expires_in;
+                latest.token.expiry_timestamp = account.token.expiry_timestamp;
+                latest.token.oauth_client_key = account.token.oauth_client_key;
+                latest.token.id_token = account.token.id_token;
+            }
+            if latest.token.project_id == original_token.project_id {
+                latest.token.project_id = account.token.project_id;
+            }
+            if latest.token.is_gcp_tos == original_token.is_gcp_tos {
+                latest.token.is_gcp_tos = account.token.is_gcp_tos;
+            }
+            save_account(&latest)?;
+        }
+        Ok(latest)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn apply_project_metadata(
+    token: &mut TokenData,
+    metadata: &modules::quota::ProjectMetadataResult,
+) -> bool {
+    let mut changed = false;
+    if let Some(project_id) = metadata.project_id.as_deref().map(str::trim) {
+        if !project_id.is_empty()
+            && project_id != "aicode-consumers"
+            && token.project_id.as_deref() != Some(project_id)
+        {
+            token.project_id = Some(project_id.to_owned());
+            changed = true;
+        }
+    }
+    if let Some(is_gcp_tos) = metadata.is_gcp_tos {
+        if token.is_gcp_tos != Some(is_gcp_tos) {
+            token.is_gcp_tos = Some(is_gcp_tos);
+            changed = true;
+        }
+    }
+    changed
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn missing_project_metadata_keeps_saved_values() {
+        let mut token = TokenData::new(
+            "access".into(),
+            "refresh".into(),
+            3600,
+            None,
+            Some("saved-project".into()),
+            None,
+        );
+        token.is_gcp_tos = Some(true);
+        let mut metadata = modules::quota::ProjectMetadataResult {
+            project_id: None,
+            subscription_tier: None,
+            credits: vec![],
+            is_gcp_tos: None,
+        };
+
+        assert!(!apply_project_metadata(&mut token, &metadata));
+        assert_eq!(token.project_id.as_deref(), Some("saved-project"));
+        assert_eq!(token.is_gcp_tos, Some(true));
+
+        metadata.project_id = Some(" new-project ".into());
+        metadata.is_gcp_tos = Some(false);
+        assert!(apply_project_metadata(&mut token, &metadata));
+        assert_eq!(token.project_id.as_deref(), Some("new-project"));
+        assert_eq!(token.is_gcp_tos, Some(false));
+    }
+
+    #[test]
+    fn account_note_fields_roundtrip_encrypted_and_clear() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let data_dir = std::env::temp_dir().join(format!(
+            "antigravity-account-note-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&data_dir);
+        fs::create_dir_all(&data_dir).expect("create test data dir");
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &data_dir);
+
+        let token = TokenData::new(
+            "access-token".to_string(),
+            "refresh-token".to_string(),
+            3600,
+            Some("note@example.com".to_string()),
+            None,
+            None,
+        );
+        let mut account = Account::new(
+            "note-account".to_string(),
+            "note@example.com".to_string(),
+            token,
+        );
+        account.notes = Some("Main account".to_string());
+        account.two_factor_secret = Some("JBSWY3DPEHPK3PXP".to_string());
+        account.account_password = Some("password-1".to_string());
+        account.phone_number = Some("13800000000".to_string());
+        account.mail_url = Some("https://mail.example.test/inbox".to_string());
+        account.aux_email = Some("backup@example.test".to_string());
+        save_account(&account).expect("save encrypted account");
+
+        let account_path = get_accounts_dir()
+            .expect("account dir")
+            .join("note-account.json");
+        let stored = fs::read_to_string(&account_path).expect("read stored account");
+        assert!(stored.contains("AES-256-GCM"));
+        assert!(!stored.contains("password-1"));
+        assert!(!stored.contains("JBSWY3DPEHPK3PXP"));
+
+        let loaded = load_account("note-account").expect("load account");
+        assert_eq!(loaded.notes.as_deref(), Some("Main account"));
+        assert_eq!(loaded.account_password.as_deref(), Some("password-1"));
+        assert_eq!(loaded.phone_number.as_deref(), Some("13800000000"));
+        assert_eq!(loaded.aux_email.as_deref(), Some("backup@example.test"));
+
+        let cleared = update_account_note(
+            "note-account",
+            AccountNoteUpdate {
+                note: Some(" ".to_string()),
+                two_factor_secret: Some(String::new()),
+                account_password: Some(String::new()),
+                phone_number: Some(String::new()),
+                mail_url: Some(String::new()),
+                aux_email: Some(String::new()),
+            },
+        )
+        .expect("clear account note");
+        assert!(cleared.notes.is_none());
+        assert!(cleared.two_factor_secret.is_none());
+        assert!(cleared.account_password.is_none());
+        assert!(cleared.phone_number.is_none());
+        assert!(cleared.mail_url.is_none());
+        assert!(cleared.aux_email.is_none());
+
+        std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let _ = fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn pending_oauth_account_is_reused_and_keeps_sensitive_notes() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let data_dir = std::env::temp_dir().join(format!(
+            "antigravity-pending-oauth-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&data_dir);
+        fs::create_dir_all(&data_dir).expect("create test data dir");
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &data_dir);
+
+        let pending = create_pending_oauth_account(
+            "pending@example.com".to_string(),
+            AccountNoteUpdate {
+                note: Some("delivery note".to_string()),
+                two_factor_secret: Some("JBSWY3DPEHPK3PXP".to_string()),
+                account_password: Some("password-1".to_string()),
+                phone_number: Some("13800000000".to_string()),
+                mail_url: Some("https://mail.example.test/inbox".to_string()),
+                aux_email: Some("backup@example.test".to_string()),
+            },
+        )
+        .expect("create pending account");
+        assert!(pending.pending_oauth);
+        assert!(pending.token.refresh_token.is_empty());
+
+        let token = TokenData::new(
+            "access-token".to_string(),
+            "refresh-token".to_string(),
+            3600,
+            Some("pending@example.com".to_string()),
+            None,
+            None,
+        );
+        let authorized = upsert_account(
+            "pending@example.com".to_string(),
+            Some("Pending User".to_string()),
+            token,
+        )
+        .expect("authorize pending account");
+
+        assert_eq!(authorized.id, pending.id);
+        assert!(!authorized.pending_oauth);
+        assert_eq!(authorized.notes.as_deref(), Some("delivery note"));
+        assert_eq!(authorized.account_password.as_deref(), Some("password-1"));
+        assert_eq!(
+            authorized.two_factor_secret.as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+        assert_eq!(authorized.phone_number.as_deref(), Some("13800000000"));
+        assert_eq!(
+            authorized.mail_url.as_deref(),
+            Some("https://mail.example.test/inbox")
+        );
+        assert_eq!(authorized.aux_email.as_deref(), Some("backup@example.test"));
+
+        std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let _ = fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn pending_oauth_recovers_missing_details_without_overwriting_corrupt_records() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let data_dir = std::env::temp_dir().join(format!(
+            "antigravity-pending-missing-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &data_dir);
+        let email = "missing@example.test";
+        let pending = create_pending_oauth_account(email.into(), AccountNoteUpdate::default())
+            .expect("create pending account");
+        let detail = get_accounts_dir().unwrap().join(format!("{}.json", pending.id));
+
+        fs::remove_file(&detail).unwrap();
+        let recreated = create_pending_oauth_account(email.into(), AccountNoteUpdate::default())
+            .expect("recreate the missing pending account");
+        assert_eq!(recreated.id, pending.id);
+        assert_eq!(recreated.created_at, pending.created_at);
+
+        let token = TokenData::new("access".into(), "refresh".into(), 3600, None, None, None);
+        fs::remove_file(&detail).unwrap();
+        let authorized = upsert_account(email.into(), None, token.clone()).unwrap();
+        assert_eq!(authorized.id, pending.id);
+        assert!(!authorized.pending_oauth);
+        assert_eq!(load_account_index().unwrap().accounts.len(), 1);
+
+        fs::write(&detail, "invalid json").unwrap();
+        assert!(create_pending_oauth_account(email.into(), AccountNoteUpdate::default()).is_err());
+        assert!(upsert_account(email.into(), None, token).is_err());
+        assert_eq!(fs::read_to_string(detail).unwrap(), "invalid json");
+        std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let _ = fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn reimport_same_email_updates_existing_account_and_does_not_duplicate() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let data_dir = std::env::temp_dir().join(format!(
+            "antigravity-reimport-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = fs::remove_dir_all(&data_dir);
+        fs::create_dir_all(&data_dir).expect("create test data dir");
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &data_dir);
+
+        let token1 = TokenData::new(
+            "access-token-1".to_string(),
+            "refresh-token-1".to_string(),
+            3600,
+            Some("user@example.com".to_string()),
+            Some("proj-1".to_string()),
+            Some("session-1".to_string()),
+        );
+        let first = upsert_account(
+            "user@example.com".to_string(),
+            Some("Original Name".to_string()),
+            token1,
+        )
+        .expect("first add");
+        assert_eq!(load_account_index().unwrap().accounts.len(), 1);
+
+        // 重新导入同一邮箱：新 refresh_token，无 project_id，无 session_id，邮箱大小写不同
+        let token2 = TokenData::new(
+            "access-token-2".to_string(),
+            "refresh-token-2".to_string(),
+            3600,
+            Some("User@Example.com".to_string()),
+            None,
+            None,
+        );
+        let second =
+            upsert_account("User@Example.com".to_string(), None, token2).expect("second upsert");
+
+        // 验证：ID 必须保持一致，卡片数量不能增加
+        assert_eq!(second.id, first.id);
+        let index = load_account_index().unwrap();
+        assert_eq!(index.accounts.len(), 1);
+
+        // 验证：token 已被更新，老授权被覆盖
+        let loaded = load_account(&first.id).expect("load updated account");
+        assert_eq!(loaded.token.refresh_token, "refresh-token-2");
+        assert_eq!(loaded.token.access_token, "access-token-2");
+        // 验证：老账号原有的 project_id 和 session_id 被继承保留，原有名称保留
+        assert_eq!(loaded.token.project_id.as_deref(), Some("proj-1"));
+        assert_eq!(loaded.token.session_id.as_deref(), Some("session-1"));
+        assert_eq!(loaded.name.as_deref(), Some("Original Name"));
+
+        std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let _ = fs::remove_dir_all(&data_dir);
+    }
+}
+
+#[cfg(test)]
+#[path = "account_id_regression_tests.rs"]
+mod account_id_regression_tests;
+
+#[cfg(test)]
+#[path = "account_storage_regression_tests.rs"]
+mod account_storage_regression_tests;
+
+#[cfg(test)]
+mod new_antigravity_model_tests {
+    use super::*;
+
+    #[test]
+    fn antigravity_quota_windows_trigger_switch_and_filter_candidates() {
+        let account = |id: &str, windows: &[(&str, i32)], stale| {
+            let mut account = Account::new(
+                id.into(), "fixture@example.test".into(),
+                TokenData::new("access".into(), "refresh".into(), 3600, None, None, None),
+            );
+            let mut quota = QuotaData::new();
+            quota.quota_summary_stale = stale;
+            for (name, percentage) in windows {
+                quota.add_model((*name).into(), None, *percentage, String::new());
+            }
+            account.quota = Some(quota);
+            account
+        };
+        let groups = default_auto_switch_groups();
+        let current = account("current", &[("gemini:5h", 78), ("gemini-weekly", 0)], false);
+        let reported = collect_group_quotas(&current, &groups);
+        let groups = reported_auto_switch_groups(AUTO_SWITCH_SCOPE_ANY_GROUP, groups, &reported);
+        let trigger = evaluate_auto_switch_trigger(&current, 0, AUTO_SWITCH_SCOPE_ANY_GROUP, &groups, false, 0, None).unwrap();
+        assert_eq!(trigger.hit_groups.len(), 2);
+        assert!(trigger.hit_groups.iter().all(|group| group.percentage == 0));
+
+        let ready = account("ready", &[("gemini-5h", 80), ("gemini:weekly", 57), ("3p-5h", 0)], false);
+        assert!(can_be_auto_switch_candidate(&ready, "current", 0, &groups, false, 0, None));
+        for rejected in [
+            account("exhausted", &[("gemini-weekly", 0)], false),
+            account("stale", &[("gemini-weekly", 90)], true),
+            account("other-pool", &[("gemini-argon-wtu-weekly", 90)], false),
+        ] {
+            assert!(!can_be_auto_switch_candidate(&rejected, "current", 0, &groups, false, 0, None));
+        }
+
+        let legacy = account("legacy", &[("gemini-3.1-pro-high", 85), ("gemini-3-flash", 67)], true);
+        assert!(can_be_auto_switch_candidate(&legacy, "current", 0, &groups, false, 0, None));
+        let stale_current = account("current", &[("gemini-weekly", 0), ("gemini-3.1-pro-high", 81)], true);
+        assert!(evaluate_auto_switch_trigger(&stale_current, 0, AUTO_SWITCH_SCOPE_ANY_GROUP, &groups, false, 0, None).is_none());
+    }
+
+    #[test]
+    fn antigravity_split_window_thresholds_apply_per_window() {
+        let account = |id: &str, windows: &[(&str, i32)]| {
+            let mut account = Account::new(
+                id.into(), "fixture@example.test".into(),
+                TokenData::new("access".into(), "refresh".into(), 3600, None, None, None),
+            );
+            let mut quota = QuotaData::new();
+            for (name, percentage) in windows {
+                quota.add_model((*name).into(), None, *percentage, String::new());
+            }
+            account.quota = Some(quota);
+            account
+        };
+        let groups: Vec<_> = default_auto_switch_groups()
+            .into_iter()
+            .filter(|group| group.id == "g3_flash")
+            .collect();
+        let split = Some(AutoSwitchWindowThresholds { five_hour: 30, weekly: 5 });
+        let scope = AUTO_SWITCH_SCOPE_SELECTED_GROUPS;
+
+        // 5h 低于 5h 阈值即触发，即使周额度充足
+        let low_5h = account("current", &[("gemini-5h", 25), ("gemini-weekly", 90)]);
+        let trigger = evaluate_auto_switch_trigger(&low_5h, 0, scope, &groups, false, 0, split).unwrap();
+        assert_eq!(trigger.hit_groups[0].percentage, 25);
+        // 单阈值模式（threshold=10）下同一账号不触发
+        assert!(evaluate_auto_switch_trigger(&low_5h, 10, scope, &groups, false, 0, None).is_none());
+
+        // 周额度 8% 高于周阈值 5%，5h 充足：不触发
+        let ok = account("current", &[("gemini-5h", 80), ("gemini-weekly", 8)]);
+        assert!(evaluate_auto_switch_trigger(&ok, 0, scope, &groups, false, 0, split).is_none());
+        let low_weekly = account("current", &[("gemini-5h", 80), ("gemini-weekly", 4)]);
+        assert!(evaluate_auto_switch_trigger(&low_weekly, 0, scope, &groups, false, 0, split).is_some());
+
+        // 候选账号需各窗口都满足各自阈值
+        assert!(can_be_auto_switch_candidate(&ok, "x", 0, &groups, false, 0, split));
+        assert!(!can_be_auto_switch_candidate(&low_5h, "x", 0, &groups, false, 0, split));
+        let exhausted_weekly = account("c", &[("gemini-5h", 100), ("gemini-weekly", 0)]);
+        assert!(!can_be_auto_switch_candidate(&exhausted_weekly, "x", 0, &groups, false, 0, split));
+    }
+
+    #[test]
+    fn new_default_families_do_not_block_legacy_auto_switch_candidates() {
+        let reported = vec![AutoSwitchGroupQuota {
+            id: "claude_45".into(),
+            name: "Claude".into(),
+            percentage: 10,
+            ..Default::default()
+        }];
+        let groups = reported_auto_switch_groups(
+            AUTO_SWITCH_SCOPE_ANY_GROUP,
+            default_auto_switch_groups(),
+            &reported,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, "claude_45");
+        let explicit = reported_auto_switch_groups(
+            AUTO_SWITCH_SCOPE_SELECTED_GROUPS,
+            default_auto_switch_groups(),
+            &reported,
+        );
+        assert!(explicit.iter().any(|group| group.id == "g4_argon"));
+    }
+
+    #[test]
+    fn new_groups_keep_legacy_models_and_separate_new_versions() {
+        let groups = default_auto_switch_groups();
+        assert!(groups.iter().any(|group| group.id == "g3_pro"));
+        let argon = groups.iter().find(|group| group.id == "g4_argon").unwrap();
+        assert!(argon.models.contains(&"gemini-4-argon-high".into()));
+        assert_eq!(
+            normalize_model_for_group_match("gemini-4-argon-high"),
+            "gemini-4-argon"
+        );
+        assert_ne!(
+            normalize_model_for_group_match("claude-sonnet-4-6"),
+            normalize_model_for_group_match("claude-sonnet-5-5-high")
+        );
+        assert_ne!(
+            normalize_model_for_group_match("gemini-3-flash"),
+            normalize_model_for_group_match("gemini-3.8-flash-high")
+        );
+    }
 }

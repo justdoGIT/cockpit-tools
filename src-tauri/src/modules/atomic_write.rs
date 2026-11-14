@@ -22,6 +22,14 @@ fn path_write_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
 }
 
 fn format_io_error(action: &str, path: &Path, err: &std::io::Error) -> String {
+    if let Some(error) = crate::modules::windows_operation::format_permission_io_error(
+        "write_file",
+        action,
+        path.to_string_lossy().as_ref(),
+        err,
+    ) {
+        return error;
+    }
     format!("{}失败: path={}, error={}", action, path.display(), err)
 }
 
@@ -83,6 +91,18 @@ pub fn quarantine_file(path: &Path, reason: &str) -> Result<Option<PathBuf>, Str
         safe_reason,
         unique_timestamp_nanos()
     ));
+    let prefix = format!("{}.{}.", file_name, safe_reason);
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            let Some(name) = candidate.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if name.starts_with(&prefix) && candidate != quarantine_path {
+                let _ = fs::remove_file(candidate);
+            }
+        }
+    }
     fs::rename(path, &quarantine_path).map_err(|e| format_io_error("隔离损坏文件", path, &e))?;
     Ok(Some(quarantine_path))
 }
@@ -121,11 +141,38 @@ fn write_synced_temp_file(temp_path: &Path, content: &str) -> Result<(), String>
     write_synced_temp_file_bytes(temp_path, content.as_bytes())
 }
 
+fn write_secret_temp_file(temp_path: &Path, content: &str) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(temp_path)
+        .map_err(|e| format_io_error("创建私有临时文件", temp_path, &e))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format_io_error("写入私有临时文件", temp_path, &e))?;
+    file.sync_all()
+        .map_err(|e| format_io_error("同步私有临时文件", temp_path, &e))?;
+    Ok(())
+}
+
 fn write_string_atomic_internal(
     path: &Path,
     content: &str,
     create_backup: bool,
 ) -> Result<(), String> {
+    write_string_atomic_with_replace_filter(path, content, create_backup, |_| false).map(|_| ())
+}
+
+fn write_string_atomic_with_replace_filter(
+    path: &Path,
+    content: &str,
+    create_backup: bool,
+    defer_replace: impl FnOnce(&std::io::Error) -> bool,
+) -> Result<bool, String> {
     let parent = path.parent().ok_or("无法定位目标目录")?;
     fs::create_dir_all(parent).map_err(|e| format_io_error("创建目录", parent, &e))?;
 
@@ -154,9 +201,51 @@ fn write_string_atomic_internal(
     }
     if let Err(err) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
+        if defer_replace(&err) {
+            crate::modules::logger::log_warn(&format!(
+                "已保留暂无法替换的配置文件: path={}, error={}", path.display(), err
+            ));
+            return Ok(false);
+        }
         return Err(format_io_error("替换文件", path, &err));
     }
 
+    Ok(true)
+}
+
+fn remove_secret_backup(path: &Path) -> Result<(), String> {
+    let parent = path.parent().ok_or("无法定位目标目录")?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("无法解析目标文件名: {}", path.display()))?;
+    let mut backup_name = file_name.to_os_string();
+    backup_name.push(".bak");
+    let backup_path = parent.join(backup_name);
+    match fs::remove_file(&backup_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format_io_error("删除凭据备份", &backup_path, &error)),
+    }
+    Ok(())
+}
+
+fn write_secret_string_atomic_internal(path: &Path, content: &str) -> Result<(), String> {
+    remove_secret_backup(path)?;
+    write_private_string_atomic_internal(path, content)
+}
+
+fn write_private_string_atomic_internal(path: &Path, content: &str) -> Result<(), String> {
+    let parent = path.parent().ok_or("无法定位目标目录")?;
+    fs::create_dir_all(parent).map_err(|e| format_io_error("创建目录", parent, &e))?;
+    let temp_path = build_temp_file_path(parent, path, "secret-atomic");
+    if let Err(err) = write_secret_temp_file(&temp_path, content) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format_io_error("替换私有文件", path, &err));
+    }
     Ok(())
 }
 
@@ -166,9 +255,89 @@ pub fn write_string_atomic(path: &Path, content: &str) -> Result<(), String> {
     write_string_atomic_internal(path, content, true)
 }
 
+/// Write compatibility state without touching its existing backup if replacement is deferred.
+pub(crate) fn write_string_atomic_defer_windows_replace_denial(
+    path: &Path,
+    content: &str,
+) -> Result<bool, String> {
+    let lock = path_write_lock(path)?;
+    let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;
+    write_string_atomic_with_replace_filter(path, content, false, |error| {
+        cfg!(target_os = "windows") && is_windows_replace_denial(error)
+    })
+}
+
+fn is_windows_replace_denial(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// Read, merge and replace under the same path lock used by ordinary writers.
+pub(crate) fn update_string_atomic<F>(path: &Path, build_content: F) -> Result<(), String>
+where
+    F: FnOnce(Option<&str>) -> Result<String, String>,
+{
+    let lock = path_write_lock(path)?;
+    let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;
+    let current = match fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format_io_error("读取待更新文件", path, &error)),
+    };
+    let content = build_content(current.as_deref())?;
+    if current.as_deref() == Some(content.as_str()) {
+        return Ok(());
+    }
+    write_string_atomic_internal(path, &content, true)
+}
+
+/// Atomically replace credential material without creating a plaintext .bak file.
+pub fn write_secret_string_atomic(path: &Path, content: &str) -> Result<(), String> {
+    let lock = path_write_lock(path)?;
+    let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;
+    write_secret_string_atomic_internal(path, content)
+}
+
+pub fn write_secret_string_atomic_if_changed(path: &Path, content: &str) -> Result<bool, String> {
+    let lock = path_write_lock(path)?;
+    let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;
+    remove_secret_backup(path)?;
+    match fs::read_to_string(path) {
+        Ok(existing) if existing == content => return Ok(false),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format_io_error("读取私有文件", path, &error)),
+    }
+    write_secret_string_atomic_internal(path, content)?;
+    Ok(true)
+}
+
 pub fn write_string_atomic_if_hash_matches<F>(
     path: &Path,
     expected_hash: [u8; 32],
+    build_content: F,
+) -> Result<bool, String>
+where
+    F: FnOnce() -> Result<String, String>,
+{
+    write_string_atomic_if_hash_matches_internal(path, expected_hash, true, build_content)
+}
+
+/// Restore an already validated snapshot without replacing the recovery backup
+/// with the damaged source, even if writing the replacement fails.
+pub(crate) fn restore_string_atomic_if_hash_matches(
+    path: &Path,
+    expected_hash: [u8; 32],
+    content: &str,
+) -> Result<bool, String> {
+    write_string_atomic_if_hash_matches_internal(path, expected_hash, false, || {
+        Ok(content.to_owned())
+    })
+}
+
+fn write_string_atomic_if_hash_matches_internal<F>(
+    path: &Path,
+    expected_hash: [u8; 32],
+    create_backup: bool,
     build_content: F,
 ) -> Result<bool, String>
 where
@@ -186,7 +355,62 @@ where
         return Ok(false);
     }
     let content = build_content()?;
-    write_string_atomic_internal(path, &content, true)?;
+    write_string_atomic_internal(path, &content, create_backup)?;
+    Ok(true)
+}
+
+/// Compare exact bytes under the shared path lock; absence is a real expected state.
+/// Used by recoverable multi-file transactions so rollback cannot replace newer edits.
+pub(crate) fn replace_secret_string_if_matches(
+    path: &Path,
+    expected: Option<&str>,
+    replacement: Option<&str>,
+) -> Result<bool, String> {
+    replace_string_if_matches_internal(path, expected, replacement, write_secret_string_atomic_internal)
+}
+
+/// Replace private settings without touching other tools' recovery backups.
+pub(crate) fn replace_private_string_if_matches(
+    path: &Path,
+    expected: Option<&str>,
+    replacement: Option<&str>,
+) -> Result<bool, String> {
+    replace_string_if_matches_internal(path, expected, replacement, write_private_string_atomic_internal)
+}
+
+/// Conditional ordinary-file replacement, including absent files, without
+/// creating, replacing or removing the application's own recovery backup.
+pub(crate) fn replace_string_if_matches(
+    path: &Path,
+    expected: Option<&str>,
+    replacement: Option<&str>,
+) -> Result<bool, String> {
+    replace_string_if_matches_internal(path, expected, replacement,
+        |path, content| write_string_atomic_internal(path, content, false))
+}
+
+fn replace_string_if_matches_internal(
+    path: &Path,
+    expected: Option<&str>,
+    replacement: Option<&str>,
+    write: impl FnOnce(&Path, &str) -> Result<(), String>,
+) -> Result<bool, String> {
+    let lock = path_write_lock(path)?;
+    let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;
+    let current = match fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format_io_error("读取事务文件", path, &error)),
+    };
+    if current.as_deref() != expected { return Ok(false); }
+    match replacement {
+        Some(content) => write(path, content)?,
+        None => match fs::remove_file(path) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(format_io_error("回滚事务文件", path, &error)),
+        },
+    }
     Ok(true)
 }
 
@@ -212,6 +436,29 @@ pub fn write_bytes_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
 pub fn remove_file_locked(path: &Path) -> Result<bool, String> {
     let lock = path_write_lock(path)?;
     let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format_io_error("删除文件", path, &error)),
+    }
+}
+
+/// 删除文件前再次核对内容哈希，避免清理旧标记时误删外部进程刚写入的内容。
+///
+/// 这不是跨进程的真正 compare-and-delete 原语，但在删除前的最后一次读取
+/// 能保留最常见的“标记已被官方客户端替换”场景，并与本进程路径锁一致。
+pub fn remove_file_if_hash_matches(path: &Path, expected_hash: [u8; 32]) -> Result<bool, String> {
+    let lock = path_write_lock(path)?;
+    let _guard = lock.lock().map_err(|_| "文件写入锁已损坏".to_string())?;
+    let current = match fs::read(path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format_io_error("读取待删除文件", path, &error)),
+    };
+    let current_hash: [u8; 32] = Sha256::digest(&current).into();
+    if current_hash != expected_hash {
+        return Ok(false);
+    }
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -265,8 +512,9 @@ pub fn parse_json_with_auto_restore<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_backup_path, quarantine_file, remove_file_locked, restore_from_backup,
-        write_string_atomic, write_string_atomic_if_hash_matches,
+        build_backup_path, quarantine_file, remove_file_if_hash_matches, remove_file_locked,
+        replace_string_if_matches, restore_from_backup, write_secret_string_atomic, write_string_atomic,
+        write_string_atomic_if_hash_matches,
     };
     use sha2::{Digest, Sha256};
     use std::fs;
@@ -281,6 +529,53 @@ mod tests {
             std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), unique));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn deferred_atomic_replace_leaves_the_previous_backup_and_cleans_the_temporary_file() {
+        let dir = make_temp_dir("atomic_deferred_replace");
+        let target = dir.join("state.json");
+        let backup = dir.join("state.json.bak");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("existing"), "keep").unwrap();
+        fs::write(&backup, "previous backup").unwrap();
+        assert!(super::write_string_atomic_with_replace_filter(&target, "{}", false, |_| false).is_err());
+        for code in [5, 32, 33] {
+            assert!(super::is_windows_replace_denial(&std::io::Error::from_raw_os_error(code)));
+        }
+        for code in [3, 80, 112] {
+            assert!(!super::is_windows_replace_denial(&std::io::Error::from_raw_os_error(code)));
+        }
+        assert!(!super::write_string_atomic_with_replace_filter(&target, "{}", false, |_| {
+            super::is_windows_replace_denial(&std::io::Error::from_raw_os_error(5))
+        }).unwrap());
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "previous backup");
+        assert_eq!(fs::read_to_string(target.join("existing")).unwrap(), "keep");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn secret_atomic_write_is_private_and_never_keeps_plaintext_backup() {
+        let dir = make_temp_dir("atomic_write_secret");
+        let path = dir.join("oauth.json");
+        write_string_atomic(&path, "{\"token\":\"old\"}").expect("write old value");
+        write_string_atomic(&path, "{\"token\":\"previous\"}")
+            .expect("create legacy plaintext backup");
+        assert!(dir.join("oauth.json.bak").exists());
+        write_secret_string_atomic(&path, "{\"token\":\"new\"}")
+            .expect("replace secret value without backup");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"token\":\"new\"}");
+        assert!(!dir.join("oauth.json.bak").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -326,11 +621,56 @@ mod tests {
             r#"{"version":2}"#
         );
 
+        let current_hash = Sha256::digest(r#"{"version":2}"#.as_bytes()).into();
+        assert!(write_string_atomic_if_hash_matches(&path, current_hash, || {
+            Ok(r#"{"version":3}"#.to_string())
+        })
+        .expect("write matching snapshot"));
+        assert_eq!(
+            fs::read_to_string(build_backup_path(&path).unwrap()).unwrap(),
+            r#"{"version":2}"#
+        );
+
         remove_file_locked(&path).expect("delete account");
         assert!(!write_string_atomic_if_hash_matches(&path, expected, || {
             Ok(r#"{"version":3}"#.to_string())
         })
         .expect("reject deleted write"));
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conditional_ordinary_replace_keeps_native_backup_and_newer_edits() {
+        let dir = make_temp_dir("atomic_native_config_cas");
+        let path = dir.join("config.json");
+        let backup = build_backup_path(&path).unwrap();
+        fs::write(&backup, "native backup").unwrap();
+        assert!(replace_string_if_matches(&path, None, Some("initial")).unwrap());
+        assert!(!replace_string_if_matches(&path, None, Some("unexpected")).unwrap());
+        assert!(replace_string_if_matches(&path, Some("initial"), Some("updated")).unwrap());
+        assert!(!replace_string_if_matches(&path, Some("initial"), None).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "updated");
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "native backup");
+        assert!(replace_string_if_matches(&path, Some("updated"), None).unwrap());
+        assert!(!path.exists());
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "native backup");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conditional_remove_keeps_replaced_marker() {
+        let dir = make_temp_dir("atomic_remove_cas");
+        let path = dir.join("logout.marker");
+        fs::write(&path, b"old").expect("write marker");
+        let expected: [u8; 32] = Sha256::digest(b"old").into();
+        fs::write(&path, b"new").expect("replace marker");
+        assert!(!remove_file_if_hash_matches(&path, expected).expect("conditional remove"));
+        assert_eq!(fs::read(&path).expect("read marker"), b"new");
+        assert!(
+            remove_file_if_hash_matches(&path, Sha256::digest(b"new").into())
+                .expect("remove current marker")
+        );
         assert!(!path.exists());
         let _ = fs::remove_dir_all(dir);
     }

@@ -164,7 +164,7 @@
 .codex-batch-import-progress-fill {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #2563eb, #0ea5e9);
+  background: linear-gradient(90deg, var(--primary), color-mix(in srgb, var(--primary) 70%, white));
   transition: width 180ms ease;
 }
 
@@ -266,6 +266,7 @@
 }
 
 .codex-batch-import-check-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -277,8 +278,13 @@
 
 .codex-batch-import-check-toggle input {
   position: absolute;
+  top: 50%;
+  left: 0;
   width: 1px;
   height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
   opacity: 0;
   pointer-events: none;
 }
@@ -306,7 +312,7 @@
 }
 
 .codex-batch-import-check-toggle input:checked + .codex-batch-import-check-switch {
-  background: #2563eb;
+  background: var(--primary);
 }
 
 .codex-batch-import-check-toggle input:checked + .codex-batch-import-check-switch::after {
@@ -328,6 +334,7 @@
 }
 
 .codex-import-api-service-toggle {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -358,9 +365,15 @@
 }
 
 .codex-import-api-service-toggle input {
+  /* Keep the focus target inside the visible row in scrollable dialogs. */
   position: absolute;
+  top: 50%;
+  right: 12px;
   width: 1px;
   height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
   opacity: 0;
   pointer-events: none;
 }
@@ -707,26 +720,17 @@
 }
 
 .global-promo-center {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 1;
-  width: clamp(360px, calc(100% - 440px), 920px);
-  pointer-events: none;
+  align-self: center;
+  flex: 0 0 auto;
+  width: fit-content;
+  max-width: 70%;
+  margin-block-start: 6px;
   -webkit-app-region: no-drag;
 }
 
-.global-promo-center-placeholder {
-  height: 32px;
-  visibility: hidden;
-}
-
 .global-promo-slot {
-  pointer-events: auto;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  width: 100%;
   gap: 8px;
   padding: 5px 10px;
   border-radius: 999px;
@@ -738,30 +742,26 @@
   backdrop-filter: blur(8px);
 }
 
-.global-promo-main {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .global-ad-slot-badge {
-  width: fit-content;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 25%;
   height: 18px;
   padding: 0 7px;
   border-radius: 999px;
   background: rgba(37, 99, 235, 0.12);
   color: var(--primary);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
 }
 
 .global-promo-text {
+  min-width: 0;
   margin: 0;
   color: var(--text-primary);
   font-size: 12px;
@@ -774,7 +774,8 @@
 
 .global-ad-slot-action {
   flex: 0 0 auto;
-  width: fit-content;
+  min-width: 0;
+  max-width: 25%;
   height: 22px;
   padding: 0 8px;
   border-radius: 999px;
@@ -783,6 +784,9 @@
   color: var(--primary);
   font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease;
 }
@@ -790,12 +794,6 @@
 .global-ad-slot-action:hover {
   background: rgba(37, 99, 235, 0.14);
   border-color: rgba(37, 99, 235, 0.4);
-}
-
-@media (max-width: 1180px) {
-  .global-promo-center {
-    width: clamp(320px, calc(100% - 340px), 760px);
-  }
 }
 
 @media (max-width: 900px) {
@@ -885,27 +883,6 @@
 @media (max-width: 640px) {
   .app-path-missing-modal {
     max-width: 92vw;
-  }
-
-  .global-promo-center {
-    display: none;
-  }
-
-  .global-promo-slot {
-    padding: 4px 8px;
-    gap: 6px;
-  }
-
-  .global-ad-slot-badge {
-    display: none;
-  }
-
-  .global-promo-text {
-    display: none;
-  }
-
-  .global-ad-slot-action {
-    display: none;
   }
 
   .update-quick-action {

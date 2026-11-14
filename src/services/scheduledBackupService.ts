@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DataTransferSelection, exportDataTransferJson } from './dataTransferService';
+import { type DataTransferSelection, exportDataTransferBundle } from './dataTransferService';
 import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
 import { getWebdavSyncSettings, uploadAutoBackupToWebdav } from './webdavSyncService';
 
@@ -7,8 +7,11 @@ export type AutoBackupMode = 'full' | 'accounts' | 'config';
 export type AutoBackupTrigger = 'auto' | 'manual';
 
 export const AUTO_BACKUP_STATE_CHANGED_EVENT = 'auto-backup-state-changed';
+export const BACKUP_DIRECTORY_MIGRATION_PROGRESS_EVENT = 'backup-directory-migration-progress';
 
 const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const BACKUP_LOAD_TIMEOUT_MS = 15_000;
+const pendingBackupReads = new Map<string, Promise<unknown>>();
 
 export interface AutoBackupSettings {
   enabled: boolean;
@@ -17,6 +20,73 @@ export interface AutoBackupSettings {
   retention_days: number;
   last_backup_at: string | null;
   directory_path: string;
+}
+
+export interface BackupUsageEntry {
+  source: string;
+  file_count: number;
+  size_bytes: number;
+  path: string;
+}
+
+export interface BackupUsageSummary {
+  total_file_count: number;
+  total_size_bytes: number;
+  entries: BackupUsageEntry[];
+}
+
+export interface BackupDirectoryChangeResult {
+  old_directory: string;
+  new_directory: string;
+  migrated: boolean;
+  migrated_file_count: number;
+  migrated_size_bytes: number;
+  removed_file_count: number;
+  removed_size_bytes: number;
+  remaining_paths: string[];
+}
+
+export interface BackupMigrationSourceSummary {
+  source: string;
+  file_count: number;
+  size_bytes: number;
+}
+
+export interface BackupDirectoryMigrationPreview {
+  old_directory: string;
+  new_directory: string;
+  file_count: number;
+  size_bytes: number;
+  sources: BackupMigrationSourceSummary[];
+  source_error: string | null;
+}
+
+export type BackupDirectoryMigrationPhase =
+  | 'scanning'
+  | 'copying'
+  | 'verifying'
+  | 'switching'
+  | 'cleaning'
+  | 'completed'
+  | 'cancelled';
+
+export interface BackupDirectoryMigrationProgress {
+  migration_id: string;
+  phase: BackupDirectoryMigrationPhase;
+  total_file_count: number;
+  processed_file_count: number;
+  total_size_bytes: number;
+  processed_size_bytes: number;
+  current_source: string | null;
+  current_path: string | null;
+  cancellable: boolean;
+}
+
+export interface BackupCleanupResult {
+  deleted_file_count: number;
+  deleted_directory_count: number;
+  deleted_size_bytes: number;
+  sources: string[];
 }
 
 export interface AutoBackupFileEntry {
@@ -46,6 +116,7 @@ export interface ManagedBackupResult {
 }
 
 function dispatchAutoBackupStateChanged() {
+  pendingBackupReads.clear();
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new Event(AUTO_BACKUP_STATE_CHANGED_EVENT));
 }
@@ -102,9 +173,10 @@ function buildManagedBackupFileName(
   selection: DataTransferSelection,
   trigger: AutoBackupTrigger,
   date: Date,
+  savedMfaPending: boolean,
 ): string {
   const mode = selectionToAutoBackupMode(selection);
-  return `cockpit_${trigger}_backup_${mode}_${formatTimestampForFileName(date)}.json`;
+  return `cockpit_${trigger}_backup_${mode}_${formatTimestampForFileName(date)}${savedMfaPending ? '_mfa-pending' : ''}.json`;
 }
 
 function normalizeDate(value: string | null | undefined): Date | null {
@@ -127,6 +199,42 @@ async function cleanupAutoBackupFilesInternal(retentionDays: number): Promise<st
 
 export async function getAutoBackupSettings(): Promise<AutoBackupSettings> {
   return invoke<AutoBackupSettings>('get_auto_backup_settings');
+}
+
+export async function getBackupUsage(): Promise<BackupUsageSummary> {
+  return invoke<BackupUsageSummary>('get_backup_usage');
+}
+
+export async function previewBackupDirectoryChange(
+  directory: string,
+): Promise<BackupDirectoryMigrationPreview> {
+  return invoke<BackupDirectoryMigrationPreview>('preview_backup_directory_change', {
+    directory,
+  });
+}
+
+export async function changeBackupDirectory(
+  directory: string,
+  migrateExisting: boolean,
+  migrationId: string,
+): Promise<BackupDirectoryChangeResult> {
+  const result = await invoke<BackupDirectoryChangeResult>('change_backup_directory', {
+    directory,
+    migrateExisting,
+    migrationId,
+  });
+  dispatchAutoBackupStateChanged();
+  return result;
+}
+
+export async function cancelBackupDirectoryChange(migrationId: string): Promise<boolean> {
+  return invoke<boolean>('cancel_backup_directory_change', { migrationId });
+}
+
+export async function cleanupBehaviorBackups(): Promise<BackupCleanupResult> {
+  const result = await invoke<BackupCleanupResult>('cleanup_behavior_backups');
+  dispatchAutoBackupStateChanged();
+  return result;
 }
 
 export async function saveAutoBackupSettings(params: {
@@ -152,6 +260,36 @@ export async function updateAutoBackupLastRun(lastBackupAt: string | null): Prom
 
 export async function listAutoBackupFiles(): Promise<AutoBackupFileEntry[]> {
   return invoke<AutoBackupFileEntry[]>('list_auto_backup_files');
+}
+
+// A failed file list or usage scan must not discard successfully loaded settings.
+export async function getAutoBackupState() {
+  const [settings, files, usage] = await Promise.allSettled([
+    boundedBackupRead('settings', getAutoBackupSettings),
+    boundedBackupRead('files', listAutoBackupFiles),
+    boundedBackupRead('usage', getBackupUsage),
+  ]);
+  return { settings, files, usage };
+}
+
+function boundedBackupRead<T>(key: string, read: () => Promise<T>): Promise<T> {
+  let pending = pendingBackupReads.get(key) as Promise<T> | undefined;
+  if (!pending) {
+    pending = read();
+    pendingBackupReads.set(key, pending);
+    const release = () => {
+      if (pendingBackupReads.get(key) === pending) pendingBackupReads.delete(key);
+    };
+    void pending.then(release, release);
+  }
+  // Keep the underlying operation single-flight even after the UI times out.
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('backup_load_timeout')), BACKUP_LOAD_TIMEOUT_MS);
+    pending.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 export async function readAutoBackupFile(fileName: string): Promise<string> {
@@ -251,11 +389,12 @@ export async function createManagedBackup(params: {
   }
 
   const executedAt = new Date();
-  const content = await exportDataTransferJson(params.selection);
-  const fileName = buildManagedBackupFileName(params.selection, params.trigger, executedAt);
+  const bundle = await exportDataTransferBundle(params.selection);
+  const savedMfaPending = params.selection.includeConfig && bundle.config?.verification_records === undefined;
+  const fileName = buildManagedBackupFileName(params.selection, params.trigger, executedAt, savedMfaPending);
   const path = await invoke<string>('write_auto_backup_file', {
     fileName,
-    content,
+    content: JSON.stringify(bundle, null, 2),
   });
   const deletedFiles = await cleanupAutoBackupFilesInternal(params.retentionDays);
 

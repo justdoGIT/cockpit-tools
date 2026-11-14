@@ -10,6 +10,7 @@ import {
   Search,
   X,
 } from 'lucide-react';
+import { SingleSelectDropdown, type SingleSelectOption } from '../SingleSelectDropdown';
 import type {
   CodebuddySessionRecord,
   CodebuddySessionPlatform,
@@ -51,7 +52,13 @@ interface Props {
 }
 
 export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage || i18n.language;
+  const relativeTime = useMemo(
+    () => new Intl.RelativeTimeFormat(language, { style: 'short' }),
+    [language],
+  );
+  const unknownTime = t('codebuddy.sessionManager.unknownTime');
 
   // userId → displayName map
   const userIdMap = useMemo(() => {
@@ -79,6 +86,24 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
   // UI state
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const statusOptions = useMemo<SingleSelectOption[]>(
+    () => [
+      {
+        value: '',
+        label: t('codebuddy.sessionManager.statusAll'),
+      },
+      {
+        value: 'Completed',
+        label: t('codebuddy.sessionManager.statusCompleted'),
+      },
+      {
+        value: 'InProgress',
+        label: t('codebuddy.sessionManager.statusInProgress'),
+      },
+    ],
+    [t],
+  );
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<number | null>(null);
@@ -151,45 +176,47 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
   }, []);
 
   return (
-    <div className="codex-session-manager">
+    <div className="codex-session-manager codebuddy-session-manager">
       {/* Search & Filter row */}
       <div className="codex-session-manager__header">
-        <div className="codex-session-manager__filters">
-          <div className="codex-session-manager__search-wrap">
-            <Search size={13} className="codex-session-manager__search-icon" />
-            <input
-              type="text"
-              className="codex-session-manager__search-input"
-              placeholder={t('codebuddy.sessionManager.searchPlaceholder', '搜索标题或工作目录...')}
-              value={keywordInput}
-              onChange={(e) => handleKeywordChange(e.target.value)}
-              disabled={loading}
-            />
-            {keywordInput && (
-              <button
-                className="codex-session-manager__search-clear"
-                onClick={handleClearKeyword}
-              >
-                <X size={12} />
-              </button>
-            )}
-          </div>
-
-          <select
-            className="codex-session-manager__status-select"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            disabled={loading}
+        <div className="codex-session-manager__search">
+          <label className="codex-session-search-field">
+            <div className="codex-session-search-field__control">
+              <Search size={14} />
+              <input
+                type="text"
+                value={keywordInput}
+                onChange={(e) => handleKeywordChange(e.target.value)}
+                placeholder={t('codebuddy.sessionManager.searchPlaceholder')}
+                disabled={loading}
+              />
+            </div>
+          </label>
+          <button
+            className="btn btn-secondary codex-session-manager__search-button"
+            type="button"
+            onClick={handleClearKeyword}
+            disabled={loading || !keywordInput}
           >
-            <option value="">{t('codebuddy.sessionManager.statusAll', '全部状态')}</option>
-            <option value="Completed">{t('codebuddy.sessionManager.statusCompleted', '已完成')}</option>
-            <option value="InProgress">{t('codebuddy.sessionManager.statusInProgress', '进行中')}</option>
-          </select>
+            <X size={14} />
+            {t('codex.sessionManager.search.clear', '清空')}
+          </button>
+          <SingleSelectDropdown
+            className="codex-session-manager__kind-filter"
+            value={statusFilter}
+            options={statusOptions}
+            onChange={setStatusFilter}
+            disabled={loading}
+            ariaLabel={t('codebuddy.sessionManager.statusFilter')}
+            menuWidth={160}
+            menuMaxHeight={220}
+          />
         </div>
 
         <div className="codex-session-manager__actions">
           <button
-            className="codex-session-manager__action-button btn btn-ghost"
+            className="codex-session-manager__action-button btn btn-secondary"
+            type="button"
             onClick={loadSessions}
             disabled={loading}
             title={t('common.refresh', '刷新')}
@@ -209,8 +236,8 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
         {!loading && sessions.length === 0 && (
           <div className="codex-session-manager__empty">
             {keyword || statusFilter
-              ? t('codebuddy.sessionManager.noMatching', '没有匹配的会话')
-              : t('codebuddy.sessionManager.noSessions', '暂无会话记录')}
+              ? t('codebuddy.sessionManager.noMatching')
+              : t('codebuddy.sessionManager.noSessions')}
           </div>
         )}
         {groupedSessions.map((group) => {
@@ -221,17 +248,17 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
               {/* Group header */}
               <div className="codex-session-folder__row">
                 <div className="codex-session-folder__left">
-                  <button className="codex-session-folder__expand" onClick={() => toggleGroupExpanded(group.cwd)}>
+                  <button type="button" className="codex-session-folder__expand" onClick={() => toggleGroupExpanded(group.cwd)}>
                     {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                   </button>
                   <Folder size={14} className="codex-session-folder__icon" />
-                  <button className="codex-session-folder__label" onClick={() => toggleGroupExpanded(group.cwd)}>
+                  <button type="button" className="codex-session-folder__label" onClick={() => toggleGroupExpanded(group.cwd)}>
                     {resolveGroupLabel(group.cwd)}
                   </button>
                   <span className="codex-session-group__count">{group.sessions.length}</span>
                 </div>
                 <span className="codex-session-folder__time">
-                  {formatRelativeTime(group.latestUpdatedAt, t)}
+                  {formatRelativeTime(group.latestUpdatedAt, relativeTime, unknownTime)}
                 </span>
               </div>
 
@@ -243,7 +270,7 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
                       <div className="codex-session-row__left">
                         <div className="codex-session-row__content">
                           <span className="codex-session-row__title">
-                            {session.title || t('codebuddy.sessionManager.untitled', '(untitled)')}
+                            {session.title || t('codebuddy.sessionManager.untitled')}
                           </span>
                           {session.locations.length > 0 && (
                             <span className="codex-session-row__meta">
@@ -255,23 +282,24 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
                             </span>
                           )}
                           <span className="codex-session-row__meta codex-session-row__session-id" title={session.conversationId}>
-                            {t('codebuddy.sessionManager.labels.session', '会话')}: {formatConversationId(session.conversationId)}
+                            {t('codebuddy.sessionManager.labels.session')}: {formatConversationId(session.conversationId)}
                           </span>
                           {session.userId && (
                             <span className="codex-session-row__meta codex-session-row__session-id codex-session-row__user" title={session.userId}>
-                              {t('codebuddy.sessionManager.labels.user', '用户')}: {resolveUserName(session.userId)}
+                              {t('codebuddy.sessionManager.labels.user')}: {resolveUserName(session.userId)}
                             </span>
                           )}
                           <span className="codex-session-row__meta codex-session-row__cwd" title={session.cwd}>
-                            {t('codebuddy.sessionManager.labels.dir', '目录')}: {formatCwdDisplay(session.cwd)}
+                            {t('codebuddy.sessionManager.labels.dir')}: {formatCwdDisplay(session.cwd)}
                           </span>
                         </div>
                       </div>
                       <div className="codex-session-row__right">
                         <span className="codex-session-row__status-badge">
-                          {session.status}
+                          {statusOptions.find((option) => option.value && option.value === session.status)?.label ?? session.status}
                         </span>
                         <button
+                          type="button"
                           className={`codex-session-row__copy-button${copiedId === session.conversationId ? ' is-copied' : ''}`}
                           onClick={() => handleCopyId(session.conversationId)}
                           title={session.conversationId}
@@ -279,7 +307,7 @@ export function CodebuddySessionManager({ platform, accounts = [] }: Props) {
                           {copiedId === session.conversationId ? <Check size={12} /> : <Copy size={12} />}
                         </button>
                         <span className="codex-session-row__time">
-                          {formatRelativeTime(session.updatedAt, t)}
+                          {formatRelativeTime(session.updatedAt, relativeTime, unknownTime)}
                         </span>
                       </div>
                     </div>

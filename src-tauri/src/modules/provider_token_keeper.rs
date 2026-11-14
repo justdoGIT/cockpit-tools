@@ -11,8 +11,8 @@ use tokio::sync::Notify;
 
 use crate::modules::{
     codebuddy_account, codebuddy_cn_account, codex_account, config, cursor_account,
-    github_copilot_account, grok_account, kiro_account, kiro_instance, logger, process,
-    trae_account, workbuddy_account,
+    github_copilot_account, grok_account, kiro_account, kiro_instance, logger,
+    minimax_code_account, process, trae_account, workbuddy_account,
 };
 
 const TOKEN_KEEPER_TICK_SECONDS: u64 = 60;
@@ -23,6 +23,9 @@ const TOKEN_KEEPER_ACTIVE_SCAN_SECONDS: i64 = 60;
 const TOKEN_REFRESH_LEAD_SECONDS: i64 = 15 * 60;
 const TOKEN_REFRESH_LEAD_MILLISECONDS: i64 = TOKEN_REFRESH_LEAD_SECONDS * 1000;
 const REFRESH_FAILURE_BACKOFF_SECONDS: i64 = 15 * 60;
+/// Trae session-expired / mutual-refresh failures need a longer cool-down so we do not
+/// keep hammering ExchangeToken with a rotated-away refresh token.
+const TRAE_SESSION_EXPIRED_BACKOFF_SECONDS: i64 = 60 * 60;
 const TRAE_STRICT_CHECK_INTERVAL_SECONDS: i64 = 10 * 60;
 const TOKEN_KEEPER_LIST_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -127,6 +130,8 @@ async fn run_refresh_cycle(app_handle: &AppHandle) {
     refreshed_any |=
         refresh_platform_if_due("codebuddy_cn", refresh_due_codebuddy_cn_accounts).await;
     refreshed_any |= refresh_platform_if_due("workbuddy", refresh_due_workbuddy_accounts).await;
+    refreshed_any |=
+        refresh_platform_if_due("minimaxcode", refresh_due_minimax_code_accounts).await;
     refreshed_any |= refresh_platform_if_due("trae", refresh_due_trae_accounts).await;
 
     if refreshed_any {
@@ -172,6 +177,11 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = bool>,
 {
+    // 平台在「平台布局」中被禁用时不参与任何 token 保活活动
+    if !crate::modules::tray_layout::is_platform_enabled(platform) {
+        return false;
+    }
+
     if !allow_platform_scan(platform) {
         return false;
     }
@@ -225,8 +235,25 @@ fn clear_attempt_backoff(key: &str) {
 }
 
 fn mark_attempt_failure(key: &str) {
+    mark_attempt_failure_with_backoff(key, REFRESH_FAILURE_BACKOFF_SECONDS);
+}
+
+fn mark_attempt_failure_with_backoff(key: &str, backoff_seconds: i64) {
     if let Ok(mut state) = NEXT_ALLOWED_ATTEMPT_AT.lock() {
-        state.insert(key.to_string(), now_ts() + REFRESH_FAILURE_BACKOFF_SECONDS);
+        state.insert(key.to_string(), now_ts() + backoff_seconds);
+    }
+}
+
+fn trae_refresh_failure_backoff_seconds(err: &str) -> i64 {
+    if err.contains("会话已过期")
+        || err.contains("未认证")
+        || err.contains("设备密钥缺失")
+        || err.contains("互刷")
+        || err.contains("ExchangeToken")
+    {
+        TRAE_SESSION_EXPIRED_BACKOFF_SECONDS
+    } else {
+        REFRESH_FAILURE_BACKOFF_SECONDS
     }
 }
 
@@ -251,7 +278,8 @@ fn mark_trae_strict_check_done(account_id: &str) {
 }
 
 async fn refresh_due_codex_accounts() -> bool {
-    let accounts = match list_accounts_blocking("codex", codex_account::list_accounts_checked).await {
+    let accounts = match list_accounts_blocking("codex", codex_account::list_accounts_checked).await
+    {
         Ok(accounts) => accounts,
         Err(err) => {
             logger::log_warn(&format!(
@@ -280,10 +308,10 @@ async fn refresh_due_codex_accounts() -> bool {
             continue;
         }
 
-        attempted_refreshes += 1;
         match codex_account::keepalive_managed_account(&account.id, "TokenKeeper 授权保活").await
         {
-            Ok(updated) => {
+            Ok(codex_account::CodexKeepaliveOutcome::Updated(updated)) => {
+                attempted_refreshes += 1;
                 clear_attempt_backoff(&key);
                 refreshed_any = true;
                 logger::log_info(&format!(
@@ -291,7 +319,19 @@ async fn refresh_due_codex_accounts() -> bool {
                     updated.id, updated.email
                 ));
             }
+            Ok(codex_account::CodexKeepaliveOutcome::Unchanged) => {
+                attempted_refreshes += 1;
+                clear_attempt_backoff(&key);
+            }
+            Ok(codex_account::CodexKeepaliveOutcome::DeferredToDefaultProfile) => {
+                clear_attempt_backoff(&key);
+                logger::log_info(&format!(
+                    "[TokenKeeper][Codex] 默认客户端持有同一刷新令牌，由官方客户端续期: account_id={}",
+                    account.id
+                ));
+            }
             Err(err) => {
+                attempted_refreshes += 1;
                 mark_attempt_failure(&key);
                 logger::log_warn(&format!(
                     "[TokenKeeper][Codex] Token 保活失败，进入退避: account_id={}, error={}",
@@ -305,16 +345,17 @@ async fn refresh_due_codex_accounts() -> bool {
 }
 
 async fn refresh_due_cursor_accounts() -> bool {
-    let accounts = match list_accounts_blocking("cursor", cursor_account::list_accounts_checked).await {
-        Ok(accounts) => accounts,
-        Err(err) => {
-            logger::log_warn(&format!(
-                "[TokenKeeper][Cursor] 读取账号列表失败，跳过本轮保活: {}",
-                err
-            ));
-            return false;
-        }
-    };
+    let accounts =
+        match list_accounts_blocking("cursor", cursor_account::list_accounts_checked).await {
+            Ok(accounts) => accounts,
+            Err(err) => {
+                logger::log_warn(&format!(
+                    "[TokenKeeper][Cursor] 读取账号列表失败，跳过本轮保活: {}",
+                    err
+                ));
+                return false;
+            }
+        };
 
     let current_id = cursor_account::resolve_current_account_id(&accounts);
     let mut refreshed_any = false;
@@ -398,6 +439,10 @@ async fn refresh_due_grok_accounts() -> bool {
             Ok(updated) => {
                 clear_attempt_backoff(&key);
                 refreshed_any = true;
+                // Grok 供应商账号（Codex 侧）用同一份 OAuth 令牌：刷新后写穿到运行中的 sidecar。
+                crate::modules::codex_local_access::sync_grok_upstream_auth_files_in_background(
+                    updated.id.clone(),
+                );
                 logger::log_info(&format!(
                     "[TokenKeeper][Grok] Token 保活成功: account_id={}, email={}",
                     updated.id, updated.email
@@ -416,7 +461,12 @@ async fn refresh_due_grok_accounts() -> bool {
 }
 
 async fn refresh_due_github_copilot_accounts() -> bool {
-    let accounts = match list_accounts_blocking("github_copilot", github_copilot_account::list_accounts_checked).await {
+    let accounts = match list_accounts_blocking(
+        "github_copilot",
+        github_copilot_account::list_accounts_checked,
+    )
+    .await
+    {
         Ok(accounts) => accounts,
         Err(err) => {
             logger::log_warn(&format!(
@@ -539,16 +589,17 @@ async fn refresh_due_kiro_accounts() -> bool {
 }
 
 async fn refresh_due_codebuddy_accounts() -> bool {
-    let accounts = match list_accounts_blocking("codebuddy", codebuddy_account::list_accounts_checked).await {
-        Ok(accounts) => accounts,
-        Err(err) => {
-            logger::log_warn(&format!(
-                "[TokenKeeper][CodeBuddy] 读取账号列表失败，跳过本轮保活: {}",
-                err
-            ));
-            return false;
-        }
-    };
+    let accounts =
+        match list_accounts_blocking("codebuddy", codebuddy_account::list_accounts_checked).await {
+            Ok(accounts) => accounts,
+            Err(err) => {
+                logger::log_warn(&format!(
+                    "[TokenKeeper][CodeBuddy] 读取账号列表失败，跳过本轮保活: {}",
+                    err
+                ));
+                return false;
+            }
+        };
 
     let current_id = codebuddy_account::resolve_current_account_id(&accounts);
     let mut refreshed_any = false;
@@ -600,16 +651,19 @@ async fn refresh_due_codebuddy_accounts() -> bool {
 }
 
 async fn refresh_due_codebuddy_cn_accounts() -> bool {
-    let accounts = match list_accounts_blocking("codebuddy_cn", codebuddy_cn_account::list_accounts_checked).await {
-        Ok(accounts) => accounts,
-        Err(err) => {
-            logger::log_warn(&format!(
-                "[TokenKeeper][CodeBuddyCN] 读取账号列表失败，跳过本轮保活: {}",
-                err
-            ));
-            return false;
-        }
-    };
+    let accounts =
+        match list_accounts_blocking("codebuddy_cn", codebuddy_cn_account::list_accounts_checked)
+            .await
+        {
+            Ok(accounts) => accounts,
+            Err(err) => {
+                logger::log_warn(&format!(
+                    "[TokenKeeper][CodeBuddyCN] 读取账号列表失败，跳过本轮保活: {}",
+                    err
+                ));
+                return false;
+            }
+        };
 
     let current_id = codebuddy_cn_account::resolve_current_account_id(&accounts);
     let mut refreshed_any = false;
@@ -662,16 +716,17 @@ async fn refresh_due_codebuddy_cn_accounts() -> bool {
 }
 
 async fn refresh_due_workbuddy_accounts() -> bool {
-    let accounts = match list_accounts_blocking("workbuddy", workbuddy_account::list_accounts_checked).await {
-        Ok(accounts) => accounts,
-        Err(err) => {
-            logger::log_warn(&format!(
-                "[TokenKeeper][WorkBuddy] 读取账号列表失败，跳过本轮保活: {}",
-                err
-            ));
-            return false;
-        }
-    };
+    let accounts =
+        match list_accounts_blocking("workbuddy", workbuddy_account::list_accounts_checked).await {
+            Ok(accounts) => accounts,
+            Err(err) => {
+                logger::log_warn(&format!(
+                    "[TokenKeeper][WorkBuddy] 读取账号列表失败，跳过本轮保活: {}",
+                    err
+                ));
+                return false;
+            }
+        };
 
     let current_id = workbuddy_account::resolve_current_account_id(&accounts);
     let mut refreshed_any = false;
@@ -696,8 +751,14 @@ async fn refresh_due_workbuddy_accounts() -> bool {
                 clear_attempt_backoff(&key);
                 refreshed_any = true;
                 if current_id.as_deref() == Some(updated.id.as_str()) {
-                    if let Err(err) = workbuddy_account::sync_account_to_default_client(&updated.id)
-                    {
+                    let account_id = updated.id.clone();
+                    let sync_result = tauri::async_runtime::spawn_blocking(move || {
+                        workbuddy_account::sync_account_to_default_client(&account_id)
+                    })
+                    .await
+                    .map_err(|error| format!("WorkBuddy 登录回写后台任务失败: {}", error))
+                    .and_then(|result| result);
+                    if let Err(err) = sync_result {
                         logger::log_warn(&format!(
                             "[TokenKeeper][WorkBuddy] 当前本地登录回写失败: account_id={}, error={}",
                             updated.id, err
@@ -713,6 +774,63 @@ async fn refresh_due_workbuddy_accounts() -> bool {
                 mark_attempt_failure(&key);
                 logger::log_warn(&format!(
                     "[TokenKeeper][WorkBuddy] Token 保活失败，进入退避: account_id={}, error={}",
+                    account.id, err
+                ));
+            }
+        }
+    }
+
+    refreshed_any
+}
+
+async fn refresh_due_minimax_code_accounts() -> bool {
+    let accounts = match list_accounts_blocking(
+        "minimaxcode",
+        minimax_code_account::list_accounts_checked,
+    )
+    .await
+    {
+        Ok(accounts) => accounts,
+        Err(err) => {
+            logger::log_warn(&format!(
+                "[TokenKeeper][MiniMax Code] 读取账号列表失败，跳过本轮保活: {}",
+                err
+            ));
+            return false;
+        }
+    };
+
+    let mut refreshed_any = false;
+    let mut attempted_refreshes = 0usize;
+
+    for account in accounts {
+        if reached_platform_refresh_limit(attempted_refreshes) {
+            break;
+        }
+        // MiniMax stores `expires_at` in epoch milliseconds (see `expiresAtMs`).
+        if !expires_at_milliseconds_due(account.expires_at) {
+            continue;
+        }
+
+        let key = format!("minimaxcode:{}", account.id);
+        if !allow_attempt(&key) {
+            continue;
+        }
+
+        attempted_refreshes += 1;
+        match minimax_code_account::refresh_account_token(&account.id).await {
+            Ok(updated) => {
+                clear_attempt_backoff(&key);
+                refreshed_any = true;
+                logger::log_info(&format!(
+                    "[TokenKeeper][MiniMax Code] Token 保活成功: account_id={}, email={}",
+                    updated.id, updated.email
+                ));
+            }
+            Err(err) => {
+                mark_attempt_failure(&key);
+                logger::log_warn(&format!(
+                    "[TokenKeeper][MiniMax Code] Token 保活失败，进入退避: account_id={}, error={}",
                     account.id, err
                 ));
             }
@@ -777,10 +895,11 @@ async fn refresh_due_trae_accounts() -> bool {
                         ));
                     }
                     Err(err) => {
-                        mark_attempt_failure(&key);
+                        let backoff = trae_refresh_failure_backoff_seconds(err.as_str());
+                        mark_attempt_failure_with_backoff(&key, backoff);
                         logger::log_warn(&format!(
-                            "[TokenKeeper][Trae] 仅额度刷新失败，进入退避: account_id={}, error={}",
-                            account.id, err
+                            "[TokenKeeper][Trae] 仅额度刷新失败，进入退避 {}s: account_id={}, error={}",
+                            backoff, account.id, err
                         ));
                     }
                 }
@@ -792,17 +911,30 @@ async fn refresh_due_trae_accounts() -> bool {
                     clear_attempt_backoff(&key);
                     mark_trae_strict_check_done(updated.id.as_str());
                     refreshed_any = true;
+                    // Never inject while this account is live in a Trae process; inject itself
+                    // also refuses live storage, but skip early for clearer logs.
                     if current_id.as_deref() == Some(updated.id.as_str()) {
-                        if process::is_trae_running() {
+                        if protection_map.contains_key(updated.id.as_str()) {
                             logger::log_info(&format!(
-                                "[TokenKeeper][Trae] Trae 运行中，跳过当前账号本地回写: account_id={}",
+                                "[TokenKeeper][Trae] 账号受运行中保护，跳过本地回写: account_id={}",
                                 updated.id
                             ));
-                        } else if let Err(err) = trae_account::inject_to_trae(&updated.id) {
-                            logger::log_warn(&format!(
-                                "[TokenKeeper][Trae] 当前本地登录回写失败: account_id={}, error={}",
-                                updated.id, err
-                            ));
+                        } else {
+                            let platform = trae_account::resolve_account_platform_kind(&updated);
+                            if process::is_trae_running_for_platform(platform) {
+                                logger::log_info(&format!(
+                                    "[TokenKeeper][Trae] {} 运行中，跳过当前账号本地回写: account_id={}",
+                                    platform.display_name(),
+                                    updated.id
+                                ));
+                            } else if let Err(err) =
+                                trae_account::inject_to_trae_for_platform(platform, &updated.id)
+                            {
+                                logger::log_warn(&format!(
+                                    "[TokenKeeper][Trae] 当前本地登录回写失败: account_id={}, error={}",
+                                    updated.id, err
+                                ));
+                            }
                         }
                     }
                     logger::log_info(&format!(
@@ -811,10 +943,11 @@ async fn refresh_due_trae_accounts() -> bool {
                     ));
                 }
                 Err(err) => {
-                    mark_attempt_failure(&key);
+                    let backoff = trae_refresh_failure_backoff_seconds(err.as_str());
+                    mark_attempt_failure_with_backoff(&key, backoff);
                     logger::log_warn(&format!(
-                        "[TokenKeeper][Trae] Token 保活失败，进入退避: account_id={}, error={}",
-                        account.id, err
+                        "[TokenKeeper][Trae] Token 保活失败，进入退避 {}s: account_id={}, error={}",
+                        backoff, account.id, err
                     ));
                 }
             }

@@ -1,3 +1,7 @@
+import { useDurableUiBooleanSetting } from './useDurableUiSetting';
+import type { FlowNoticeSettingKey } from '../utils/durableUiSettings';
+import { useAccountsOverviewFilterState } from './useAccountsOverviewFilterState';
+import { applyExplicitApiBaseUrlToExternalImportItems } from '../utils/externalImportRouting';
 /**
  * useProviderAccountsPage
  *
@@ -41,6 +45,7 @@ import {
 } from '../utils/externalProviderImport';
 import { useDropdownPanelPlacement } from './useDropdownPanelPlacement';
 import { useEscClose } from './useEscClose';
+import { useEnterConfirm } from './useEnterConfirm';
 import {
   ACCOUNTS_OVERVIEW_FILTER_PERSISTENCE_CHANGED_EVENT,
   type AccountsOverviewFilterPersistenceChangedDetail,
@@ -48,11 +53,11 @@ import {
   readAccountsOverviewFilterField,
   readAccountsOverviewFilterPersistenceEnabled,
   readAccountsOverviewFilterStringArray,
-  removeAccountsOverviewFilterField,
   setAccountsOverviewFilterPersistenceEnabled,
-  writeAccountsOverviewFilterField,
 } from '../utils/accountsOverviewFilterPersistence';
 import { normalizeTimestamp } from '../utils/dataExtract';
+import { getLocalOffsetMinutes } from '../utils/localTimeZone';
+import { presentWindowsOperationError } from '../utils/windowsOperationDialog';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,8 +96,12 @@ export type ViewMode = 'grid' | 'list';
 export type SortDirection = 'asc' | 'desc';
 
 /** 各平台需要提供的 OAuth 服务函数 */
+export interface OAuthStartOptions {
+  tabKey: string;
+}
+
 export interface OAuthService {
-  startLogin: () => Promise<OAuthStartResponse>;
+  startLogin: (options?: OAuthStartOptions) => Promise<OAuthStartResponse>;
   completeLogin: (loginId: string) => Promise<unknown>;
   cancelLogin: (loginId?: string) => Promise<void>;
   submitCallbackUrl?: (loginId: string, callbackUrl: string) => Promise<void>;
@@ -118,6 +127,7 @@ export interface ProviderDataService {
   addWithToken?: (token: string) => Promise<unknown>;
   exportAccounts: (ids: string[]) => Promise<string>;
   injectToVSCode?: (accountId: string) => Promise<unknown>;
+  openWebview?: (accountId: string) => Promise<unknown>;
 }
 
 /** 各平台 store 需要提供的操作 */
@@ -130,6 +140,7 @@ export interface ProviderStoreActions<TAccount> {
   setCurrentAccountId?: (accountId: string | null) => void;
   fetchAccounts: () => Promise<void>;
   switchAccount?: (accountId: string) => Promise<unknown>;
+  touchLastUsed?: (accountId: string) => void;
   deleteAccounts: (ids: string[]) => Promise<void>;
   refreshToken: (id: string) => Promise<void>;
   refreshAllTokens: () => Promise<void>;
@@ -143,9 +154,7 @@ export interface ProviderPageConfig<TAccount extends ProviderAccountBase> {
   /** OAuth 日志前缀 */
   oauthLogPrefix: string;
   /** localStorage key：flow notice 折叠状态 */
-  flowNoticeCollapsedKey?: string;
-  /** localStorage key：当前选中账号 */
-  currentAccountIdKey?: string;
+  flowNoticeCollapsedKey?: FlowNoticeSettingKey;
   /** 导出文件名前缀 */
   exportFilePrefix: string;
   /** Store 操作 */
@@ -154,6 +163,10 @@ export interface ProviderPageConfig<TAccount extends ProviderAccountBase> {
   oauthService?: OAuthService;
   /** 触发 OAuth 流程的 addTab key，默认 ['oauth'] */
   oauthTabKeys?: string[];
+  /** 打开添加弹框时默认选中的页签，默认 'oauth'。 */
+  defaultAddTab?: string;
+  /** 是否在进入 OAuth 标签后自动开始；可用于需要先填写登录参数的平台。 */
+  oauthAutoPrepare?: boolean | ((tabKey: string) => boolean);
   /** 数据服务 */
   dataService: ProviderDataService;
   /** 获取展示用 email/displayName */
@@ -169,8 +182,17 @@ export interface ProviderPageConfig<TAccount extends ProviderAccountBase> {
   /** 外部浏览器导入完成后的扩展处理（可选） */
   onExternalImportCompleted?: (accountIds: string[]) => void | Promise<void>;
   /** 首次渲染时使用的搜索内容 */
-  initialSearchQuery?: string;
+  searchPersistenceField?: string;
   defaultSortBy?: string;
+  /**
+   * 自定义删除确认的 Enter 行为（例如 Codex 批量删除）。
+   * 未提供时 Enter 调用内置 confirmDelete。
+   */
+  onEnterConfirmDelete?: () => void | Promise<void>;
+  /** 额外的删除确认忙碌态（与 deleting 叠加，为 true 时禁用 Enter） */
+  isDeleteConfirmBusy?: boolean;
+  /** 关闭内置删除确认的 Enter 绑定（页面自行 useEnterConfirm 时使用） */
+  disableEnterConfirmDelete?: boolean;
 }
 
 export interface ProviderAccountBase {
@@ -214,30 +236,10 @@ type ExternalImportBundleParseMessages = {
 };
 
 const CODEX_REFRESH_TOKEN_PATTERN = /rt_[A-Za-z0-9._-]+/g;
-const COCKPIT_API_PROVIDER_ID = 'cockpit_api';
-const COCKPIT_API_PROVIDER_NAME = 'Cockpit Api';
-const COCKPIT_TOOLS_IMPORT_PATH_MARKERS = [
-  '/api/cockpit-tools/import/',
-  '/user/api/toolsimport/',
-];
-
 const readBundleMessage = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
-};
-
-const readRecordString = (
-  payload: Record<string, unknown>,
-  keys: string[],
-): string | null => {
-  for (const key of keys) {
-    const value = payload[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return null;
 };
 
 const parseLineDelimitedJsonObjects = (
@@ -420,109 +422,6 @@ const resolveExternalImportBundleItems = (
   throw new Error(messages.noItems);
 };
 
-const normalizeExternalImportApiBaseUrl = (rawValue?: string | null): string | null => {
-  const trimmed = (rawValue || '').trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
-  } catch {
-    return null;
-  }
-};
-
-const deriveApiBaseUrlFromImportUrl = (importUrl?: string | null): string | null => {
-  const trimmed = (importUrl || '').trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    return `${parsed.origin}/v1`;
-  } catch {
-    return null;
-  }
-};
-
-const isCockpitToolsImportUrl = (importUrl?: string | null): boolean => {
-  const trimmed = (importUrl || '').trim();
-  if (!trimmed) return false;
-  try {
-    const parsed = new URL(trimmed);
-    const pathname = parsed.pathname.toLowerCase();
-    return COCKPIT_TOOLS_IMPORT_PATH_MARKERS.some((marker) => pathname.includes(marker));
-  } catch {
-    return false;
-  }
-};
-
-const isCockpitApiImportItem = (item: Record<string, unknown>): boolean => {
-  const providerId = readRecordString(item, ['api_provider_id', 'apiProviderId']);
-  if (providerId?.toLowerCase() === COCKPIT_API_PROVIDER_ID) return true;
-
-  const candidates = [
-    readRecordString(item, ['api_provider_name', 'apiProviderName']),
-    readRecordString(item, ['plan_type', 'planType']),
-    readRecordString(item, ['account_note', 'accountNote']),
-  ];
-  const expected = COCKPIT_API_PROVIDER_NAME.toLowerCase();
-  return candidates.some(
-    (value) => value?.trim().toLowerCase().includes(expected),
-  );
-};
-
-const withCockpitApiBaseUrl = (
-  item: unknown,
-  apiBaseUrl: string | null,
-  isCockpitToolsImport: boolean,
-): unknown => {
-  if (!apiBaseUrl || !item || typeof item !== 'object' || Array.isArray(item)) {
-    return item;
-  }
-  const payload = item as Record<string, unknown>;
-  const authMode = readRecordString(payload, ['auth_mode', 'authMode']);
-  const apiKey = readRecordString(payload, ['OPENAI_API_KEY', 'openai_api_key', 'openaiApiKey']);
-  if (authMode?.toLowerCase() !== 'apikey' || !apiKey) {
-    return item;
-  }
-  if (!isCockpitToolsImport && !isCockpitApiImportItem(payload)) {
-    return item;
-  }
-
-  return {
-    ...payload,
-    base_url: apiBaseUrl,
-    api_base_url: apiBaseUrl,
-    api_provider_mode:
-      readRecordString(payload, ['api_provider_mode', 'apiProviderMode']) ?? 'custom',
-    api_provider_id:
-      readRecordString(payload, ['api_provider_id', 'apiProviderId']) ?? COCKPIT_API_PROVIDER_ID,
-    api_provider_name:
-      readRecordString(payload, ['api_provider_name', 'apiProviderName']) ??
-      COCKPIT_API_PROVIDER_NAME,
-    plan_type:
-      readRecordString(payload, ['plan_type', 'planType']) ?? COCKPIT_API_PROVIDER_NAME,
-  };
-};
-
-const applyCockpitApiBaseUrlToExternalImportItems = (
-  items: unknown[],
-  request: ExternalProviderImportPayload,
-): unknown[] => {
-  const apiBaseUrl =
-    normalizeExternalImportApiBaseUrl(request.apiBaseUrl) ??
-    deriveApiBaseUrlFromImportUrl(request.importUrl);
-  if (!apiBaseUrl) return items;
-
-  const isCockpitToolsImport =
-    Boolean(request.apiBaseUrl?.trim()) || isCockpitToolsImportUrl(request.importUrl);
-  return items.map((item) => withCockpitApiBaseUrl(item, apiBaseUrl, isCockpitToolsImport));
-};
-
 const buildInitialExternalImportProgress = (): ExternalImportProgressState => ({
   visible: false,
   status: 'idle',
@@ -700,6 +599,7 @@ export interface UseProviderAccountsPageReturn {
   tokenInput: string;
   setTokenInput: (v: string) => void;
   importing: boolean;
+  setImporting: (v: boolean) => void;
   openAddModal: (tab: string) => void;
   closeAddModal: () => void;
   resetAddModalState: () => void;
@@ -727,6 +627,7 @@ export interface UseProviderAccountsPageReturn {
   oauthManualCallbackSubmitting: boolean;
   oauthManualCallbackError: string | null;
   oauthSupportsManualCallback: boolean;
+  prepareOauthUrl: () => void;
   handleCopyOauthUrl: () => Promise<void>;
   handleCopyOauthUserCode: () => Promise<void>;
   handleRetryOauth: () => void;
@@ -737,6 +638,10 @@ export interface UseProviderAccountsPageReturn {
 
   // Inject / Switch
   handleInjectToVSCode: ((accountId: string) => Promise<void>) | null;
+
+  // WebView（网页会话）
+  handleOpenWebview: ((accountId: string) => Promise<void>) | null;
+  webviewing: string | null;
 
   // Flow notice
   isFlowNoticeCollapsed: boolean;
@@ -768,17 +673,19 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     platformKey,
     oauthLogPrefix,
     flowNoticeCollapsedKey,
-    currentAccountIdKey,
     exportFilePrefix,
     store,
     oauthService,
     oauthTabKeys: oauthTabKeysConfig,
+    defaultAddTab: defaultAddTabConfig,
+    oauthAutoPrepare: oauthAutoPrepareConfig,
     dataService,
-    initialSearchQuery: initialSearchQueryConfig,
+    searchPersistenceField,
     defaultSortBy: defaultSortByConfig,
     onExternalImportCompleted,
   } = config;
   const defaultSortBy = defaultSortByConfig?.trim() || DEFAULT_SORT_BY;
+  const defaultAddTab = defaultAddTabConfig?.trim() || 'oauth';
 
   const oauthTabKeys = useMemo(() => {
     const normalized = (oauthTabKeysConfig || [])
@@ -801,6 +708,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     refreshToken,
     refreshAllTokens,
     switchAccount,
+    touchLastUsed,
     setCurrentAccountId: setStoreCurrentAccountId,
     updateAccountTags,
   } = store;
@@ -860,7 +768,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   );
 
   // ─── View Mode ────────────────────────────────────────────────────────
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+  const [viewMode, setViewMode] = useAccountsOverviewFilterState<ViewMode>(filterPersistenceScope, FILTER_FIELD_VIEW_MODE, () => {
     if (!readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) {
       return DEFAULT_VIEW_MODE;
     }
@@ -873,10 +781,15 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   });
 
   // ─── Search & Filter ──────────────────────────────────────────────────
-  const [searchQuery, setSearchQuery] = useState(
-    () => initialSearchQueryConfig ?? '',
+  const [searchQuery, setSearchQuery] = useAccountsOverviewFilterState(
+    filterPersistenceScope,
+    searchPersistenceField,
+    () => {
+      if (!searchPersistenceField || !readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) return '';
+      return readAccountsOverviewFilterField(filterPersistenceScope, searchPersistenceField, '');
+    },
   );
-  const [filterType, setFilterType] = useState<string>(() => {
+  const [filterType, setFilterType] = useAccountsOverviewFilterState<string>(filterPersistenceScope, FILTER_FIELD_FILTER_TYPE, () => {
     if (!readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) {
       return 'all';
     }
@@ -889,7 +802,11 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   });
 
   // ─── Sort ─────────────────────────────────────────────────────────────
-  const [sortBy, setSortBy] = useState<string>(() => {
+  const [sortBy, setSortBy] = useAccountsOverviewFilterState<string>(filterPersistenceScope, FILTER_FIELD_SORT_BY, () => {
+    // Explicit default (e.g. Codex custom-sort active flag) wins over stale saved sort (#1123).
+    if (defaultSortBy === 'custom') {
+      return 'custom';
+    }
     if (!readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) {
       return defaultSortBy;
     }
@@ -900,7 +817,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     );
     return saved?.trim() ? saved : defaultSortBy;
   });
-  const [sortDirection, setSortDirection] = useState<SortDirection>(() => {
+  const [sortDirection, setSortDirection] = useAccountsOverviewFilterState<SortDirection>(filterPersistenceScope, FILTER_FIELD_SORT_DIRECTION, () => {
     if (!readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) {
       return DEFAULT_SORT_DIRECTION;
     }
@@ -911,42 +828,6 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     );
     return normalizeSortDirection(saved);
   });
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_VIEW_MODE);
-      return;
-    }
-    writeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_VIEW_MODE, viewMode);
-  }, [filterPersistenceEnabled, filterPersistenceScope, viewMode]);
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_SORT_BY);
-      return;
-    }
-    writeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_SORT_BY, sortBy);
-  }, [filterPersistenceEnabled, filterPersistenceScope, sortBy]);
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_SORT_DIRECTION);
-      return;
-    }
-    writeAccountsOverviewFilterField(
-      filterPersistenceScope,
-      FILTER_FIELD_SORT_DIRECTION,
-      sortDirection,
-    );
-  }, [filterPersistenceEnabled, filterPersistenceScope, sortDirection]);
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_FILTER_TYPE);
-      return;
-    }
-    writeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_FILTER_TYPE, filterType);
-  }, [filterPersistenceEnabled, filterPersistenceScope, filterType]);
 
   // ─── Selection ────────────────────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -981,7 +862,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   );
 
   // ─── Tags ─────────────────────────────────────────────────────────────
-  const [tagFilter, setTagFilter] = useState<string[]>(() => {
+  const [tagFilter, setTagFilter] = useAccountsOverviewFilterState<string[]>(filterPersistenceScope, FILTER_FIELD_TAGS, () => {
     if (!readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) {
       return [];
     }
@@ -989,7 +870,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
       readAccountsOverviewFilterStringArray(filterPersistenceScope, FILTER_FIELD_TAGS),
     );
   });
-  const [groupByTag, setGroupByTag] = useState<boolean>(() => {
+  const [groupByTag, setGroupByTag] = useAccountsOverviewFilterState<boolean>(filterPersistenceScope, FILTER_FIELD_GROUP_BY_TAG, () => {
     if (!readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) {
       return false;
     }
@@ -1047,26 +928,6 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   const clearTagFilter = useCallback(() => {
     setTagFilter([]);
   }, []);
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_TAGS);
-      return;
-    }
-    writeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_TAGS, tagFilter);
-  }, [filterPersistenceEnabled, filterPersistenceScope, tagFilter]);
-
-  useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(filterPersistenceScope, FILTER_FIELD_GROUP_BY_TAG);
-      return;
-    }
-    writeAccountsOverviewFilterField(
-      filterPersistenceScope,
-      FILTER_FIELD_GROUP_BY_TAG,
-      groupByTag,
-    );
-  }, [filterPersistenceEnabled, filterPersistenceScope, groupByTag]);
 
   const requestDeleteTag = useCallback(
     (tag: string) => {
@@ -1159,6 +1020,15 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   } = useModalErrorState();
   const [deleting, setDeleting] = useState(false);
   const [message, setMessage] = useState<{ text: string; tone?: 'error' | 'success' } | null>(null);
+
+  useEffect(() => {
+    if (platformId !== 'codex' || !message || message.tone === 'error') return;
+    const timer = window.setTimeout(() => {
+      setMessage((current) => current === message ? null : current);
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [message, platformId]);
+  const refreshRequestId = useRef(0);
   const setDeleteConfirm = useCallback((value: { ids: string[]; message: string } | null) => {
     setDeleteConfirmError(null);
     rawSetDeleteConfirm(value);
@@ -1186,15 +1056,29 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
 
   const handleRefresh = useCallback(
     async (accountId: string) => {
+      const requestId = ++refreshRequestId.current;
       setRefreshing(accountId);
+      setMessage(null);
       try {
         await refreshToken(accountId);
+        if (requestId === refreshRequestId.current) {
+          setMessage({ text: t('common.shared.refreshSuccess'), tone: 'success' });
+        }
       } catch (e) {
         console.error(e);
+        if (requestId === refreshRequestId.current) {
+          setMessage({
+            text: t('common.shared.refreshFailed', {
+              error: String(e).replace(/^Error:\s*/, '').trim(),
+            }),
+            tone: 'error',
+          });
+        }
+      } finally {
+        if (requestId === refreshRequestId.current) setRefreshing(null);
       }
-      setRefreshing(null);
     },
-    [refreshToken],
+    [refreshToken, t],
   );
 
   const handleRefreshAll = useCallback(async () => {
@@ -1237,6 +1121,8 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
         return next;
       });
       setDeleteConfirm(null);
+      // 删除成功后清掉页顶红色报错，避免旧错误残留（#1160）
+      setMessage(null);
     } catch (error) {
       setDeleteConfirmError(
         t('messages.actionFailed', {
@@ -1267,6 +1153,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
           resolvedCurrentAccountId = await storeFetchCurrentAccountId();
         } else {
           setCurrentAccountId(accountId);
+          touchLastUsed?.(accountId);
         }
         if (platformId) {
           await emitCurrentAccountChanged({
@@ -1287,7 +1174,42 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
             console.error(`[${platformKey}] onInjectSuccess callback failed:`, callbackError);
           }
         }
+        await fetchAccounts();
       } catch (e: unknown) {
+        const retrySwitch = async () => {
+          await injectFn(accountId);
+          let resolvedCurrentAccountId: string | null = accountId;
+          if (platformKey === 'grok' && storeFetchCurrentAccountId) {
+            resolvedCurrentAccountId = await storeFetchCurrentAccountId();
+          } else {
+            setCurrentAccountId(accountId);
+            touchLastUsed?.(accountId);
+          }
+          if (platformId) {
+            await emitCurrentAccountChanged({
+              platformId,
+              accountId: resolvedCurrentAccountId,
+              reason: 'switch',
+            });
+          }
+          setMessage({ text: t('messages.switched', { email: maskAccountText(displayEmail) }) });
+          await Promise.resolve(config.onInjectSuccess?.({
+            accountId,
+            account,
+            displayEmail,
+          }));
+        };
+        if (
+          presentWindowsOperationError({
+            error: e,
+            operation: 'launch_app',
+            retry: retrySwitch,
+            manualContinue: retrySwitch,
+          })
+        ) {
+          setInjecting(null);
+          return;
+        }
         setMessage({
           text: t('messages.switchFailed', {
             error: String(e) || t('common.failed', 'Failed'),
@@ -1301,12 +1223,44 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     accounts,
     config,
     dataService.injectToVSCode,
+    fetchAccounts,
     maskAccountText,
     platformId,
     platformKey,
     storeFetchCurrentAccountId,
     t,
+    touchLastUsed,
   ]);
+
+  // ─── WebView（网页会话） ───────────────────────────────────────────────
+  const [webviewing, setWebviewing] = useState<string | null>(null);
+  const handleOpenWebview = useMemo(() => {
+    if (!dataService.openWebview) return null;
+    const openFn = dataService.openWebview;
+    return async (accountId: string) => {
+      setMessage(null);
+      setWebviewing(accountId);
+      const account = accounts.find((item) => item.id === accountId);
+      const displayEmail = account ? config.getDisplayEmail(account) : accountId;
+      try {
+        await openFn(accountId);
+        setMessage({
+          text: t('common.shared.webSession.opened', {
+            email: maskAccountText(displayEmail),
+          }),
+          tone: 'success',
+        });
+      } catch (e: unknown) {
+        setMessage({
+          text: t('common.shared.webSession.openFailed', {
+            error: String(e) || t('common.failed', 'Failed'),
+          }),
+          tone: 'error',
+        });
+      }
+      setWebviewing(null);
+    };
+  }, [accounts, config, dataService.openWebview, maskAccountText, t]);
 
   // ─── Export ───────────────────────────────────────────────────────────
   const handleExportError = useCallback(
@@ -1365,7 +1319,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
 
   // ─── Add Modal ────────────────────────────────────────────────────────
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addTab, setAddTab] = useState<string>('oauth');
+  const [addTab, setAddTab] = useState<string>(defaultAddTab);
   const [addStatus, setAddStatusState] = useState<AddModalStatus>('idle');
   const [addMessage, setAddMessage] = useState<string | null>(null);
   const [addErrorScrollKey, setAddErrorScrollKey] = useState(0);
@@ -1397,16 +1351,11 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   }, [showAddModal, addTab, addStatus, oauthService]);
 
   const cancelPendingOauthLogin = useCallback(
-    (force = false) => {
-      const loginId = oauthLoginIdRef.current ?? undefined;
-      if (
-        !force
-        && !loginId
-        && !oauthActiveRef.current
-        && !oauthCompletingRef.current
-      ) {
-        return;
-      }
+    () => {
+      const loginId = oauthLoginIdRef.current;
+      // A start still in flight is cleaned up by its own response. An
+      // unscoped cancellation can reach the backend after a newer start.
+      if (!loginId) return;
       oauthServiceRef.current?.cancelLogin(loginId).catch((error) => {
         console.error(`[${oauthLogPrefix}] 取消 OAuth 授权失败`, {
           loginId,
@@ -1451,12 +1400,29 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   );
 
   const closeAddModal = useCallback(() => {
-    cancelPendingOauthLogin(true);
+    cancelPendingOauthLogin();
     setShowAddModal(false);
     resetAddModalState();
   }, [cancelPendingOauthLogin, resetAddModalState]);
 
   useEscClose(showAddModal, closeAddModal);
+  // Delete / tag-delete secondary confirms: Enter = confirm (stack-safe with nested dialogs)
+  const deleteConfirmBusy = deleting || Boolean(config.isDeleteConfirmBusy);
+  useEscClose(Boolean(deleteConfirm) && !deleteConfirmBusy, () => setDeleteConfirm(null));
+  useEnterConfirm(
+    Boolean(deleteConfirm) && !deleteConfirmBusy && !config.disableEnterConfirmDelete,
+    () => {
+      if (config.onEnterConfirmDelete) {
+        void config.onEnterConfirmDelete();
+        return;
+      }
+      void confirmDelete();
+    },
+  );
+  useEscClose(Boolean(tagDeleteConfirm) && !deletingTag, () => setTagDeleteConfirm(null));
+  useEnterConfirm(Boolean(tagDeleteConfirm) && !deletingTag, () => {
+    void confirmDeleteTag();
+  });
 
   const closeExternalImportProgressModal = useCallback(() => {
     setExternalImportProgress((current) => {
@@ -1556,7 +1522,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
           });
           const items =
             platformId === 'codex'
-              ? applyCockpitApiBaseUrlToExternalImportItems(resolvedItems, request)
+              ? applyExplicitApiBaseUrlToExternalImportItems(resolvedItems, request, t('codex.modelProviders.validation.baseUrlInvalid'))
               : resolvedItems;
 
           let success = 0;
@@ -2038,7 +2004,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
 
     void (async () => {
       try {
-        const resp = await oauthService.startLogin();
+        const resp = await oauthService.startLogin({ tabKey: addTabRef.current });
         started = true;
 
         if (attemptSeq !== oauthAttemptSeqRef.current) {
@@ -2116,9 +2082,13 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
 
   // Auto-prepare OAuth when modal opens on oauth tab
   useEffect(() => {
-    if (!showAddModal || !oauthTabKeys.includes(addTab) || oauthUrl) return;
+    const shouldAutoPrepare =
+      typeof oauthAutoPrepareConfig === 'function'
+        ? oauthAutoPrepareConfig(addTab)
+        : oauthAutoPrepareConfig !== false;
+    if (!showAddModal || !oauthTabKeys.includes(addTab) || oauthUrl || !shouldAutoPrepare) return;
     prepareOauthUrl();
-  }, [showAddModal, addTab, oauthUrl, prepareOauthUrl, oauthTabKeys]);
+  }, [showAddModal, addTab, oauthUrl, prepareOauthUrl, oauthTabKeys, oauthAutoPrepareConfig]);
 
   // Cancel OAuth when modal closes or tab changes
   useEffect(() => {
@@ -2382,34 +2352,11 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   ]);
 
   // ─── Flow Notice ──────────────────────────────────────────────────────
-  const [isFlowNoticeCollapsed, setIsFlowNoticeCollapsed] = useState<boolean>(() => {
-    if (!flowNoticeCollapsedKey) return false;
-    try {
-      return localStorage.getItem(flowNoticeCollapsedKey) === '1';
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    if (!flowNoticeCollapsedKey) return;
-    try {
-      localStorage.setItem(flowNoticeCollapsedKey, isFlowNoticeCollapsed ? '1' : '0');
-    } catch {
-      // ignore persistence failures
-    }
-  }, [isFlowNoticeCollapsed, flowNoticeCollapsedKey]);
+  const [isFlowNoticeCollapsed, setIsFlowNoticeCollapsed] =
+    useDurableUiBooleanSetting(flowNoticeCollapsedKey);
 
   // ─── Current Account ──────────────────────────────────────────────────
-  const [localCurrentAccountId, setLocalCurrentAccountId] = useState<string | null>(() => {
-    if (!currentAccountIdKey) return null;
-    try {
-      const value = localStorage.getItem(currentAccountIdKey);
-      return value && value.trim() ? value : null;
-    } catch {
-      return null;
-    }
-  });
+  const [localCurrentAccountId, setLocalCurrentAccountId] = useState<string | null>(null);
 
   const currentAccountId = managesCurrentAccountId
     ? storeCurrentAccountId ?? null
@@ -2436,32 +2383,29 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     }
   }, [accounts, currentAccountId, managesCurrentAccountId, setCurrentAccountId]);
 
-  useEffect(() => {
-    if (managesCurrentAccountId || !currentAccountIdKey) return;
-    try {
-      if (currentAccountId) {
-        localStorage.setItem(currentAccountIdKey, currentAccountId);
-      } else {
-        localStorage.removeItem(currentAccountIdKey);
-      }
-    } catch {
-      // ignore persistence failures
-    }
-  }, [currentAccountId, currentAccountIdKey, managesCurrentAccountId]);
-
   // ─── Utilities ────────────────────────────────────────────────────────
   const formatDate = useCallback(
     (timestamp: number) => {
       const normalized = normalizeTimestamp(timestamp);
-      const d = new Date((normalized ?? 0) * 1000);
+      // 用系统真实时区偏移把 UTC 时间戳平移到本地墙上时间，再以 UTC 渲染，
+      // 绕开 WebView 默认/ICU 时区库回退 UTC 的问题（#时区）。
+      const offsetMin = getLocalOffsetMinutes();
+      const d = new Date((normalized ?? 0) * 1000 + offsetMin * 60000);
+      // 固定 24 小时制，避免 en-US 等 locale 显示 12 小时制分不清上下午（#859）
       return (
         d.toLocaleDateString(locale, {
           year: 'numeric',
           month: '2-digit',
           day: '2-digit',
+          timeZone: 'UTC',
         }) +
         ' ' +
-        d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+        d.toLocaleTimeString(locale, {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+          timeZone: 'UTC',
+        })
       );
     },
     [locale],
@@ -2560,6 +2504,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     tokenInput,
     setTokenInput,
     importing,
+    setImporting,
     openAddModal,
     closeAddModal,
     resetAddModalState,
@@ -2585,6 +2530,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     oauthManualCallbackSubmitting,
     oauthManualCallbackError,
     oauthSupportsManualCallback,
+    prepareOauthUrl,
     handleCopyOauthUrl,
     handleCopyOauthUserCode,
     handleRetryOauth,
@@ -2593,6 +2539,8 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     handleOpenOauthUrlWithMode,
     handleSubmitOauthCallbackUrl,
     handleInjectToVSCode,
+    handleOpenWebview,
+    webviewing,
     isFlowNoticeCollapsed,
     setIsFlowNoticeCollapsed,
     currentAccountId,

@@ -13,8 +13,17 @@ use tracing_subscriber::{
 
 const APP_LOG_FILE_PREFIX: &str = "app.log";
 const CODEX_API_LOG_FILE_PREFIX: &str = "codex-api.log";
+const CODEX_AUTH_DIAGNOSTIC_LOG_FILE_PREFIX: &str = "codex-auth-diagnostic.log";
+const CODEX_CDP_DIAGNOSTIC_LOG_FILE_PREFIX: &str = "codex-cdp-diagnostic.log";
 const CODEX_API_LOG_TARGET: &str = "codex_api";
-const MANAGED_LOG_FILE_PREFIXES: &[&str] = &[APP_LOG_FILE_PREFIX, CODEX_API_LOG_FILE_PREFIX];
+const CODEX_AUTH_DIAGNOSTIC_LOG_TARGET: &str = "codex_auth_diagnostic";
+const CODEX_CDP_DIAGNOSTIC_LOG_TARGET: &str = "codex_cdp_diagnostic";
+const MANAGED_LOG_FILE_PREFIXES: &[&str] = &[
+    APP_LOG_FILE_PREFIX,
+    CODEX_API_LOG_FILE_PREFIX,
+    CODEX_AUTH_DIAGNOSTIC_LOG_FILE_PREFIX,
+    CODEX_CDP_DIAGNOSTIC_LOG_FILE_PREFIX,
+];
 const LOG_RETENTION_DAYS: i64 = 3;
 const DEFAULT_LOG_TAIL_LINES: usize = 200;
 const MIN_LOG_TAIL_LINES: usize = 20;
@@ -92,43 +101,38 @@ where
         paths.push(path);
     }
 
-    paths.sort_by(|left, right| compare_log_paths_by_recency(left, right));
+    paths.sort_by_cached_key(|path| {
+        let modified = fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        std::cmp::Reverse((modified, path.file_name().map(std::ffi::OsStr::to_os_string)))
+    });
     Ok(paths)
-}
-
-fn compare_log_paths_by_recency(left: &PathBuf, right: &PathBuf) -> std::cmp::Ordering {
-    let left_modified = fs::metadata(left)
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    let right_modified = fs::metadata(right)
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-    right_modified
-        .cmp(&left_modified)
-        .then_with(|| right.file_name().cmp(&left.file_name()))
 }
 
 pub fn list_managed_log_files() -> Result<Vec<PathBuf>, String> {
     list_log_files_by_name(is_managed_log_file_name)
 }
 
-pub fn resolve_managed_log_file(file_name: Option<&str>) -> Result<PathBuf, String> {
-    let log_files = list_managed_log_files()?;
+pub fn resolve_managed_log_file<'a>(
+    log_files: &'a [PathBuf],
+    file_name: Option<&str>,
+) -> Result<&'a Path, String> {
     if log_files.is_empty() {
         return Err("未找到可用日志文件".to_string());
     }
 
     if let Some(file_name) = file_name.map(str::trim).filter(|name| !name.is_empty()) {
         return log_files
-            .into_iter()
+            .iter()
             .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(file_name))
+            .map(PathBuf::as_path)
             .ok_or_else(|| format!("未找到指定日志文件: {}", file_name));
     }
 
     log_files
-        .into_iter()
-        .next()
+        .first()
+        .map(PathBuf::as_path)
         .ok_or_else(|| "未找到可用日志文件".to_string())
 }
 
@@ -252,6 +256,8 @@ fn cleanup_expired_logs(log_dir: &Path) {
 pub fn init_logger() {
     let _ = tracing_log::LogTracer::init();
 
+    let is_dev_profile = crate::modules::account::is_dev_profile();
+
     let log_dir = match get_log_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -266,7 +272,6 @@ pub fn init_logger() {
         tracing_appender::rolling::daily(log_dir.clone(), CODEX_API_LOG_FILE_PREFIX);
     let (codex_api_non_blocking, codex_api_guard) =
         tracing_appender::non_blocking(codex_api_file_appender);
-
     let console_layer = fmt::Layer::new()
         .with_target(false)
         .with_thread_ids(false)
@@ -289,19 +294,71 @@ pub fn init_logger() {
 
     let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let _ = tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(filter_layer)
         .with(console_layer)
         .with(app_file_layer.with_filter(filter_fn(|metadata| {
-            metadata.target() != CODEX_API_LOG_TARGET
+            !matches!(
+                metadata.target(),
+                CODEX_API_LOG_TARGET
+                    | CODEX_AUTH_DIAGNOSTIC_LOG_TARGET
+                    | CODEX_CDP_DIAGNOSTIC_LOG_TARGET
+            )
         })))
         .with(codex_api_file_layer.with_filter(filter_fn(|metadata| {
             metadata.target() == CODEX_API_LOG_TARGET
-        })))
-        .try_init();
+        })));
+
+    // 授权诊断日志只在本地 dev profile 创建和写入，生产环境不打开对应文件。
+    let codex_auth_diagnostic_guard = if is_dev_profile {
+        let codex_auth_diagnostic_file_appender = tracing_appender::rolling::daily(
+            log_dir.clone(),
+            CODEX_AUTH_DIAGNOSTIC_LOG_FILE_PREFIX,
+        );
+        let (codex_auth_diagnostic_non_blocking, guard) =
+            tracing_appender::non_blocking(codex_auth_diagnostic_file_appender);
+        let codex_auth_diagnostic_file_layer = fmt::Layer::new()
+            .with_writer(codex_auth_diagnostic_non_blocking)
+            .with_ansi(false)
+            .with_target(false)
+            .with_level(true)
+            .with_timer(LocalTimer);
+
+        let codex_cdp_diagnostic_file_appender =
+            tracing_appender::rolling::daily(log_dir.clone(), CODEX_CDP_DIAGNOSTIC_LOG_FILE_PREFIX);
+        let (codex_cdp_diagnostic_non_blocking, cdp_guard) =
+            tracing_appender::non_blocking(codex_cdp_diagnostic_file_appender);
+        let codex_cdp_diagnostic_file_layer = fmt::Layer::new()
+            .with_writer(codex_cdp_diagnostic_non_blocking)
+            .with_ansi(false)
+            .with_target(false)
+            .with_level(true)
+            .with_timer(LocalTimer);
+
+        let _ = registry
+            .with(
+                codex_auth_diagnostic_file_layer.with_filter(filter_fn(|metadata| {
+                    metadata.target() == CODEX_AUTH_DIAGNOSTIC_LOG_TARGET
+                })),
+            )
+            .with(
+                codex_cdp_diagnostic_file_layer.with_filter(filter_fn(|metadata| {
+                    metadata.target() == CODEX_CDP_DIAGNOSTIC_LOG_TARGET
+                })),
+            )
+            .try_init();
+        Some((guard, cdp_guard))
+    } else {
+        let _ = registry.try_init();
+        None
+    };
 
     std::mem::forget(app_guard);
     std::mem::forget(codex_api_guard);
+    if let Some((auth_guard, cdp_guard)) = codex_auth_diagnostic_guard {
+        std::mem::forget(auth_guard);
+        std::mem::forget(cdp_guard);
+    }
 
     info!("日志系统已完成初始化");
 
@@ -316,7 +373,15 @@ pub fn log_info(message: &str) {
 }
 
 pub fn log_warn(message: &str) {
-    warn!("{}", sanitize_message(message));
+    if is_cdp_diagnostic_message(message) {
+        warn!(
+            target: CODEX_CDP_DIAGNOSTIC_LOG_TARGET,
+            "{}",
+            sanitize_message(message)
+        );
+    } else {
+        warn!("{}", sanitize_message(message));
+    }
 }
 
 pub fn log_error(message: &str) {
@@ -333,6 +398,30 @@ pub fn log_codex_api_warn(message: &str) {
 
 pub fn log_codex_api_error(message: &str) {
     error!(target: CODEX_API_LOG_TARGET, "{}", sanitize_message(message));
+}
+
+/// Codex 授权诊断日志。只接受已经去除 bearer 凭据的诊断摘要，禁止写入原始 token。
+pub fn log_codex_auth_diagnostic(message: &str) {
+    if !crate::modules::account::is_dev_profile() {
+        return;
+    }
+    if is_cdp_diagnostic_message(message) {
+        info!(
+            target: CODEX_CDP_DIAGNOSTIC_LOG_TARGET,
+            "{}",
+            sanitize_message(message)
+        );
+    } else {
+        info!(
+            target: CODEX_AUTH_DIAGNOSTIC_LOG_TARGET,
+            "{}",
+            sanitize_message(message)
+        );
+    }
+}
+
+fn is_cdp_diagnostic_message(message: &str) -> bool {
+    message.starts_with("[Codex Auth CDP]") || message.starts_with("[Codex Auth Network]")
 }
 
 fn sanitize_message(message: &str) -> String {

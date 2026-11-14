@@ -3,6 +3,7 @@ import type {
   ClaudeDesktopGatewayModelMapping,
 } from '../types/claude';
 import {
+  APIKEY_FUN_DIRECT_ENDPOINT,
   APIKEY_FUN_GLOBAL_ENDPOINT,
   APIKEY_FUN_REGISTER_URL,
   APIKEY_FUN_SOURCE_TAG,
@@ -119,10 +120,10 @@ export const CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS: readonly ClaudeDesktopGate
   {
     id: CLAUDE_DESKTOP_GATEWAY_APIKEY_FUN_PROVIDER_ID,
     name: 'APIKEY.FUN',
-    baseUrls: [APIKEY_FUN_GLOBAL_ENDPOINT, 'https://slb.apikey.fun'],
+    baseUrls: [APIKEY_FUN_GLOBAL_ENDPOINT, APIKEY_FUN_DIRECT_ENDPOINT],
     authScheme: 'bearer',
     connectionMode: 'direct',
-    website: 'https://apikey.fun',
+    website: 'https://apikey.fan',
     apiKeyUrl: APIKEY_FUN_REGISTER_URL,
     isPartner: true,
     sourceTag: APIKEY_FUN_SOURCE_TAG,
@@ -337,9 +338,21 @@ export const CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS: readonly ClaudeDesktopGate
     baseUrls: ['https://api.minimaxi.com/anthropic'],
     authScheme: 'bearer',
     connectionMode: 'local_mapping',
-    website: 'https://platform.minimaxi.com',
+    website: 'https://platform.minimaxi.com/docs',
     apiKeyUrl: 'https://platform.minimaxi.com/subscribe/coding-plan',
-    modelMappings: repeatedMappedRoute('MiniMax-M2.7'),
+    modelMappings: [
+      createRoute('claude-sonnet-4-6', 'MiniMax-M3', {
+        labelOverride: 'MiniMax-M3',
+        supports1m: true,
+      }),
+      createRoute('claude-opus-4-7', 'MiniMax-M3.1-Flash', {
+        labelOverride: 'MiniMax-M3.1-Flash',
+        supports1m: true,
+      }),
+      createRoute('claude-haiku-4-5', 'MiniMax-M2.7', {
+        labelOverride: 'MiniMax-M2.7',
+      }),
+    ],
   },
   {
     id: 'minimax_global',
@@ -347,9 +360,21 @@ export const CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS: readonly ClaudeDesktopGate
     baseUrls: ['https://api.minimax.io/anthropic'],
     authScheme: 'bearer',
     connectionMode: 'local_mapping',
-    website: 'https://platform.minimax.io',
+    website: 'https://platform.minimax.io/docs',
     apiKeyUrl: 'https://platform.minimax.io/subscribe/coding-plan',
-    modelMappings: repeatedMappedRoute('MiniMax-M2.7'),
+    modelMappings: [
+      createRoute('claude-sonnet-4-6', 'MiniMax-M3', {
+        labelOverride: 'MiniMax-M3',
+        supports1m: true,
+      }),
+      createRoute('claude-opus-4-7', 'MiniMax-M3.1-Flash', {
+        labelOverride: 'MiniMax-M3.1-Flash',
+        supports1m: true,
+      }),
+      createRoute('claude-haiku-4-5', 'MiniMax-M2.7', {
+        labelOverride: 'MiniMax-M2.7',
+      }),
+    ],
   },
   {
     id: 'bailing',
@@ -706,6 +731,16 @@ export const CLAUDE_DESKTOP_GATEWAY_PROVIDER_PRESETS: readonly ClaudeDesktopGate
     website: 'https://novita.ai',
     apiKeyUrl: 'https://novita.ai',
     modelMappings: repeatedMappedRoute('zai-org/glm-5.1'),
+  },
+  {
+    id: 'runcrate',
+    name: 'Runcrate',
+    baseUrls: ['https://api.runcrate.ai'],
+    authScheme: 'bearer',
+    connectionMode: 'local_mapping',
+    website: 'https://www.runcrate.ai',
+    apiKeyUrl: 'https://www.runcrate.ai/dashboard/api-keys',
+    modelMappings: repeatedMappedRoute('deepseek-ai/DeepSeek-V4.1-Flash'),
   },
   {
     id: 'pipellm',

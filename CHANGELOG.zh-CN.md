@@ -7,6 +7,1843 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
 ---
+
+## [Unreleased]
+
+### 新增
+
+- **Codex 供应商额度**：查询 OpenCode Go 的 5 小时、周和月额度，以及兼容 codex-proxy-rs 服务的日、周预算。 [#1938](https://github.com/jlcodes99/cockpit-tools/pull/1938) · [#3019](https://github.com/jlcodes99/cockpit-tools/pull/3019)
+- **供应商预设**：Codex 新增 UberLLM。Codex、Claude Code 和 Claude Desktop 新增 Runcrate。 [#3075](https://github.com/jlcodes99/cockpit-tools/pull/3075) · [#2952](https://github.com/jlcodes99/cockpit-tools/pull/2952)
+- **MiniMax 预设**：Codex、Claude Code 和 Claude Desktop 可选择 MiniMax-M3.1-Flash。 [#2865](https://github.com/jlcodes99/cockpit-tools/pull/2865)
+- **Antigravity 自动切号**：可在通用设置和平台快捷设置中分别设定 5 小时及周额度的切号阈值。 [#3101](https://github.com/jlcodes99/cockpit-tools/pull/3101)
+- **模型探测**：WorkBuddy 和 CodeBuddy CN 支持按账号与模型组合批量探测，逐项查看结果，也可从单个账号卡片发起。 [#3096](https://github.com/jlcodes99/cockpit-tools/pull/3096) · [#3064](https://github.com/jlcodes99/cockpit-tools/pull/3064)
+
+### 修复
+
+- **Windows 上的 Codex API 服务**：原生网关停止后，子进程不会继续占用服务端口。 [#2850](https://github.com/jlcodes99/cockpit-tools/pull/2850)
+- **Codex API 服务**：选中的用量时间范围页签随当前主题配色。 [#2115](https://github.com/jlcodes99/cockpit-tools/pull/2115)
+- **Antigravity 账号授权**：添加或授权同一账号时可重建缺失的账号文件，并保留原账号 ID。 [#2854](https://github.com/jlcodes99/cockpit-tools/pull/2854)
+- **Codex API 服务**：按套餐排序调度时，将已过期的 OAuth 订阅按免费套餐处理。 [#2174](https://github.com/jlcodes99/cockpit-tools/pull/2174)
+- **Codex API Key**：保存密钥时保留供应商协议和 WebSocket 支持设置。 [#1980](https://github.com/jlcodes99/cockpit-tools/pull/1980)
+- **经典侧栏**：收起时导航图标保持居中，展开时长标签不会挤压图标。 [#2384](https://github.com/jlcodes99/cockpit-tools/pull/2384)
+- **Codex API 服务**：OpenCode 请求携带会话标识且未明确指定身份或续聊时，原生 HTTP 网关可保持同一会话。 [#3046](https://github.com/jlcodes99/cockpit-tools/pull/3046)
+- **Codex API 服务**：检测无响应的网络连接并重新连接，让后续请求可以继续。 [#3106](https://github.com/jlcodes99/cockpit-tools/pull/3106)
+- **Codex SSH**：切号后恢复目标账号的自动连接设置，并刷新匹配的远程会话。 [#3097](https://github.com/jlcodes99/cockpit-tools/pull/3097)
+- **Claude**：正确区分 Pro 和 Max 套餐，并显示对应的额度窗口。 [#3031](https://github.com/jlcodes99/cockpit-tools/pull/3031)
+- **CodeBuddy CN**：在账号摘要中显示剩余积分和资源包到期信息。 [#3023](https://github.com/jlcodes99/cockpit-tools/pull/3023)
+- **Codex 供应商配置**：模板提供默认值时，保留明确设置的模型上下文窗口和压缩阈值。 [#3091](https://github.com/jlcodes99/cockpit-tools/pull/3091)
+- **Codex API 服务**：在受影响的 Codex 路由上，重复内联图片以未压缩方式发送，保留完整请求内容。 [#3084](https://github.com/jlcodes99/cockpit-tools/pull/3084)
+- **Codex 供应商切换**：快捷切换弹框位于最上层且未提交切换时，可按 Escape 关闭。 [#2111](https://github.com/jlcodes99/cockpit-tools/pull/2111)
+- **智谱 Coding Plan**：兼容新版积分额度与旧版 Token 额度响应，显示对应的额度窗口。 [#3126](https://github.com/jlcodes99/cockpit-tools/pull/3126)
+- **Codex API 服务**：菜单栏和托盘汇总 5 小时额度时，排除周额度已耗尽账号的剩余额度。 [#3112](https://github.com/jlcodes99/cockpit-tools/pull/3112)
+- **MiniMax Code**：共用账号的凭据由客户端续期，Cockpit 读取并保存新凭据，避免客户端登录失效。 [#3092](https://github.com/jlcodes99/cockpit-tools/pull/3092)
+- **Codex 会话用量**：汇总、增量统计和单会话 Token 计数均支持压缩会话日志。 [#3079](https://github.com/jlcodes99/cockpit-tools/pull/3079)
+
+### 文档
+
+- 新增韩文 README，并更新巴西葡萄牙语 README 的支持平台列表。 [#2681](https://github.com/jlcodes99/cockpit-tools/pull/2681) · [#2610](https://github.com/jlcodes99/cockpit-tools/pull/2610)
+
+## [1.3.84] - 2026-11-14
+
+### 修复
+
+- **Codex API Key 启动**：恢复第三方 Responses 供应商的默认直连。此前由自动模式接入本地实例网关的账号，下次通过 Cockpit 启动时会恢复使用供应商原始地址。手动选择实例网关和需要协议转换的账号仍可使用网关。
+
+## [1.3.83] - 2026-11-13
+
+### 变更
+
+- **Codex 中的 DeepSeek**：从账号启动、模型供应商实例和 API 服务使用 DeepSeek 原始模型 ID 和统一的思考档位，默认 `max`，保留已保存的有效档位。绑定官方 DeepSeek 的实例继续支持使用旧模型 ID 续聊。
+- **中转站密钥**：保存的密钥支持快捷添加到 Grok CLI，弹框会预填密钥、地址和可用模型。 [#3104](https://github.com/jlcodes99/cockpit-tools/issues/3104)
+- **Codex 额度趋势**：支持自定义日期范围，并汇总期间的 5 小时和周额度消耗，累计消耗以带符号的百分比展示，额度重置不抵扣已消耗额度。明细展示记录时间、剩余额度及变化。历史存储支持设置记录与清理规则、默认账号。新装和升级后均默认仅在额度变化时记录，可手动关闭。账号选择器沿用账号总览的订阅套餐样式。
+- **Antigravity 账号额度**：卡片和列表使用更紧凑的额度布局，悬停重置时间可查看完整信息。
+- **Codex 额度恢复提醒**：通用设置和快捷设置均可查看启用状态、管理 PushPlus Token。
+- **账号选择**：在分组、自动切号、多开、代理设置和 WorkBuddy 模型测试中显示订阅套餐标识，样式与对应平台的账号总览一致。
+- **设置**：Codex 通用设置和各平台快捷设置中的额度阈值、刷新间隔等选项使用统一的下拉控件，Codex 快捷设置中的 API 与代理选项也采用统一行布局。
+
+### 修复
+
+- **Codex API 服务中的 DeepSeek**：修复思考模式下并行工具调用完成后无法继续对话的问题。网关保留整批工具调用，并在批次后发送工具结果。
+- **Grok 额度**：刷新收到空账单时保留上一次有效额度，并显示刷新失败。 [#2819](https://github.com/jlcodes99/cockpit-tools/issues/2819)
+- **Claude CLI**：刷新额度前会采用同一账号在绑定实例中已经续期的凭据，避免使用失效的旧凭据。刷新失败会计入失败数。 [#3105](https://github.com/jlcodes99/cockpit-tools/issues/3105)
+- **Claude 兼容接口**：仅含签名的推理使用隐藏思考块，避免出现空的思考行，同时保留续聊凭据和后续工具调用。 [#3086](https://github.com/jlcodes99/cockpit-tools/issues/3086)
+- **GitHub Copilot 授权**：请求 Copilot Token 被拒绝时，授权弹框显示 GitHub 返回的原因和状态码。 [#3103](https://github.com/jlcodes99/cockpit-tools/issues/3103)
+- **Codex API 服务**：包含内置浏览器标签页记录的会话，可在原账号不可用时凭完整历史切换账号续聊。 [#3099](https://github.com/jlcodes99/cockpit-tools/issues/3099)
+- **Codex API 服务**：原生网关的连接和流空闲超时提示会显示并跳转到对应的文本或生图超时设置。 [#3088](https://github.com/jlcodes99/cockpit-tools/pull/3088)
+- **Codex API 服务**：通过 API 服务启动的实例在首次读取、后台刷新和实时更新额度时，统一向客户端提供可用额度视图，不再因登录的 OAuth 账号订阅额度或混合模式兼容开关拦截提交；真实上游用量及图像额度不变。
+- **弹框**：窗口较矮时，Codex SSH 同步、账号测智确认、实验模型编辑、通知图片预览和自动切号账号选择可滚动。Trae 和 WorkBuddy 自动签到设置在点击遮罩时保持打开。
+
+## [1.3.82] - 2026-11-12
+
+### 新增
+
+- **Antigravity 唤醒**：手动测试和单个任务可以选择「无客户端唤醒」，直接连接 Cloud Code。默认使用语言服务器。
+- Codex API 服务支持选择 Key，预览并应用 Claude Code 用户配置。按该 Key 的模型目录合并环境变量，并保留加密备份供恢复。 [#1721](https://github.com/jlcodes99/cockpit-tools/issues/1721)
+- Codex API 服务的模型规则可按服务目录预填 Claude Code 别名，保存前可检查或编辑草稿。同一上游模型的多个别名均可显示。 [#1721](https://github.com/jlcodes99/cockpit-tools/issues/1721)
+- **Codex API 服务请求详情**：逐次展示 Responses 上游在成功响应中回报的模型，和发送的模型不同时给出提示。 [#2408](https://github.com/jlcodes99/cockpit-tools/issues/2408) · [#2506](https://github.com/jlcodes99/cockpit-tools/issues/2506)
+- **Antigravity 账号**：可按上次成功切号时间排序，列表也展示该时间。 [#1419](https://github.com/jlcodes99/cockpit-tools/issues/1419)
+- **Antigravity 账号**：可在列表展开单个账号，查看各模型的剩余额度和重置时间。 [#1410](https://github.com/jlcodes99/cockpit-tools/issues/1410)
+- **Cursor 账号导入**：Token / JSON 导入支持粘贴 Cursor 浏览器会话令牌。 [#1574](https://github.com/jlcodes99/cockpit-tools/issues/1574)
+- **Codex 模型供应商测试**：单条和批量测试均可指定模型，分别显示首字和总耗时，批量完成后按成功状态和总耗时排序。 [#1799](https://github.com/jlcodes99/cockpit-tools/issues/1799) [#988](https://github.com/jlcodes99/cockpit-tools/issues/988)
+- **仪表板**：在同一个分页视图查看各平台的账号和已有额度明细，入口按钮与页头其他按钮样式一致。 [#1841](https://github.com/jlcodes99/cockpit-tools/issues/1841)
+- **Codex 标签分组**：可单独或全部收起分组，并拖拽或用上下按钮调整顺序。列表、卡片和紧凑视图共用排序。 [#1906](https://github.com/jlcodes99/cockpit-tools/issues/1906)
+- **Codex 额度重置唤醒**：可设置所选额度窗口重置后等待多少分钟再唤醒。已有任务仍在重置后直接执行。 [#2654](https://github.com/jlcodes99/cockpit-tools/issues/2654)
+- **Antigravity 唤醒任务**：按下次执行时间排列已启用的任务，可同时查看下次和上次执行时间。 [#2515](https://github.com/jlcodes99/cockpit-tools/issues/2515)
+- **Codex 模型管理**：可从当前目录勾选并追加模型，保留已保存的模型名称、顺序和默认模型。添加模型时可直接从已配置的供应商拉取可用模型。 [#2558](https://github.com/jlcodes99/cockpit-tools/issues/2558)
+- **Codex 额度趋势**：按账号、日期和分钟采样间隔查看日、周、月额度历史。图表显示所选采样的时间和剩余额度，明细按时间倒序分页，可筛选只看变化。历史存储支持设置记录间隔、账号范围、仅记录变化、保留天数和自动清理周期，可查看记录数和磁盘占用，并预览后按账号或日期清理历史。 [#2846](https://github.com/jlcodes99/cockpit-tools/issues/2846)
+- **Codex CLI 供应商切换**：目标配置写入后，可在提示中重启该配置正在运行的 CLI 后台进程，加载更新后的账号和模型列表。 [#2722](https://github.com/jlcodes99/cockpit-tools/issues/2722)
+- **Cursor Grok Bot 用量**：账号卡片和表格显示有额度账号的 Sand 已用比例和重置时间。 [#2135](https://github.com/jlcodes99/cockpit-tools/issues/2135) [#2256](https://github.com/jlcodes99/cockpit-tools/issues/2256)
+- **Codex 额度恢复提醒**：可配置 PushPlus，在额度刷新发现短周期或周额度回升至 90% 及以上时发送提醒。 [#1610](https://github.com/jlcodes99/cockpit-tools/issues/1610)
+- **Codex 重置卡自动使用**：桌面通知显示自动用卡的结果。同一请求重试时仅提示一次结果未确认，结果确认后再通知。 [#2965](https://github.com/jlcodes99/cockpit-tools/issues/2965)
+- **托盘图标**：通用设置可隐藏托盘或菜单栏图标，后台任务继续运行。隐藏后可从 Dock 或任务栏恢复最小化的窗口。 [#2173](https://github.com/jlcodes99/cockpit-tools/issues/2173)
+- **Codex 账号池唤醒**：可在启动时、按计划或手动依次唤醒 API 服务账号池中未暂停的订阅账号。任务执行时读取当前成员，批次完成后刷新额度。 [#2192](https://github.com/jlcodes99/cockpit-tools/issues/2192) [#1777](https://github.com/jlcodes99/cockpit-tools/issues/1777)
+- **Codex 供应商接入方式**：API Key 供应商可在启动预览选择实例网关或 CDP 注入。可直接鉴权的 Responses 供应商还可直连上游，显示真实模型 ID。 [#2723](https://github.com/jlcodes99/cockpit-tools/issues/2723) [#2651](https://github.com/jlcodes99/cockpit-tools/issues/2651) [#2516](https://github.com/jlcodes99/cockpit-tools/issues/2516)
+- **Codex 重置历史**：在重置次数明细中分页查看与官方客户端一致的近 30 天发放和使用记录；新增独立本地使用记录，保存本工具后续手动和自动重置的时间、触发原因及真实结果。同一请求重试更新原记录，不回填旧数据。
+- **macOS 菜单栏 Codex 额度**：显示当前账号或 API 服务账号池的周剩余百分比；另有额度窗口时并排显示。 [#1087](https://github.com/jlcodes99/cockpit-tools/issues/1087)
+- **macOS Antigravity 菜单栏**：在通用设置或 Antigravity 快捷设置中固定模型或额度窗口，弹出菜单会显示账号实际返回的 5 小时和周额度。 [#1879](https://github.com/jlcodes99/cockpit-tools/issues/1879) [#2324](https://github.com/jlcodes99/cockpit-tools/issues/2324)
+- **添加 Codex API Key 账号**：可按供应商名称、请求地址或已保存的 Key 名称搜索供应商。 [#1797](https://github.com/jlcodes99/cockpit-tools/issues/1797)
+- **Claude CLI 账号**：可直接写入 Claude Code 与 VS Code 扩展共用的全局配置，无需启动终端。通过此方式切号时，本地项目历史保留在同一配置目录。 [#1883](https://github.com/jlcodes99/cockpit-tools/issues/1883) [#2869](https://github.com/jlcodes99/cockpit-tools/issues/2869) [#1864](https://github.com/jlcodes99/cockpit-tools/issues/1864)
+- **Codex SSH 切号同步**：支持选择多台 SSH 同步目标，切号后在后台逐台更新。同一实例恢复已保存的 SSH 项目分组，凭据写入并校验后刷新匹配的远程桌面连接，分别展示文件同步和连接刷新结果。 [#3065](https://github.com/jlcodes99/cockpit-tools/pull/3065) [#2350](https://github.com/jlcodes99/cockpit-tools/issues/2350)
+- **WorkBuddy 模型探测**：向指定账号和模型发送简短消息，读取实际回复，并在账号卡片展示最近探测结果。可从账号的实时模型目录选择或输入模型 ID。默认删除测试会话，删除失败会在弹框内提示。 [#3064](https://github.com/jlcodes99/cockpit-tools/pull/3064)
+- **Codex 代理管理**：可为内网 MCP 等目标配置直连主机。支持主机名和 IP 网段，匹配后绕开托管代理。 [#3029](https://github.com/jlcodes99/cockpit-tools/issues/3029) [#988](https://github.com/jlcodes99/cockpit-tools/issues/988)
+- **Codex API 服务请求日志**：显示并可筛选 TCP 对端 IP 和连接来源。已通过认证但被本地策略拒绝的请求也会记录，不计入上游用量。 [#1862](https://github.com/jlcodes99/cockpit-tools/issues/1862)
+- **Codex API 服务调度**：可优先使用 5 小时额度最早重置的可用账号。 [#2329](https://github.com/jlcodes99/cockpit-tools/issues/2329)
+- **Codex API 服务模型映射**：可为账号池中的官方 OAuth 账号分别设置实际发送的上游模型名。 [#2017](https://github.com/jlcodes99/cockpit-tools/issues/2017)
+- **Codex 批量导入**：预览可显示已查询到的剩余额度，并可设置最低百分比以跳过低于阈值的账号。 [#1165](https://github.com/jlcodes99/cockpit-tools/issues/1165)
+- **Codex API Key**：可单独设置思考深度上限，超限或无法确认档位时在转发前拒绝。既有 Key 默认不限。 [#3063](https://github.com/jlcodes99/cockpit-tools/issues/3063)
+- **Codex 中转模型发现**：添加或启用未配置模型目录的 API Key 中转账号时，在后台查询上游模型。查询完成后启动的实例网关可使用这些模型。 [#2128](https://github.com/jlcodes99/cockpit-tools/issues/2128)
+
+### 修复
+
+- **Codex API 服务模型价格**：GPT-5.6 Luna 的长上下文输出价显示为每百万 token 1.8 美元，自动计算的价格不再显示浮点尾差。
+- **窗口布局**：顶部推广条独占一行、居中随内容收缩，最宽为主内容区的 70%。文案过长时显示省略号，悬停可看全文。仪表盘标题和按钮及 Antigravity 工具栏在空间不足时换行，账号页和设置页的页签可横向滚动。
+- **macOS 和 Windows 的 Codex**：从多开 Codex 的终端打开 Cockpit Tools 时，默认实例切号和启动 API 服务会使用默认实例的配置，避免串用多开目录或误关其他实例。
+- **Codex 速度控件**：适配新版 ChatGPT 桌面客户端，恢复 API Key 模式的原生速度菜单，并按所选档位发送请求。在同一 Codex WebSocket 会话内切速时，按新档位重新握手连接上游。
+- **Codex 唤醒任务**：任务卡片直接显示失败原因，分别提示确认超时和拒绝执行。发出请求前的任务失败不再计为账号失败。
+- **Antigravity 账号卡片**：切换时间在操作按钮上方单独显示。
+- 旧版 Codex 供应商 API Key 缺少模型目录时，编辑或启用账号仍会保留账号已保存的模型。 [#2128](https://github.com/jlcodes99/cockpit-tools/issues/2128)
+- Kiro 企业设备码授权不再因上一轮登录关闭或结果迟到而中断。 [#2878](https://github.com/jlcodes99/cockpit-tools/issues/2878)
+- Codex API 服务请求失败且未返回成员诊断时，继续按各账号自身状态显示可用性。 [#2440](https://github.com/jlcodes99/cockpit-tools/issues/2440)
+- Antigravity 已查询或缓存配额摘要时，缺失的额度窗口独立展示，不再用模型额度填补。 [#2411](https://github.com/jlcodes99/cockpit-tools/issues/2411)
+- Claude 登录窗口根据页面跳转和 Claude Cookie 变化更新状态，账号资料仍在加载时也能检测到登录完成。 [#1881](https://github.com/jlcodes99/cockpit-tools/issues/1881)
+- Codex 火山方舟 Coding Plan 预设在套餐端点提供 GLM-5.3 选项。 [#1966](https://github.com/jlcodes99/cockpit-tools/issues/1966)
+- Codex 重新授权时如果浏览器返回了其他账号，或授权会话已不存在，可以在当前弹框刷新授权链接。 [#1993](https://github.com/jlcodes99/cockpit-tools/issues/1993)
+- **Antigravity 仪表盘**：Gmail 账号显示邮箱用户名，并沿用隐私脱敏。 [#2044](https://github.com/jlcodes99/cockpit-tools/issues/2044)
+- **Codex 账号导入**：导入后在后台刷新额度，保存结果无需等待额度接口。 [#2334](https://github.com/jlcodes99/cockpit-tools/issues/2334)
+- **GitHub Copilot 切号启动**：默认 VS Code 实例按编辑器的窗口恢复设置重新打开。未配置路径时先检测已安装的 VS Code。 [#697](https://github.com/jlcodes99/cockpit-tools/issues/697)
+- **日志查看**：刷新日志时只扫描一次目录，减少文件较多时的重复读取。 [#1715](https://github.com/jlcodes99/cockpit-tools/issues/1715)
+- **Codex 切号进度**：仅切号时，客户端凭据写入成功后立即完成该步骤，本地项目检查显示在同步配置阶段。 [#2063](https://github.com/jlcodes99/cockpit-tools/issues/2063)
+- **Codex 浏览器授权**：在返回授权链接前保持回调端口已绑定。Windows 拒绝端口访问时在授权弹框内说明原因，并提示可用的设备授权方式。 [#2758](https://github.com/jlcodes99/cockpit-tools/issues/2758)
+- **Codex API 服务**：旧网关错误标为客户端取消的上游超时会按真实原因记录，客户端主动取消也不会因此重启共享网关。 [#967](https://github.com/jlcodes99/cockpit-tools/issues/967)
+- **Codex 订阅状态**：账号检查确认已降为 Free 时更新套餐，清除旧付费到期时间，并跳过付费订阅查询。账号检查本身的授权错误仍按原流程处理。 [#2776](https://github.com/jlcodes99/cockpit-tools/issues/2776)
+- **Codex API 服务诊断**：Cloudflare 的 HTML 502／504 网关错误显示状态码和 Ray ID，不再误报为验证挑战。 [#2472](https://github.com/jlcodes99/cockpit-tools/issues/2472)
+- **Antigravity 后台自动切号**：定时额度刷新与自动切号由宿主调度，最小化或关闭到托盘后仍按已保存的周期和目标客户端运行。 [#2291](https://github.com/jlcodes99/cockpit-tools/issues/2291)
+- **Antigravity 自动切号**：Claude、Gemini 或 Argon 的配额窗口达到阈值时也能触发切号。只使用本次成功获取的窗口，继续支持旧版模型配额，并跳过已耗尽的候选账号。 [#2199](https://github.com/jlcodes99/cockpit-tools/issues/2199)
+- **网页查询服务**：保存后立即生效，已启用的服务会随应用再次启动。设置页显示实际监听的本机地址，可直接打开报表。 [#2226](https://github.com/jlcodes99/cockpit-tools/issues/2226)
+- **Codex 实例启动**：启动时跳过跨实例会话全量合并。自动同步开启后，在关闭实例且所有实例均已停止时合并。同步设置和手动确认会提示可能复制大型会话文件。 [#1023](https://github.com/jlcodes99/cockpit-tools/issues/1023) [#993](https://github.com/jlcodes99/cockpit-tools/issues/993)
+- **Codex 供应商网关**：DouBaoSeed、火山方舟 Coding Plan 和小米 MiMo 账号未保存模型目录时，使用对应官方端点的默认模型。 [#1168](https://github.com/jlcodes99/cockpit-tools/issues/1168)
+- **Codex 账号分组**：从分组移动选中的账号时，会将它们移入目标分组，并保留其他分组中的归属。 [#1309](https://github.com/jlcodes99/cockpit-tools/issues/1309)
+- **Linux Claude Desktop**：切号写入配置后，使用已配置的可执行文件启动客户端。 [#2497](https://github.com/jlcodes99/cockpit-tools/issues/2497)
+- **Windows Claude Desktop**：启动目标检测排除后台辅助进程，并优先列出已注册的 Microsoft Store 启动入口。 [#2518](https://github.com/jlcodes99/cockpit-tools/issues/2518)
+- **Antigravity 配额**：模型列表返回 403 且上游未明确限制账号时，继续查询配额摘要，并保留自动刷新。 [#2835](https://github.com/jlcodes99/cockpit-tools/issues/2835)
+- **Cursor 用量**：账号卡片、表格和悬浮卡片显示 The X Subscription 的周用量、重置时间、额外用量余额、本月额外用量、月度上限和自动充值状态。旧套餐显示实际返回的额度及按需用量。 [#2180](https://github.com/jlcodes99/cockpit-tools/issues/2180)
+- **Codex 模型目录**：将旧版可见性字段的 `show` 转为 `list`，避免客户端读取目录时失败。 [#936](https://github.com/jlcodes99/cockpit-tools/issues/936)
+- **Codex 启动**：受管模型目录缺失时从备份恢复。切换模型目录时，先保存新配置，再清理旧目录。 [#1693](https://github.com/jlcodes99/cockpit-tools/issues/1693) [#1687](https://github.com/jlcodes99/cockpit-tools/issues/1687)
+- **Codex API 服务启动**：配置端口被占用或被系统保留时，自动改用可用端口启动。 [#1719](https://github.com/jlcodes99/cockpit-tools/issues/1719)
+- **Codex 中转额度**：重新读取账号列表时保留已查询余额，支持接入 New API 或 Sub2API 用量的 Chat 账号，并区分暂无可查询额度和等待查询。 [#1749](https://github.com/jlcodes99/cockpit-tools/issues/1749)
+- **Codex Responses 网关**：上游明确因函数缺少 Schema 根类型而拒绝请求时，若能唯一定位该函数，以对象类型重试并保留原有约束。 [#1808](https://github.com/jlcodes99/cockpit-tools/issues/1808)
+- **Codex 实例复制**：默认实例的 `vendor_imports/skills` 为文件或失效链接时，保留原路径并完成复制。 [#1828](https://github.com/jlcodes99/cockpit-tools/issues/1828)
+- **Codex 多开实例**：删除实例时在后台探测进程并移动目录，确认弹框会显示处理状态。目录处理失败时保留实例登记。 [#1909](https://github.com/jlcodes99/cockpit-tools/issues/1909)
+- **Codex 账号切换与启动**：仅刷新凭据失效时，仍可使用有效的访问凭据切号和启动，保留重新授权提示。 [#2040](https://github.com/jlcodes99/cockpit-tools/issues/2040) [#1728](https://github.com/jlcodes99/cockpit-tools/issues/1728)
+- **macOS Qoder 多开**：按所选客户端和资料目录识别主进程，避免因目录包含空格或辅助进程关键词而无法确认实例启动。 [#2176](https://github.com/jlcodes99/cockpit-tools/issues/2176)
+- **Windows WorkBuddy 切号**：停止客户端遇到错误时重新检查同一实例，处理升级期间替换的进程。确认目标实例停止后继续切号。 [#2757](https://github.com/jlcodes99/cockpit-tools/issues/2757)
+- **Codex 账号测智**：选择账号和查看结果时显示账号名称与工作区标识，方便区分使用同一邮箱的凭证。 [#2424](https://github.com/jlcodes99/cockpit-tools/issues/2424)
+- **Windows Codex 包检测**：注册探测返回唯一有效结果时，PowerShell 的额外输出不会导致启动失败。 [#2755](https://github.com/jlcodes99/cockpit-tools/issues/2755)
+- **Windows Codex 启动**：Windows 拒绝替换旧版速度状态文件时，按已写入 `config.toml` 的速度继续启动，并保留原状态和备份。 [#1764](https://github.com/jlcodes99/cockpit-tools/issues/1764)
+- **Codex 模型供应商**：卡片显示当前选中的 Key 名称。编辑含多个 Key 的供应商时，直接打开所选 Key 的模型设置，并可从卡片打开目标实例的 `config.toml`。 [#2208](https://github.com/jlcodes99/cockpit-tools/issues/2208)
+- **Codex OAuth 启动**：保留用户为内置 OpenAI 配置手动设置的回环 `openai_base_url`，例如本机 Headroom 代理。 [#1216](https://github.com/jlcodes99/cockpit-tools/issues/1216)
+- **Codex API 服务账号池**：并发导入并添加同一供应商的不同 API Key 时保留各自的账号。保存时如果当前列表暂缺已选账号，会保留弹框与勾选，避免误删池内账号。 [#1704](https://github.com/jlcodes99/cockpit-tools/issues/1704) [#1705](https://github.com/jlcodes99/cockpit-tools/issues/1705)
+- **CodeBuddy CN 与 CodeBuddy 切号**：开启会话共享时，零字节工作区索引不会阻塞切号。正常会话继续迁移，无法恢复索引信息的工作区保留原有历史与账号归属。 [#2640](https://github.com/jlcodes99/cockpit-tools/issues/2640)
+- **唤醒任务备份**：恢复配置时，使用 API 服务账号池的 Codex 唤醒任务会保留启用状态。 [#1527](https://github.com/jlcodes99/cockpit-tools/issues/1527)
+- **Codex Spark 调度**：API 服务路由允许使用 Spark 时，在调用 Key 的账号范围内选择 Spark 额度可用的订阅账号。 [#1385](https://github.com/jlcodes99/cockpit-tools/issues/1385)
+- **Codex 原生网页搜索**：API 服务没有可用 OAuth 账号时，可通过支持该端点的 API Key 供应商转发独立搜索请求，沿用调用 Key 的账号和模型权限。 [#1973](https://github.com/jlcodes99/cockpit-tools/issues/1973)
+- **Codex 生图请求诊断**：请求详情区分请求的图片模型、发往上游的图片模型及实际使用的 Responses 主模型。上游结束但未出图时单独标记错误，并保留上游回报的用量。 [#2343](https://github.com/jlcodes99/cockpit-tools/issues/2343)
+- **Codex API 服务测试**：选择生图模型后，通过独立图片接口发送提示词，并在测试弹框里预览生成的图片。 [#2818](https://github.com/jlcodes99/cockpit-tools/issues/2818)
+- **Antigravity 定时唤醒**：对成功回复的账号刷新额度，并根据服务端返回的数据更新重置时间。 [#2847](https://github.com/jlcodes99/cockpit-tools/issues/2847)
+- **Codex 额度重置唤醒**：后台额度刷新完成后更新下次执行时间。唤醒成功但主额度重置时间仍缺失或已过时，短暂等待后复查一次。 [#2223](https://github.com/jlcodes99/cockpit-tools/issues/2223)
+- **Codex 实例网关接入 DeepSeek Responses**：转发时将已记录的工具结果放回对应调用之后，并将缺失的函数调用结果标记为不可用，让会话可以继续。 [#2433](https://github.com/jlcodes99/cockpit-tools/issues/2433)
+- **Cursor 配额查询失败**：在感叹号弹框内重新查询失败的账号，查询恢复的账号会移出本次待删除名单。 [#2491](https://github.com/jlcodes99/cockpit-tools/issues/2491)
+- **Windows Codex API 服务激活**：服务已经激活、客户端启动已发出但主进程尚待确认时，启动弹框保留待确认状态，可检查运行状态而无需再次启动。 [#2409](https://github.com/jlcodes99/cockpit-tools/issues/2409)
+- **Codex API 服务统计**：切换统计区间后，旧区间较晚返回的手动刷新结果不会覆盖当前区间的总量。 [#2429](https://github.com/jlcodes99/cockpit-tools/issues/2429)
+- **OpenCode Go 会话**：原生网关为同一对话的 Responses、Chat 和上下文压缩请求发送一致的会话标识。同一请求换账号重试时沿用已生成的会话头，并原样转发客户端提供的会话头和提示词缓存键。 [#2367](https://github.com/jlcodes99/cockpit-tools/issues/2367)
+- **Codex 多开模型管理**：恢复默认使用实例绑定账号的供应商模型目录。应用或关闭模型管理时直接在模型弹框内保存。独立实例的模型目录不会进入全局 API 服务目录。 [#2478](https://github.com/jlcodes99/cockpit-tools/issues/2478)
+- **OpenCode Go 识图**：预设补齐支持图片输入的 DeepSeek V4.1 Flash。旧的默认模型目录自动补齐该型号，自定义目录和显式识图设置继续保留。 [#2479](https://github.com/jlcodes99/cockpit-tools/issues/2479)
+- **Codex API Key 模型授权**：可查看目录中尚未加入白名单的模型并补充授权，也可选择跟随当前及未来模型目录。保存策略后生效。 [#2568](https://github.com/jlcodes99/cockpit-tools/issues/2568)
+- **Codex 混合模型路由**：实例目录保留各供应商模型已设置的上下文窗口并派生压缩阈值。不同渠道的同名模型分别使用各自配置，实例显式设置的覆盖仍然生效。 [#2446](https://github.com/jlcodes99/cockpit-tools/issues/2446)
+- **Codex 实例 Skills**：重启时保留实例独立的 `skills` 和 `vendor_imports/skills` 目录，包括空目录和与默认 Skills 内容相同的副本。 启动时复用已有且指向正确的共享 Skills 链接。 [#2611](https://github.com/jlcodes99/cockpit-tools/issues/2611) [#1581](https://github.com/jlcodes99/cockpit-tools/issues/1581)
+- **Codex 桌面额度栏**：账号池为空时显示暂无额度数据，实际用完额度的账号仍显示 0%。 [#2576](https://github.com/jlcodes99/cockpit-tools/issues/2576)
+- **Codex 切号联动 OpenCode**：通过 OpenCode V2 的凭据命令同步并激活所选登录。OpenCode V1 继续使用登录文件。 [#2682](https://github.com/jlcodes99/cockpit-tools/issues/2682)
+- **Codex API 服务续聊**：中转站给完整消息、推理摘要或自定义工具调用写入通用 ID 后，切回 ChatGPT 订阅仍可续聊，保留已保存的历史、工具结果和服务端引用。 [#2792](https://github.com/jlcodes99/cockpit-tools/issues/2792) [#2145](https://github.com/jlcodes99/cockpit-tools/issues/2145) [#2543](https://github.com/jlcodes99/cockpit-tools/issues/2543) [#2090](https://github.com/jlcodes99/cockpit-tools/issues/2090)
+- **macOS 默认 Codex 实例**：桌面客户端继承指向标准 `.codex` 目录的 `CODEX_HOME` 时，也能识别为正在运行的默认实例。 [#2140](https://github.com/jlcodes99/cockpit-tools/issues/2140)
+- **Windows VS Code 中的 Codex 切号**：找不到桌面端且运行中的 Codex 进程属于 VS Code 扩展时，可以直接切换账号。 [#2813](https://github.com/jlcodes99/cockpit-tools/issues/2813)
+- **托盘窗口恢复**：主窗口关闭期间收到恢复请求时，等旧窗口关闭后再恢复，应用保持可响应。Windows 上尚未完成的聚焦操作不会再重新打开已关闭的窗口。 [#2793](https://github.com/jlcodes99/cockpit-tools/issues/2793)
+- **Antigravity 启动路径**：桌面版与 IDE 分别保存和探测启动路径，补齐路径后重试原客户端。 [#2967](https://github.com/jlcodes99/cockpit-tools/issues/2967) [#1001](https://github.com/jlcodes99/cockpit-tools/issues/1001)
+- **Codex GPT-6.1 Sol 上下文**：API 服务默认使用 500K 上下文窗口，并更新仍使用旧默认值的受管模型目录。 [#2886](https://github.com/jlcodes99/cockpit-tools/issues/2886)
+- **ChatGPT 套餐授权**：回调校验失败时在授权弹框内提示，并保留本次授权以便提交正确的回调链接。 [#2872](https://github.com/jlcodes99/cockpit-tools/issues/2872)
+- **WorkBuddy 签到**：签到请求失败且服务端返回 HTML 错误页时，显示实际的 HTTP 状态码。 [#2908](https://github.com/jlcodes99/cockpit-tools/issues/2908)
+- **Claude Code 接入 Codex API 服务**：使用 ChatGPT 订阅调用时恢复稳定的提示词缓存键，按所选账号、模型、会话及代理隔离。 [#2863](https://github.com/jlcodes99/cockpit-tools/issues/2863)
+- **Codex Ultra 推理**：可为支持 Ultra 的模型选择其实际请求档位，重建受管目录或刷新 API 服务后仍生效。 [#2728](https://github.com/jlcodes99/cockpit-tools/issues/2728)
+- **Antigravity 唤醒**：修复 Cockpit Tools 启动后首次唤醒时本地网关 TLS 初始化失败。 [#2837](https://github.com/jlcodes99/cockpit-tools/issues/2837)
+- **Windows Codex 关闭**：按已匹配的 ChatGPT 主进程 PID 关闭客户端，避免 Chromium 子进程树阻塞退出；关闭命令失败时复查目标是否已退出。 [#2868](https://github.com/jlcodes99/cockpit-tools/issues/2868)
+- **Codex API 服务启动**：单独启用服务供外部客户端使用时，已打开的 Codex 桌面客户端继续运行。 [#2921](https://github.com/jlcodes99/cockpit-tools/issues/2921)
+- **Linux Antigravity 切号**：已经退出但仍在进程表中的子进程不会阻塞关闭或重启客户端。 [#2642](https://github.com/jlcodes99/cockpit-tools/issues/2642)
+- **CodeBuddy CN 会话共享**：切号时按客户端保存的最新消息时间合并，恢复同一会话的较新进度。 [#2925](https://github.com/jlcodes99/cockpit-tools/issues/2925)
+- **Antigravity 本地账号导入**：Antigravity 和 Antigravity IDE 页签分别读取对应客户端的登录状态。 [#2914](https://github.com/jlcodes99/cockpit-tools/issues/2914)
+- **Codex 下一步预测**：API 服务绑定 OAuth 账号后，开启原生预测的本地会话仍可生成建议。采样沿用会话已有的供应商和模型。 [#2960](https://github.com/jlcodes99/cockpit-tools/issues/2960)
+- **Codex API 服务续聊**：会话无法安全重建且原归属账号不可用时，Codex HTTP 客户端停止重复请求，并提示如何继续。 [#3071](https://github.com/jlcodes99/cockpit-tools/issues/3071)
+- **Codex 请求速度**：请求日志和详情展示请求档位。网关调整档位时，展示原请求档位和实际发送的档位。 [#2935](https://github.com/jlcodes99/cockpit-tools/issues/2935)
+- **Codex 托管代理**：Codex 进程的 HTTPS 请求走 HTTP CONNECT，修复桌面客户端指定自定义 CA 文件时模型和工作区请求无法连接的问题。 [#2910](https://github.com/jlcodes99/cockpit-tools/issues/2910)
+- **Windows 上的 Antigravity**：切号时若凭据管理器可能已满，会提示如何腾出空间；单条凭据过大时，会明确提示 2,560 字节的上限。 [#2924](https://github.com/jlcodes99/cockpit-tools/issues/2924)
+- **ZCode 自定义数据目录**：切号将登录设置保存到 ZCode 实际读取的位置。复制默认实例时保留该设置，并使用新实例的数据目录。 [#3014](https://github.com/jlcodes99/cockpit-tools/issues/3014)
+- **Codex 授权保活**：默认配置仍持有同一个 OAuth 刷新令牌时，由官方客户端续期，避免稍后启动的 CLI 或 app-server 读到已失效的令牌。 [#2970](https://github.com/jlcodes99/cockpit-tools/issues/2970)
+- **Antigravity 唤醒**：IDE 未内置语言服务器时，手动测试、唤醒验证和定时任务可使用 Antigravity 桌面版自带的语言服务器。找不到语言服务器时，显示已检查的目录。 [#2977](https://github.com/jlcodes99/cockpit-tools/issues/2977)
+- **Windows Codex 切号**：确认默认桌面实例的官方后台服务退出后再写入新凭据，避免旧进程延迟刷新覆盖新登录。
+- **Codex API 服务生图**：配置的 `gpt-image-2.5` 来源可用时，模型列表会返回兼容名 `gpt-image-2`，客户端可发现该名称并向已配置的生图模型发起请求。 [#2861](https://github.com/jlcodes99/cockpit-tools/issues/2861) [#1700](https://github.com/jlcodes99/cockpit-tools/issues/1700)
+- **Antigravity 额度**：仅在额度摘要返回 Gemini 4 Argon 周窗口时显示该周限。模型额度与 5 小时额度不会再被显示成周限。 [#3017](https://github.com/jlcodes99/cockpit-tools/issues/3017)
+- **WorkBuddy 与 CodeBuddy CN 悬浮卡**：按账号页的积分分类展示合计，同一分类下的多份赠送包一并计入。 [#1068](https://github.com/jlcodes99/cockpit-tools/issues/1068)
+- **Windows 悬浮卡片**：显示时按目标屏幕的缩放比例定尺寸，换屏或窗口尺寸变化后可按内容重新缩小。 [#3008](https://github.com/jlcodes99/cockpit-tools/issues/3008)
+- **WorkBuddy 切号**：同时安装 WorkBuddy AI 时，切号使用国内版客户端。路径扫描会排除安装元数据明确标记为国际版的客户端。 [#3067](https://github.com/jlcodes99/cockpit-tools/issues/3067)
+- **Codex 重置卡自动使用**：服务端明确未扣卡且触发条件相同时短暂退避。用卡记录展示生效规则、实际查到的剩余卡数和额度，以及服务端返回的已用卡片编号和重置窗口数。 [#3050](https://github.com/jlcodes99/cockpit-tools/issues/3050)
+- **主窗口尺寸**：开启窗口记忆后，从托盘退出会保存最后的位置和大小；重启时若恢复为最大化，取消最大化后仍会回到保存的尺寸和位置。 [#2984](https://github.com/jlcodes99/cockpit-tools/issues/2984)
+- **Codex 历史修复**：预览列出序号重复的压缩历史。完整修复会在写入前检查，独立索引修复可继续处理其他会话并保留受影响的历史。([#2986](https://github.com/jlcodes99/cockpit-tools/issues/2986))
+- **Codex 本地项目**：可单独预览和恢复项目及会话归属。启动时暂缓恢复会提示原因、可读取的状态文件大小和继续操作的入口。([#3034](https://github.com/jlcodes99/cockpit-tools/issues/3034))
+- **Codex 混合模型路由**：第三方 Responses 请求超时或提前断开、无法确定是否已执行时，直接返回上游错误，避免重复生成。([#2551](https://github.com/jlcodes99/cockpit-tools/issues/2551))
+- **Codex 会话迁移**：可导出包含分支或回退记录的完整聊天历史，并导入其他实例或电脑。导出和导入预览会逐条提示不可迁移的会话。 [#2465](https://github.com/jlcodes99/cockpit-tools/issues/2465)
+- **Codex API 服务额度**：Cockpit Tools 和 Codex 桌面客户端的额度面板均可显示查询到的供应商额度和真实单位，提示查询失败、过期或数据缺失。供应商额度与订阅账号额度分别显示。 [#2890](https://github.com/jlcodes99/cockpit-tools/issues/2890)
+- **Trae 工作台**：账号页、设置和托盘统一显示 TraeWork 与 TraeWork CN，已有账号和客户端路径可继续使用。 [#1965](https://github.com/jlcodes99/cockpit-tools/issues/1965)
+- **Codex API 账号池**：连续三次上游服务故障后暂停该账号十分钟，跨模型累计。兼容账号可接手。模型别名没有兼容账号时返回可重试错误。 [#3060](https://github.com/jlcodes99/cockpit-tools/issues/3060)
+- **Linux 主窗口**：使用直角窗口和应用内的最小化、最大化、还原与关闭按钮，从托盘重新打开后同样可用。 [#1914](https://github.com/jlcodes99/cockpit-tools/issues/1914)
+- **界面翻译**：修复设置、账号排序和标签、签到、会话管理、模型路由、供应商用量及账号启动和导入提示缺少翻译的问题。([#2083](https://github.com/jlcodes99/cockpit-tools/issues/2083))
+- **Grok 额度刷新**：账单未返回可用额度且任务额度请求失败时，继续显示上次查到的额度。
+- **Grok Heavy**：账单套餐过期时显示实时订阅套餐，并从旧版账单响应中读取每周用量和 GrokBuild 用量。([#1805](https://github.com/jlcodes99/cockpit-tools/issues/1805))
+- **Grok CLI 用量**：只取得任务额度时，明确提示 CLI 用量暂不可得。([#2607](https://github.com/jlcodes99/cockpit-tools/issues/2607))
+- **Codex 账号总览**：切换到 API 服务等操作的成功提示在五秒后自动消失，错误提示会保留。 [#2146](https://github.com/jlcodes99/cockpit-tools/issues/2146)
+- **经典侧栏**：折叠或展开侧栏时，导航项高亮背景随侧栏同步调整宽度。 [#2383](https://github.com/jlcodes99/cockpit-tools/issues/2383)
+- **macOS 菜单栏**：主窗口关闭到托盘后，仍可通过菜单栏退出 Cockpit Tools。
+- **macOS 菜单栏**：左键点击状态图标即可查看额度，可从额度菜单打开主窗口。 [#1638](https://github.com/jlcodes99/cockpit-tools/issues/1638)
+- **Claude Desktop 登录**：后台资料探测使用临时副本，失败时保留已保存的登录 Cookie 和上次导出的登录数据。 [#3076](https://github.com/jlcodes99/cockpit-tools/issues/3076)
+- **Codex 会话续聊**：向官方 Codex 转发历史时移除旧格式的消息和自定义工具通用 ID，保留工具调用关联和加密推理。 [#1773](https://github.com/jlcodes99/cockpit-tools/issues/1773)
+- **Codex 供应商模型目录**：第三方与混合路由使用标准 Responses，只有模型的所有可用路由均为支持 Lite 的官方 Codex 后端时才声明 Responses Lite。 [#1868](https://github.com/jlcodes99/cockpit-tools/issues/1868)
+- **Codex 终端工具**：第三方模型映射到 GPT‑5.6 Sol 等仅限 Code Mode 的壳位时，客户端会提供标准终端工具。纯官方路由保留原工具模式。 [#1934](https://github.com/jlcodes99/cockpit-tools/issues/1934) [#2104](https://github.com/jlcodes99/cockpit-tools/issues/2104)
+- **Windows Codex 桌面启动**：从 Cockpit Tools 启动默认实例和多开实例时，由桌面客户端自行选择引擎，避免继承的 `CODEX_CLI_PATH` 指向旧版 CLI。
+- **Codex 供应商网关**：向第三方 HTTP API 转发时保留没有 `call_id` 的客户端页面上下文和任务回执，支持旧会话续聊与 WebSocket 转 HTTP，并保留真实工具调用的关联和附带图片。从本工具启动 Codex 时，第三方 Responses 供应商默认使用实例网关。 [#3078](https://github.com/jlcodes99/cockpit-tools/issues/3078) [#3069](https://github.com/jlcodes99/cockpit-tools/issues/3069) [#1787](https://github.com/jlcodes99/cockpit-tools/issues/1787)
+- **Codex API 服务超时**：在「超时与重试」中设置 HTTP 请求正文和 WebSocket 分片接收时限。界面范围与网关实际生效值一致，保存时保留已有的上游连接超时。 [#3066](https://github.com/jlcodes99/cockpit-tools/issues/3066)
+- **Claude CLI 菜单栏额度**：macOS 菜单栏额度可单独选择 Claude CLI，显示当前 CLI 账号的额度。 [#3041](https://github.com/jlcodes99/cockpit-tools/issues/3041)
+- **macOS Codex 本地 API**：开启系统代理时，从 Cockpit 启动的 Codex 桌面端和 CLI 仍直连本机 API，保留现有代理绕过设置。 [#2825](https://github.com/jlcodes99/cockpit-tools/issues/2825)
+- **Codex 工作区名称**：Team 和 Business 账号在总览中优先显示已保存的工作区名称，登录邮箱跟在名称后面。工作区名称缺失时显示登录邮箱。 [#2875](https://github.com/jlcodes99/cockpit-tools/issues/2875)
+- **Codex API 请求日志搜索**：账号筛选支持按供应商名称和账号显示名称查找。 [#2290](https://github.com/jlcodes99/cockpit-tools/issues/2290)
+- **macOS Antigravity 切号**：切号和切换实例只管理当前系统用户的 Antigravity 进程，其他登录用户运行的实例不再阻断操作。 [#2912](https://github.com/jlcodes99/cockpit-tools/issues/2912)
+- **macOS Codex CLI 切号**：Codex 为过长实例路径使用短控制套接字时，切号后仍可提示重启正在运行的后台进程。 [#2621](https://github.com/jlcodes99/cockpit-tools/issues/2621)
+- **Codex API 服务续聊**：保留 Companion Page 上下文，原账号不可用时，有符合条件的备用账号即可继续原对话。 [#3074](https://github.com/jlcodes99/cockpit-tools/pull/3074) [#3072](https://github.com/jlcodes99/cockpit-tools/issues/3072)
+- **Codex API 服务工具通知**：同一次自定义工具调用连续返回多条结果后，可切换到符合条件的备用账号继续对话。已保存的历史保留原始消息、图片和进度通知。 [#3085](https://github.com/jlcodes99/cockpit-tools/pull/3085)
+- **Qoder IDE 兼容性**：识别新版与旧版安装，导入、切号和启动使用同一资料目录。Windows 新资料目录先由客户端初始化再切号，并区分资料目录与启动失败。支持设备凭据续期和组织账号隔离，企业管理的额度不再显示为零。 额度刷新返回 HTTP 401 时先续期设备凭据并重试，新凭据仍被拒时提示重新授权。 [#2374](https://github.com/jlcodes99/cockpit-tools/issues/2374)
+- **Codex Responses Lite**：工具搜索未指定执行方式或指定由服务端执行时，改由客户端执行，延迟加载的 MCP 工具仍可被发现。 [#3053](https://github.com/jlcodes99/cockpit-tools/pull/3053) [#3012](https://github.com/jlcodes99/cockpit-tools/issues/3012)
+- **Codex API 服务请求头**：请求上游时剔除入站代理和 CDN 路由请求头，包括携带客户端 IP 的请求头。 [#2836](https://github.com/jlcodes99/cockpit-tools/pull/2836)
+- **Claude Desktop 实例目录**：启动时使用所选实例的数据目录，检查两种目录结构下的 Cookie 数据库锁。 [#3032](https://github.com/jlcodes99/cockpit-tools/pull/3032)
+- **CodeBuddy CN 额度明细**：可用的资源包排在前面，并优先展示即将到期的资源包。 [#2691](https://github.com/jlcodes99/cockpit-tools/pull/2691)
+- **ChatGPT 桌面客户端适配**：恢复新版 macOS 和 Windows 客户端的原生续写、运行中接管的 API 服务额度兼容，以及符合条件的自定义供应商 Ultra 推理档。保留原生语音会话 ID 并校验通话目标，用量状态栏和 DeepSeek 余额跟随新版输入区底栏。 [#3059](https://github.com/jlcodes99/cockpit-tools/issues/3059)
+- **Codex API 服务速度和额度**：默认及多开实例使用 API 服务启动时统一采用服务内选定的速度，适配新版 macOS 和 Windows 客户端的原生速度切换。桌面订阅额度用尽后，当前 Key 范围内有可用备号且请求可安全重试时，API 服务可继续发送。 [#2720](https://github.com/jlcodes99/cockpit-tools/issues/2720)
+- **Codex 切号后的本地侧栏**：在同一实例内保留可核验的本地项目置顶、颜色、图标、会话排序和旧版会话置顶。云项目与远程侧栏状态继续按账号隔离，官方客户端重新创建账号归档后仍可恢复旧账号状态。
+- **Codex 实例切换**：指定实例可仅切换账号或模型供应商。供应商网关随目标实例启动，停用 API 服务后恢复原账号的本地项目状态。项目准备推迟时，在切换或服务操作中提示如何重试。 [#1871](https://github.com/jlcodes99/cockpit-tools/issues/1871) [#1776](https://github.com/jlcodes99/cockpit-tools/issues/1776) [#2188](https://github.com/jlcodes99/cockpit-tools/issues/2188)
+- **Codex API 服务会话标识**：会话映射仅作用于 Codex 官方账号。第三方供应商保留原始会话 ID、线程 ID 和提示词缓存键。
+- **Codex API 服务密钥隐私**：账号总览隐藏密钥时，提示气泡和无障碍描述也不再包含完整值。
+- **2FA 密钥恢复**：已保存密钥和近期查询迁入本地数据库加密保存。升级时保留已有记录，旧列表为空或无法读取时，从最近一份包含已保存密钥的本地备份自动恢复。迁移中断后可以续跑。自动轮转和修改保留天数时会保留可能用于恢复的旧备份，直到迁移完成并确认本机恢复检查点就绪。配置备份以原有 v1 格式导出并还原已完成迁移的列表。主库文件缺失时，可在 2FA 页面校验并恢复本机加密检查点。
+- **APIKEY.FUN 已保存密钥**：自动将已有密钥迁入应用加密存储，WebView 存储变化后仍可使用。保存后在后台更新本机加密备份，主文件缺失时可在密钥管理页校验并恢复。可单独导出旧版密钥列表格式的明文 JSON。
+- **唤醒历史**：Antigravity 和 Codex 的唤醒历史改用本地数据库。历史页会先显示可用记录，剩余旧记录在后台恢复。Codex 唤醒任务和执行结果独立于历史加载。迁移期间旧任务文件无法读取时，已保存的任务规则和可用的运行状态仍可使用。
+- **Codex 唤醒执行状态**：升级时保留旧任务的最后运行时间和结果。已认领的定时任务即使在执行中途退出，重启也不会为同一计划时段再次发起请求。 停用正在运行的额度重置唤醒会取消尚未完成的请求，重启后不会重复执行同一次额度重置事件。 [#2539](https://github.com/jlcodes99/cockpit-tools/issues/2539) [#2347](https://github.com/jlcodes99/cockpit-tools/issues/2347)
+- **Antigravity 唤醒**：升级时保留任务规则和最后运行时间。任务页、自动刷新和数据导出共用本地配置，已认领的定时或配额重置唤醒在重启后不会重复发起。
+- **Antigravity 唤醒验证**：账号的最新验证结果和批次历史迁入本地数据库。旧记录在后台恢复时会先显示已有结果，已显示批次可在迁移期间删除，删除后不会重新出现。
+- **账号分组**：各平台的分组、成员顺序和 Codex 配额刷新策略迁入本地数据库。升级时保留旧分组，页面编辑、导入和数据导出读取同一份数据。
+- **Antigravity 账号索引**：桌面端和 CLI 共用本地账号索引与当前账号引用。升级时保留已有账号 ID 和排序，旧文件留存，迁移不会恢复已删除的账号。
+- **Codex 账号索引**：桌面端和 CLI 共用本地数据库中的账号摘要和当前账号引用。升级时保留账号顺序、订阅到期时间和旧索引文件。
+- **平台账号索引**：Claude、CodeBuddy、CodeBuddy CN、Cursor、GitHub Copilot、Grok、MiniMax Code、Qoder、WorkBuddy、ZCode 和 Zed 将账号摘要保存在本地数据库。后台迁移期间旧索引仍可读取，完成后原文件继续保留。
+- **账号身份恢复**：Kiro、Windsurf 和 TRAE 的账号索引与身份字段迁入本地数据库。后台会补齐缺失身份，保留较新的账号更新和删除结果。
+- **界面偏好保存**：Codex 顶部页签、额度显示、导入偏好和隐私模式会在 WebView 存储变化后保留。配置备份会保存已迁移的偏好。
+- **运行偏好保存**：升级后保留 Antigravity 客户端选择、唤醒兼容模式、账号刷新间隔和单账号例外、代理和卡片时间显示，以及 Claude CLI 最近使用的目录。
+- **布局偏好保存**：WebView 存储变化后仍保留平台布局、侧栏模式、分页大小、记住筛选开关、自定义布局图标和紧凑分组外观。配置导出包含这些设置，平台布局导入保存成功后立即更新桌面布局。
+- **账号页筛选记忆**：已保存的筛选、排序和视图选项随应用数据保留，升级时会在后台恢复，清除后的筛选不会从旧存储重新出现。
+- **账号页显示偏好**：升级后保留选中的账号分组、Codex 和 Claude 布局、各平台接入提示的折叠状态及实例排序。Antigravity 和 Codex 会保留自定义账号排序开关和顺序，Antigravity 的实例账号选择器沿用相同的排序偏好。Codex 也会保留 API 服务显示偏好、最近选择的唤醒模型、代理导入协议、模型供应商排序和 CLI 最近使用的工作目录。
+- **本地显示偏好和游戏记录**：升级后保留悬浮卡最近的平台和打砖块积分记录。配置备份使用应用已保存的语言设置。
+- **账号首屏缓存**：账号列表可先显示缓存中的展示数据。账号编辑和 Codex 启动预览从本地存储读取凭据时显示加载状态，读取失败可在弹框内重试。
+- **CLI 账号存储**：共享账号模块沿用桌面端的账号详情加密格式，能读取旧明文详情，并在保存时加密。CLI 可迁移 Cursor 和 GitHub Copilot 的旧索引，并重建缺失的 Cursor 索引。恢复未完成时会提示，并显示已有可用账号。
+- **实例绑定**：桌面端和 CLI 共用本地实例登记。现有绑定和启动设置在后台迁移，目录清理根据当前登记保护仍在使用的实例。
+- **平台当前账号**：各平台的当前账号引用独立写入本地数据库。升级保留已有映射，并发切号和旧引用清理不会覆盖较新的选择。TRAE 各版本的账号页、总览和自动刷新按同一份当前账号解析结果工作。
+- **Codex 重置卡执行记录**：请求标识、待确认用卡、冷却时间和执行记录保存在本地数据库，升级和重启后可继续使用。迁移期间可照常编辑规则。记录达到上限时，优先保留成功用卡记录。 [#3054](https://github.com/jlcodes99/cockpit-tools/pull/3054)
+- **签到历史**：WorkBuddy、MiniMax Code 和 TRAE 中国版的签到历史迁入本地数据库，保留已有记录、同日合并和保留期限。历史页先显示可用记录，其余旧记录在后台恢复。WorkBuddy 同时导入仍可读取的早期 WebView 历史。
+- **自动签到进度**：WorkBuddy、MiniMax Code 和 TRAE 中国版升级时保留各账号的调度时间和已签到日期。修改时间窗口时保留当天已完成的进度，TRAE 手动和自动签到复用原有设备标识。
+- **Antigravity 切号历史**：桌面端和命令行共用本地数据库。后台迁移时，桌面端先显示已有记录，并随迁移推进更新。
+- **Antigravity 额度悬浮卡**：分别显示各个已返回的额度窗口，包含账号实际返回的周额度。 [#2933](https://github.com/jlcodes99/cockpit-tools/issues/2933)
+- **Codex 打开会话**：多份文件共用同一会话 ID 时，按所选实例的会话索引打开当前文件。 [#2841](https://github.com/jlcodes99/cockpit-tools/issues/2841)
+- **Codex 中转切换**：按新供应商配置刷新实例模型列表，并保留已有会话和归档。 [#2457](https://github.com/jlcodes99/cockpit-tools/issues/2457)
+- **Codex 供应商图片输入**：所选模型不支持图片时，纯文本仍走所选模型，带图请求发给已配置的识图模型。 [#1830](https://github.com/jlcodes99/cockpit-tools/issues/1830)
+- **Codex API 模式会话**：客户端重启后保留 API 模式会话列表，需要时恢复本地侧栏索引。 [#1754](https://github.com/jlcodes99/cockpit-tools/issues/1754)
+
+### 变更
+
+- **Antigravity 唤醒**：统一使用新版语言服务器启动方式。手动测试、定时任务和账号验证无需选择 IDE 版本。
+- **Codex API 服务上游故障**：连续三次上游服务失败后，将受影响的账号与模型路由暂停十分钟。每次失败请求只计数一次，成功请求会重置连续失败次数。 [#3061](https://github.com/jlcodes99/cockpit-tools/pull/3061)
+- **Codex 余额开关**：关闭后隐藏中转站余额，并停止自动和手动余额查询。 [#3070](https://github.com/jlcodes99/cockpit-tools/issues/3070)
+- **Codex API 服务生图**：生图模型设置会提示默认模型为 `gpt-image-2.6`。
+
+## [1.3.81] - 2026-11-09
+
+### 修复
+
+- **Codex 切号后的项目可见性**：只切号后手动打开 ChatGPT，同一实例中可核验的本地项目仍可显示。项目分组优先于会话维护恢复，避免大量历史会话阻断分组显示。项目归属使用的 OAuth 用户和工作区与 macOS、Windows 官方客户端一致。
+- **Codex 订阅有效期**：Cockpit Tools 运行期间每小时自动查询 OAuth 账号的订阅有效期，支持在旧日期到期前更新续订结果。各账号按到期时间的分秒错峰查询，无有效期时使用账号固定的刷新时刻。
+- **Codex 重置卡自动使用**：同一账号自动用卡成功后，至少等待 30 分钟才可再次自动用卡，重启 Cockpit Tools 后仍继续计时。 [#3050](https://github.com/jlcodes99/cockpit-tools/issues/3050)
+- **Codex 会话索引修复**：个别会话文件或祖先历史缺失不再阻断所选实例中其他会话的索引修复；保留受影响数据，并在预览和修复结果中列出受影响 ID 与缺失来源。
+- **Codex 大型会话日志**：历史索引预览和修复不再受单文件、单条记录或累计读取量的固定字节上限限制，分块扫描会话日志，无需将正文完整载入内存。
+- **Codex 凭据同步**：即使进程探测返回的是桌面界面数据目录，也能从官方默认认证目录同步同一账号的更新凭据。 [#3052](https://github.com/jlcodes99/cockpit-tools/pull/3052)
+- **Codex API 服务端口恢复**：从报错弹框选择清理当前端口，或切换到随机可用端口。清理失败后可在同一个弹框直接换端口。
+
+## [1.3.80] - 2026-11-07
+
+### 新增
+
+- **GPT-6.1 Terra**：补齐默认实例与多开实例模型清单、API 路由、唤醒预设、模型测试、默认图片输入能力和模型名称显示；保留自定义模型清单，鹈鹕测试支持 Ultra 推理档位。
+- **Codex API 生图**：增加 GPT Image 2.6 Sunburst、Flare 的原生 OAuth 图片接口路由，使用独立图片鉴权，API 服务的默认生图模型为 GPT Image 2.6。可在 API 服务的「模型与能力」直接设置生图模型及来源，并选择 2.6 Flare 或 Sunburst。通过独立图片接口转发复杂度、SVG／GIF 输出和标注编辑，并将 JSON、表单编辑输入转换为 Codex 原生图片引用。Codex OAuth 独立图片请求不再受无关对话模型的禁用设置影响，也不再发送无效的尺寸参数；API Key 和 Responses 的尺寸处理保持原有行为。
+- **Codex Chat 供应商**：支持客户端工具发现，以及生成可复用摘要的远程上下文压缩。
+- **Codex 重置卡自动使用**：在重置次数入口展示自动使用状态，从重置卡明细直接编辑当前账号规则，或设置公共默认规则；支持一次保存到所有账号并覆盖已有自定义及关闭配置。默认临期提前 1 小时、周剩余额度阈值 5%，不覆盖已保存规则。关闭的设置仍可查看，提供实时触发预览；应用运行期间按临期时间或周剩余额度阈值后台使用重置卡，提供执行记录并防止重复扣卡。
+- **Codex 卡片排序** 拖拽账号卡片即可保存自定义顺序，保留当前筛选或分页之外的账号位置；备份包含排序及启用状态，导入时按账号身份恢复。 [#3037](https://github.com/jlcodes99/cockpit-tools/pull/3037) · [@zhbCloud](https://github.com/zhbCloud)
+- **2FA 管理与迁移** 分区展示查询面板和动态码，支持按账号或类型搜索、筛选后全选及批量删除；可将所选或全部已保存账号导出为本地生成的迁移二维码，支持分页预览和 SVG 下载，适用于 SHA1、6 位、30 秒的 TOTP 凭据。JSON 备份继续导出全部已保存记录。 [#3037](https://github.com/jlcodes99/cockpit-tools/pull/3037) · [@zhbCloud](https://github.com/zhbCloud)
+- **模型供应商密钥操作** 编辑已有 API Key 时可显示或隐藏密钥，并一键复制当前完整值；重新打开编辑框或切换密钥时默认隐藏。
+
+### 修复
+
+- **Codex API 启动**：在 macOS、Windows 上通过本工具启动未绑定 OAuth 的 API 服务或 API Key 实例时，保留已完成的新手引导状态及本地项目，无项目的实例同样生效；同一实例切换账号后保留本地项目与会话归属，多个项目共用目录时也能正确恢复。保留真正首次使用的引导，切回 OAuth 时恢复对应账号状态。
+- **Codex 历史会话排序**：完整修复补写本地会话目录时保留最近活动顺序，并纠正此前修复中按最后更新时间排序的会话记录。
+- **Codex API 额度冷却**：额度刷新确认账号恢复可用后解除旧额度冷却，保留查询期间的新限额及其他类型冷却。 [#3030](https://github.com/jlcodes99/cockpit-tools/pull/3030) · [@thinker1008-commits](https://github.com/thinker1008-commits)
+- **Codex Windows 网关端口**：已保存的实例供应商网关端口被系统拒绝绑定时自动重新分配，保留原网关密钥。 [#3040](https://github.com/jlcodes99/cockpit-tools/pull/3040) · [@thekfjie](https://github.com/thekfjie)
+- **Codex Windows 项目分组**：桌面切号后保留当前实例中可核验的本地项目和分组，保留目标账号原有排序，云项目和远程会话继续按账号隔离；修复历史索引备份刷新失败。 [#3039](https://github.com/jlcodes99/cockpit-tools/pull/3039) · [@thekfjie](https://github.com/thekfjie)
+- **Codex 重置结果**：按服务端实际兑换结果提示，未使用重置卡时不再误报成功；结果不确定时重试沿用同一请求标识。 [#3024](https://github.com/jlcodes99/cockpit-tools/issues/3024)
+- **Codex 模型图片输入**：自定义模型清单保存、实例接管和目录重建时保留实际路由的图片输入能力，尊重逐模型开关。 [#3035](https://github.com/jlcodes99/cockpit-tools/issues/3035)
+- **Codex API 路由**：请求排队等待并发名额期间，账号进入冷却后会释放其名额并尝试符合条件的备号，不重新计算等待时限；保留续聊账号归属，无可用账号时返回可重试错误。
+- **Codex API 满载恢复**：遇到账号短暂冷却或并发名额占满时，可安全重试的请求会继续等待并重新检查可用备号。等待期间保持客户端 WebSocket 连接，恢复后原对话无需再次发送消息即可继续。
+- **Codex API 兼容**：保留输出预算，规范化 item ID 非法字符，清理 WebSocket 回放中的输出专属元数据，并在响应中恢复调用方原始指令。HTTP 续聊未指定工具选择时，不再重复上一轮的强制调用。原生 Lite 路由不支持的强制内嵌生图现返回明确错误，并保留原模型和协议。减少长历史和工具流参数复制，并区分图片输入能力与 Codex 专用的原始细节元数据。
+- **Codex 切号**：全局状态为空或损坏时保留项目登记及恢复备份，速度设置仍正常保存，不再重建并覆盖异常状态。
+- **Codex 订阅刷新**：订阅未到期时也可手动刷新有效期，账号卡片、表格、紧凑视图和启动预览入口保持一致。
+- **平台布局**：批量开关保持单行，中转站与平台行的控制列正确对齐；通过表头复选框统一启用或禁用平台；历史选择超过当前布局上限时显示实际已选数量。
+
+## [1.3.79] - 2026-11-05
+
+### 新增
+
+- **平台启用控制** 可单独停止不用平台的自动刷新、令牌保活、唤醒和签到，并保留手动操作。 [#2402](https://github.com/jlcodes99/cockpit-tools/pull/2402) · [@qxo](https://github.com/qxo)
+- **减少动画** 统一减少装饰动画、阴影和滤镜，保留加载反馈与账号状态。 [#2964](https://github.com/jlcodes99/cockpit-tools/pull/2964) · [@lcpdeb](https://github.com/lcpdeb)
+- **Codex 模型目录** 从上游更新模型目录，保留有效缓存与本地配置，新模型可随目录更新提供。 [#2669](https://github.com/jlcodes99/cockpit-tools/pull/2669) · [@jiabaoliu101](https://github.com/jiabaoliu101)
+- **TRAE 国内版签到** 增加签到状态、手动领取、自动签到和执行记录，按国内版与 SOLO 国内版账号处理。 [#2729](https://github.com/jlcodes99/cockpit-tools/pull/2729) · [@eye-gu](https://github.com/eye-gu)
+- **账号时间** 区分成功切号时间与配额刷新时间，支持卡片显示偏好；历史未知时间显示暂无记录。 [#2403](https://github.com/jlcodes99/cockpit-tools/pull/2403) · [@qxo](https://github.com/qxo)
+- **Codex 原生下一步预测** 适配 Vite 与新版 Rspack 客户端，本地 API 连接可启用原生预测，建议通过 Tab 接受到草稿，沿用当前模型和提供方并产生额外用量。 [#2938](https://github.com/jlcodes99/cockpit-tools/pull/2938) · [@HTExplicit](https://github.com/HTExplicit)
+- **MiniMax Code** 新增账号授权、本地导入、首次切号启动与独立多开；按官方接口显示昵称、套餐及积分余额，区分零余额与查询失败。支持手动签到、自动签到和执行记录，重复签到不重复累计；刷新积分保留有效 Token，实例启动与停止互不影响。 [#2919](https://github.com/jlcodes99/cockpit-tools/pull/2919) · [@SkyblueeeLabs](https://github.com/SkyblueeeLabs)
+- **Codex 本地项目恢复** 保留宿主内置项目恢复流程，并提供 Windows 独立审计、恢复及回滚脚本。 [#2955](https://github.com/jlcodes99/cockpit-tools/pull/2955) · [@harryzhou0106-svg](https://github.com/harryzhou0106-svg)
+- **Codex Windows 沙箱恢复** 提供按需运行的诊断与权限修复工具，支持备份和回滚。 [#2982](https://github.com/jlcodes99/cockpit-tools/pull/2982) · [@ws-cczj](https://github.com/ws-cczj)
+- **PR 构建** 共享前端构建产物并复用编译缓存，使用 CI 编译配置验证各平台可执行文件。 [#1771](https://github.com/jlcodes99/cockpit-tools/pull/1771) · [@khanra17](https://github.com/khanra17)
+- **发布构建** 共享构建输入、复用原生 macOS 产物生成 Universal 包，并提供仅生成验收产物的运行模式。 [#1774](https://github.com/jlcodes99/cockpit-tools/pull/1774) · [@khanra17](https://github.com/khanra17)
+- **WorkBuddy 积分明细**：从账号页打开积分概览，查看有效期内和已过期的积分记录、剩余积分及到期时间。账号卡片以紧凑布局突出余额。弹框切换页签或翻页时保留已加载的记录，可查看最近 5 条消耗记录并前往官网查看完整明细。
+- **Codex API 满载恢复**：可开启持续重试，等待上游模型恢复后继续可安全重放的请求。账号统计按上游尝试记录满载次数，包含重试或换号后成功的请求。
+- **Antigravity 桌面切号**：使用系统凭据切换桌面账号时，同步已初始化的原生 `agy` CLI 会话。
+
+### 变更
+- **Codex API 额度换号**：确认额度耗尽后，即使关闭冷却也会排除该账号。可安全续接的请求可超出重试账号数切换至可用备号，会话亲和保留备号供调度。
+- **OpenAI 用量配置**：账号与模型供应商支持独立配置可选的管理员查询 Key，调用 API Key 继续用于模型请求。用量卡片明确标注组织统计，提供配置和重试入口；未配置查询 Key 时不再提示权限不足，查询失败不影响模型调用。金额未返回时明确提示无记录，不再显示为零；小额消费保留有效精度。
+- **模型供应商删除**：删除 Codex 模型供应商时连带删除关联的 API Key 账号，包含凭据失效或缺失的异常账号；单个、批量及测试结果删除入口保持一致。
+- **Codex 额度重置**：成功提示简化为“已重置额度”，不再限定额度窗口。
+- **API Key 代理**：API 服务请求现在遵循各 API Key 账号的代理设置，支持独立代理、继承统一代理和明确不使用代理；桌面客户端与 API 请求共用同一账号代理入口。
+
+### 修复
+- **Cockpit 网关**：共享 API 服务按实际监听设置声明 WebSocket 能力。HTTP/SSE 与 WebSocket 的 Responses 请求统一在网关处理完请求体后开始计首响，跳过保活和限额通知。
+- **WorkBuddy 积分刷新**：恢复积分查询，按官方分类展示套餐基础积分、套餐赠送积分、平台奖励积分和购买积分。修复旧数据中企业 ID 为空的个人账号刷新，并从匹配的账号资料更新昵称。
+- **Antigravity IDE 2.6+ 切号**：同步切换桌面、IDE 和已初始化 `agy` 的共享登录。启用切号启动时，重新打开正在运行的另一端客户端，并刷新已识别的 macOS App Hub 会话。
+- **Antigravity IDE 登录**：共享模式下可从 macOS 钥匙串导入当前账号，独立 IDE 实例切号时会刷新上一个账号遗留的状态。
+- **Cursor X Subscription**：显示官方每周额度重置时间，与月度账单周期分开。
+- **Claude Windows 客户端**：识别微软商店版实际使用的登录目录，切号时写入客户端读取的资料。
+- **Codex 网关兼容**：普通 Responses 保留托管工具，Lite 保留工具命名空间。请求日志记录生效的推理档位，发送前确认本地额度不足时可换到可用账号，短暂的用量日志写入超时不再立即中断服务。本机和局域网地址分开展示。
+- **Antigravity 账号**：写入 IDE 客户端凭据后再更新当前账号。即使配额查询失败，也保存已获取的 Google Cloud 项目和服务条款信息，并在 Google 返回新刷新令牌时保存新令牌。
+- **Codex API 服务**：ChatGPT 官方授权失效后，账号可通过本地网关加入 API 服务。
+- **Codex 切号重启**：普通关闭超时后自动结束残留的 app-server 进程，继续切号与重启，无需手动点击重试。
+- **代理状态**：内核就绪后，订阅卡片不再显示过期的内核未安装、版本不匹配或安装忙碌提示；真实的连接、配置和订阅错误仍会保留。
+
+## [1.3.78] - 2026-11-01
+
+### 变更
+
+- **官方客户端兼容**：账号登录、切号和额度展示对齐当前 Claude、Kiro、Cursor、Qoder、ZCode、WorkBuddy、Devin 与 TRAE 客户端；支持 Devin ACU／美元用量、TRAE 积分计费及无限积分额度。
+- **Codex 代理订阅**：通过 Mihomo 1.19.33 原生执行 Clash/Mihomo 配置，支持本地与加密节点集合、转换表达式、下载代理、DNS 及订阅规则；支持本地资源目录、带鉴权的 HTTP(S) 订阅与跳转。刷新失败时保留分组选择和上次可用配置，无关规则集合下载失败不再阻断单节点和分组。
+- **Codex 速度控制**：API Key 与 API 服务接入自动启用原生速度控件，不再提供独立开关；保留受支持的超高速选项，关闭模型管理时保留原有模型来源。
+
+### 新增
+
+- **Codex 设备限制**：按操作显示明确的官方设备限制错误，暂停受影响操作的重试，并提供本地记录、手动重试和官方帮助入口；清理本地记录不代表释放服务端设备名额。
+- **Kiro 企业凭据**：支持导入已有的微软 External IdP 凭据，并通过对应认证服务刷新。
+- **APIKEY.FAN 双十一活动**：11 月 1 日至 11 日展示专属推广区、导航标识和活动链接，到期自动恢复常规内容。
+
+### 修复
+
+- **Kiro JSON 导入**：兼容 KiroAccountManager 的嵌套凭据与仅 Refresh Token 导出格式，保留认证类型和区域，导入后后台刷新登录态与额度；先保存新凭据再查询额度，防止旧刷新请求覆盖较新凭据或恢复已删除账号。
+- **Claude 订阅与切号**：识别当前组织的真实订阅标签，包括 Free；兼容新版桌面登录 Cookie，同步恢复账号身份与 OAuth 缓存，清理旧登录态，并在下次切号时恢复中断的配置写入。
+- **Cursor 切号**：同步替换凭据，清理旧 Refresh Token 和账号缓存，写入失败时保留原有登录数据。
+- **Qoder 额度与切号**：区分个人与企业额度，同步保存凭据和两类缓存，凭据访问期间保持界面响应；不再把 1% 使用率误判为 100%。
+- **WorkBuddy 额度**：完整读取付费／免费资源包，按日额度使用当天余额；不完整的刷新结果不再覆盖已有余额缓存。
+- **Kiro 额度错误**：使用当前额度接口，不再把功能不支持或限流误判为账号封禁。
+- **ZCode 登录**：BigModel 与 Z.ai 使用官方网页中转和统一桌面回调，同时兼容旧 Z.ai 回调。
+- **额度标签**：Devin 按实际计费模式和日／周额度显示设置展示；Copilot 按量计费额度不再误标为高级请求次数。
+- **Codex 授权提示**：移除由登录页观察推断的“客户端需授权”标识及手动清理入口；历史观察记录不再影响账号展示，真实凭据失效仍正常提示。
+
+## [1.3.77] - 2026-10-31
+
+### 新增
+- **Cockpit 网关**：通过地址和 API Key 接入局域网共享服务，提供专属账号样式，沿用服务端模型、思考档位与生图能力；可查看自身 Key 的预算、用量趋势和请求明细，不暴露上游账号。
+- **Key 预算**：支持按服务端计价的美元用量预算，可设置总额或日、周、月周期，以及每日消费、图片请求数和并发上限。
+- **请求日志**：支持按会话筛选 API 服务日志，从 Codex 用量详情查看对应记录，并区分生图与改图请求。
+
+### 变更
+- **本地数据性能**：优化大数据量下的账号加载、日志查询与 Codex 用量统计，历史数据自动在后台整理。
+- **OpenAI 用量卡片**：统计口径说明移入用量详情，卡片与表格保持简洁。
+
+### 修复
+- **Codex 思考档位**：修复新版客户端 API 模式下受支持模型不显示 Ultra 的问题，保留用户档位设置；需启用原生 Fast 控件。
+- **API 服务续聊**：修复更换 API Key 后携带历史或响应引用续聊失败的问题，权限与用量按当前 Key 计算。
+- **更新说明**：使用本地保存和安装包内置的更新记录，不再依赖 GitHub API 可用性。
+
+## [1.3.76] - 2026-10-30
+
+### 新增
+- **Anthropic 接入**：Codex 模型供应商和 API 服务支持 Anthropic Messages，可配置鉴权、获取或手动填写模型，并使用 Claude 模型对话。支持流式回复、工具调用、网页搜索及上下文压缩；APIKEY.FUN 的 Anthropic 账号可查看余额和用量，实际能力取决于上游服务。
+- **OpenAI 官方 API 用量**：使用现有 API Key 查询按 UTC 统计的消费金额、请求数和 Token；缺少用量读取权限时提供管理员密钥配置指引。官方消费不显示为剩余余额。
+- **Codex 项目与会话修复**：快速修复可恢复当前本地项目和会话归属；完整修复还支持历史快照和会话索引恢复，保留云项目、凭据与聊天正文，并提供本地备份和中断恢复。感谢 @harryzhou0106-svg 提供恢复参考（[#2955](https://github.com/jlcodes99/cockpit-tools/pull/2955)）。
+- **我的皮肤**：保存、切换、重命名、更换和删除本地背景图片，每张皮肤独立保存显示参数；恢复默认不会删除已保存的皮肤。
+- **请求诊断**：无需记录请求正文即可查看请求、历史、工具和指令的体积，以及账号满载恢复情况，便于排查大请求失败。
+- **macOS 正式包签名**：Apple Silicon、Intel 和 Universal 正式包支持 Developer ID 签名与 Apple 公证，签名版本可正常安装，无需手动移除隔离属性。
+
+### 变更
+- **API 服务**：统一使用 Rust 引擎，原有引擎选择自动迁移，保留账号、密钥、端口和会话历史；实例网关和供应商测试也使用 Rust，安装包不再依赖 Go sidecar。
+- **API 协议兼容**：增强 Responses、HTTP/SSE 和 WebSocket 对话兼容性，支持连接恢复、续接与 steering，改善工具调用、压缩响应、旧式请求和用量统计的处理；已产生输出或工具执行迹象的请求不会被自动重放。
+- **账号与供应商管理**：账号总览和模型供应商共用完整编辑器，可分别配置供应商默认模型和单个 Key 的模型，保留账号绑定和模型同步设置。已有供应商在后台同步时仍可使用，保存失败可在弹框内重试。
+- **账号用量展示**：官方 OpenAI API 账号展示今日消耗、请求和 Token，并按官方地址提供独立标签与筛选；其他供应商保留余额和额度展示。详情继续展示上游提供的用量、套餐和模型统计；额度查询失败且无缓存时显示失败提示。
+- **账号卡片**：APIKEY.FUN 卡片采用金色品牌名称和钥匙背景，Codex 账号订阅标识靠右对齐。
+- **更新记录**：打开更新记录或更新弹框时读取 GitHub Release 最新说明，远端修改或删除在下次获取后生效；加载失败可在弹框内重试。
+- **项目主页**：APIKEY.FUN 赞助商链接更新为 apikey.fan，保留赞助商名称和邀请参数。
+
+### 修复
+- **Codex 速度控件**：适配新版 ChatGPT/Codex 客户端，恢复模型菜单中的原生 Fast 控件；额度提示暂不兼容时，速度控件仍可独立启用。
+- **API 服务续聊与换号**：响应未完成、断线重连、服务重启或重试失败后，可恢复已验证的完整历史；原账号额度耗尽时，在安全条件满足且有可用账号时自动换号。续接引用失效或 GPT 拒绝可定位的推理密文时，可在输出前安全恢复并重试；保留指令、可读摘要和配对工具结果，避免重复执行。
+- **API 服务额度与满载恢复**：原账号额度重置时间已知时，可在等待预算内重新检查；满载时优先尝试可用账号，无替代账号时可进行有限的同账号重试。超过预算或无法安全重试时返回相应错误，不误报账号绑定失效。参考 [#2962](https://github.com/jlcodes99/cockpit-tools/pull/2962)。
+- **API 服务连接恢复**：识别 HTTP/2 TLS 断流并清理故障连接；同一路径短时间连续失败时暂时使用 HTTP/1.1，再恢复自动协议协商。保留代理设置和已输出的工具调用，不自动重放已执行操作。
+- **API 服务续接兼容**：识别旧式 `session_id`、合法的桌面和终端宿主工具结果，以及已验证历史中省略的空工具参数，减少续聊和换号时的历史误判，同时保留调用方与账号隔离。
+- **Codex 模型**：官方 DeepSeek 账号使用原生 Responses 并保留思考档位，兼容第三方供应商后续 DeepSeek 型号；为 GPT-6.1 Terra 补齐 Ultra 推理档位。启用供应商模型同步时可恢复被受管速度目录接管的模型列表，保留用户自定义目录及模型上下文设置。
+- **Codex 统计与启动**：补齐续写和分叉会话漏算的 Token；仪表盘按实际存在的额度窗口推荐账号。启动预览打开后若实例配置变化，启动和重启使用当前配置，不覆盖过期草稿。
+- **后台刷新与编辑**：供应商卡片刷新时保持可见和滚动位置；API 服务调度、价格、超时、模型规则、Key、端口、代理、分组选择和 OAuth 绑定的未保存编辑不再被后台刷新重置，保存失败在当前弹框内提示。
+- **Antigravity 额度与唤醒**：悬浮窗完整显示已有额度窗口，修正用量趋势图的日期命中和提示位置；自动唤醒的模型列表与请求参数对齐官方客户端，覆盖 Gemini 3.8 Flash、Gemini 4 Argon 和 Claude 5.5 各档位。
+
+
+## [1.3.75] - 2026-10-27
+
+### 新增
+- 在 API 服务模型中加入 GPT-6.1 Terra，并支持标准、快速、Flex 和长上下文价格的费用估算。
+- 新增应用背景设置：提供四款渐变预设、本地图片选择与预览，支持调整强度、模糊和图片位置。尚无图片时“自定义”卡片显示加号，点击即可选图；修改立即生效并在本机自动保存，仅保留“恢复默认”操作，不改变账号卡片和控件样式。
+- 根据实际 API 地址为 Codex 账号卡片应用对应主题，包括 APIKEY.FUN、ai.ahzm.top 和 yunmoor.com，保留卡片内容与操作。
+- 账号卡片与仪表盘在原有位置使用统一的额度时间样式显示 Codex 最近重置到期时间，临近到期时突出提醒；到期明细持久缓存，按账号分散在约 6 小时刷新，并限制请求并发，打开详情时立即更新共享缓存。感谢 @iamvicliu（[#2724](https://github.com/jlcodes99/cockpit-tools/pull/2724)）。
+- 补充 Antigravity 的 Gemini 4 Argon、Gemini 3.8 Flash 和 Claude 5.5 模型及分组，保留旧模型、档位区别和自定义分组设置；默认自动切号仅检查当前账号实际返回的模型分组。感谢 @Chain813（[#2915](https://github.com/jlcodes99/cockpit-tools/pull/2915)）。
+
+### 修复
+- 修复 Windows 等平台本地 API Key 账号使用客户端默认模型列表时，Sol 6.1 与 Astra 缺少超高速选项的问题；保留模型列表和自定义目录，选择与请求继续使用原生速度流程。
+- 修正 New API 账号卡片额度条与剩余额度文字方向相反的问题，让进度条与可用／总额度使用相同口径。感谢 @specetator（[#2923](https://github.com/jlcodes99/cockpit-tools/pull/2923)）。
+- 取消单个 API 请求时，不再因取消消息被误判为超时而重启共享 Sidecar、打断其他请求。感谢 @limaomei-pixel（[#2909](https://github.com/jlcodes99/cockpit-tools/pull/2909)）。
+- 将展开后的协作工具调用恢复为声明中的命名空间与名称，避免子代理协作出现不支持的工具调用错误。感谢 @jamie950315（[#2901](https://github.com/jlcodes99/cockpit-tools/pull/2901)）。
+- 防止共享客户端模型目录中的第三方模型被分配给不支持它们的 ChatGPT 账号，同时保留官方 Reserve 模型调用能力。感谢 @jamie950315（[#2902](https://github.com/jlcodes99/cockpit-tools/pull/2902)）。
+- Gemini 流式响应中的参数错误仅使当前请求失败，不再错误冷却账号；调用方仍能看到原始上游错误。感谢 @jamie950315（[#2904](https://github.com/jlcodes99/cockpit-tools/pull/2904)）。
+- Kiro 企业账号设备授权与 Token 刷新使用 AWS IAM Identity Center 要求的 JSON 请求格式。感谢 @peisencn（[#2799](https://github.com/jlcodes99/cockpit-tools/pull/2799)）。
+- Claude Desktop Gateway 切换账号时保留用户的隐私、权限、网络限制及模型设置，写入失败时保留原有可用配置；切号在后台执行，不再等待旧网关的进行中请求结束。感谢 @fflow2023（[#2907](https://github.com/jlcodes99/cockpit-tools/pull/2907)）。
+- Antigravity 额度请求在缺少旧版安装元数据时使用后台探测的版本缓存，保留协议版本下限。感谢 @moyuan10086（[#2900](https://github.com/jlcodes99/cockpit-tools/pull/2900)）。
+- 数据管理设置首次进入后保留已挂载内容，减少反复切换页签引起的备份扫描，其他页签不提前加载数据管理内容。感谢 @xhrxgr（[#2740](https://github.com/jlcodes99/cockpit-tools/pull/2740)）。
+- 注入的速度菜单使用官方客户端内置的超高速说明翻译，避免被英文文案覆盖；保留速度档位选择和请求参数。
+- 取消本地开发任务时同步清理开发版应用与前端服务，避免窗口残留和终端继续输出日志，同时保留其他应用实例。
+- 减少 Windows 进程查询暂时不可用时的 Codex 启动误报：优先确认启动器返回的进程，会话检查无法安全开始时保留历史并跳过本次维护；启动结果不明确时显示待确认并提供只读状态检查，检测到目标实例运行后转为成功，避免引导重复启动。
+- 统一 Codex 启动路径缺失时的引导，覆盖账号切换、API 服务、实例、CLI 和原生菜单入口。路径弹框置于其他弹框上方，支持选择程序、检测运行中应用及设置切号后自动启动；保存后继续原操作，取消或失败时不重复启动。
+
+### 变更
+- “修复会话索引”支持在 Codex 客户端和 CLI 运行时直接执行：备份并重置异常索引，保留聊天记录，提交前检查并发变化，并提示完成后重启客户端。
+- 清空已发布公告，客户端成功刷新后不再显示旧公告或自动弹出公告。
+
+
+## [1.3.74] - 2026-10-24
+
+### 修复
+
+- 适配新版 Codex 客户端，恢复未绑定 OAuth 的 API 服务及 OAuth/API 混合配置中的原生速度控件和额度提示；保留官方、远程和图片等模式的发送限制。
+- 修复压缩 Codex 会话头的列表显示和恢复，支持独立压缩会话的导出与同步，保留源历史不变。
+- 补齐 Astra 原生提问弹框和 clock 工具能力，保留当前 Astra/Sol 的自动审核要求，不重置已保存的模型、推理或上下文偏好。
+- 多个输入框或模型菜单同时打开时，注入的模型、速度、额度和会话指标跟随当前会话；新会话不再沿用其他会话的标识与选择缓存。
+- 恢复、导入会话时保留并发写入的新历史，追加会话索引而不覆盖新记录，并支持安全重试补索引；尊重官方客户端对分支引用历史的删除保护，删除未确认时保留恢复备份。
+- 修正 Codex 会话快速连续勾选时选中数量与批量操作状态不同步的问题；固定计数区域宽度，移除操作栏切换状态时的淡入淡出动画。
+- 修复 Rust 与 Go API 服务中部分旧会话、工具历史及新版消息被本地完整性检查提前拒绝的问题；保留工具调用兼容、账号权限和防重复执行限制，并保留上游返回的原始错误。
+- 修复 Codex 启动预览中「CLI 启动」重复打开当前预览或被预览遮挡的问题；携带已确认配置进入工作目录和终端选择弹框，失败时在预览内提示。
+- Antigravity 切号时保留 macOS 钥匙串已有访问授权，避免每次重设凭据访问权限导致反复要求输入密码。
+- API 服务 Rust 引擎连接失败时展示本次请求使用的代理，区分连接超时、本地代理不可达和明确的代理认证失败，不再笼统提示上游未授权；保留账号及上游真实拒绝原因。
+- Codex 用量弹框遇到本地临时读取失败时有限重试，Cockpit 重新连接后恢复查询，并保留已确认数据和分页位置；减少用量统计查询中的重复计算。
+- Windows 启动 Codex 时优先使用已配置的客户端路径，兼容官方 MSIX 安装；按目标程序解析包身份，避免无效的 StartApps AppUserModelId 阻断启动。仅在确认客户端尚未启动的失败后查找其他已注册客户端，启动结果不明确时避免重复启动。
+- 修复 OAuth 授权后带 UTF-8 BOM 的 Antigravity 账号文件解析失败、较新备注可能被旧备份覆盖的问题；恢复前验证加密备份，恢复失败或中断时保留有效备份，保留并发保存的新数据，密钥缺失时明确报错且不生成替代密钥。
+- 修复 Antigravity 桌面版回退到本地 Token 文件时可能沿用旧账号的问题；切号同步系统凭据与桌面回退文件，保留 `id_token`，回退文件同步失败时明确报错。
+- 修复 Codex 账号卡片的请求数、Token 用量和费用随额度重置时间更新而反复闪烁的问题；后台刷新时保留已确认统计，不清空无关账号或窗口，额度窗口真正重置时清除对应旧统计。
+
+### 新增
+
+- 会话管理和启动预览新增独立的“修复会话索引”入口，用于修复编辑消息和聊天分支问题：检查所选会话及祖先历史，在原始记录完整且目标客户端已退出时，备份并重置越界的分页索引，由客户端重新生成，保留聊天记录、账号和 Provider 设置。
+- API 服务调度选项和成员设置新增「会话 ID 映射」开关，默认开启；关闭后向上游保留客户端原始 Session-Id 和 Thread-Id。开启和关闭均通过弹框说明标识隔离与潜在缓存复用的取舍，不再常驻说明文字；确认后保存设置才生效。
+
+### 变更
+
+- Antigravity 配额查询对齐官方客户端 v2.25.0，新增 `Gemini 4 Argon (Weekly)` 额度窗口获取，并将账号卡片与列表中的额度展示调整为与 Codex 一致的单列逐行进度样式（依次展示 `Claude (5h)`、`Claude (Weekly)`、`Gemini (5h)`、`Gemini (Weekly)`、`Gemini 4 Argon (Weekly)` 五行进度）。
+- Antigravity 增量授权参数对齐 Antigravity-Manager v4.9.8，保留语音转写权限；换票与刷新使用原生 OAuth 请求头，凭据剩余有效期不超过 15 分钟时提前刷新，`invalid_grant` 短暂退避重试一次后再报告失败；授权回调兼容 IPv4 和 IPv6 本地回环地址。
+
+## [1.3.73] - 2026-10-22
+
+### 变更
+- API 服务 Rust 引擎取消文本请求的 5 分钟总时长限制、完整响应的 32 MiB 上限、输出项的 8 MiB 累计上限，以及 Chat 转换的 32 MiB／4096 项上限；Codex 流事件限制由 8 MiB 调整为单行 50 MiB。
+- 图片 API 响应上限由 32 MiB 提高至 96 MiB，图片上传的 64 MiB 限制由单次请求累计调整为单文件计算；独立图片 API 保留 5 分钟总时长限制。
+- 取消 WebSocket 等待客户端首条消息的 30 秒限制，Chat 供应商流限制由 8 MiB 调整为单行 4 MiB，账号并发等待队列新增最多 100 个请求的上限。
+- 恢复 API 服务绑定账号的可选 OAuth 额度预留，包括 5 小时与周阈值、安全垫、保护状态及两种服务引擎的请求拦截。新绑定默认不勾选“保留 OAuth 额度”，已有绑定保留已保存的选择；若旧版本已清除预留设置，需要重新开启。
+- API 服务客户端底部与概览共用当前会话的平均输出速度和按输入 Token 加权的平均缓存命中率，停止生成后保留；请求记录区分请求与返回的速度档位。
+- 加快近期 API 请求记录的打开与刷新，新请求采用带索引的摘要并即时更新弹框；保留已有请求历史，不做批量重建。
+
+### 修复
+- Windows 与 macOS 的 Codex API 服务会话改为在当前页面启用额度兼容，无需重载窗口或等待后续页面加载；修正订阅额度耗尽对发送按钮的误拦截，隐藏对应耗尽提示，停用增强时恢复本地额度缓存。
+- 底部与概览的输出速度、缓存命中率统一保留一位小数，直接舍弃后续位数，不四舍五入；99.99% 显示为 99.9%。
+- 减少 Codex 切号后的重复账号刷新与统计，后台刷新期间保留已确认数据；限制启动前会话检查的耗时，并在启动弹框内明确提示超时或恢复失败。
+- 后台刷新失败或切换弹框页签时保留已确认的请求记录，区分无记录、未关联会话与服务不可用，并拒绝旧会话或旧服务绑定的迟到结果。
+- 数据库短暂读取失败时保留已核实的会话平均速度与缓存测量，缓存验证过期后及时失效，切换服务绑定或会话时不沿用旧测量。
+
+## [1.3.72] - 2026-10-21
+
+### 新增
+- **API 服务官方优先、本地兜底**：优先使用已绑定的 ChatGPT 官方授权，遇到可恢复且可安全重试的故障后，尝试同账号本地 OAuth 通道或允许的其他账号。保留明确选择的“仅本地”、对话与工具历史、账号权限和额度限制；官方通道使用默认速度，本地回退保留请求的速度。请求详情展示实际通道及恢复结果。
+- **账号测智**：“鹈鹕测智”更名，新增糖果推理、不同考点的公开精选题，以及数学、代码追踪、长文账本和依赖规划固定答案题。题名明确考点，参考解法默认展开，逐字段展示结果并区分格式符合与最终答案正确性。退役题目保留原题干与判分规则供历史记录查看；支持纯文本与 HTML 并排比较，未完成请求不计分，本地结果不等同于官方榜单成绩。
+- **API 服务用量概览**：紧凑、清晰的弹框按所选模型类别展示 GPT 账号额度、DeepSeek 余额或 Grok 配额，同时显示当前会话指标和服务统计。请求记录可切换当前会话／全部服务并继续加载，保留滚动位置；账号名称、已知套餐标签、请求与实际上游模型、授权通道、Token 和性能与 API 服务口径保持一致。GPT API Key 账号数独立于请求统计读取，按当前服务和 Key 的账号范围计数，切换会话或断连保留已确认数量；弹框收窄至 660px，请求记录紧凑排版，必要时在列表内横向滚动。余额按供应商、计入余额的账号数和金额对齐展示，两页共用按概览内容自适应的高度，上限 700px 且不超过窗口高度的 85%，指标单位缩小，概览合并重复模型，点击弹框外部可关闭。无法关联或缺少有效计时的数据保持未知，历史派发依据不完整时标记为已核实统计。
+- Codex 启动预览常驻“重新授权”入口，账号未出现授权失败时也可主动授权，覆盖原账号凭据。
+
+### 变更
+- API 服务额度、速度和缓存改为统一浅色底状态条，左侧以单个紫色小圆点点缀；速度显示蓝色，额度按显示值沿用账号总览配色：≥80% 绿、≥40% 黄、≥10% 橙、低于 10% 红，无数据显示“—”，点击可查看详情并刷新。 客户端输出速度统一使用 API 服务的首响后耗时口径，按当前会话近期有效请求加权，无法关联会话或缺少有效计时时显示“—”。
+- API 服务客户端隐藏 ChatGPT 订阅额度提示；普通账号仍保留原生提示及真实限制。
+
+### 移除
+- 取消 API 服务启动、页面进入和普通账号添加时的官方授权自动提示；成员管理仍可手动授权，批量加入时继续处理正常账号并报告逐项失败，保留已保存的接入方式。
+- 移除两种 API 服务引擎的 OAuth 额度保留、阈值和安全垫；旧保留设置不再参与调度，真实额度耗尽、Key 范围和账号并发限制继续生效。
+
+### 修复
+- 修正 Windows 更新包的安装格式标识，避免自动更新误选安装包类型。
+- API 服务绑定的 Codex 客户端恢复原生听写入口与转写流程，遵循客户端原生能力和设置，不再接管听写；保留通用音频 API 与实时语音。
+- Rust 与 Go API 请求在流握手后收到额度错误时也可自动恢复，覆盖未绑定官方授权的账号；先冷却耗尽的通道，再尝试安全回退，并遵守上游恢复时间，保留对话和工具安全校验。已产生输出或执行状态不明的请求不重放；未发送的候选不记失败、不占上游重试次数。
+- 修复混合模式下绑定的 ChatGPT 额度耗尽后，独立 API 会话的发送按钮仍被禁用的问题；保留未保存草稿、富文本、活动对话及真实额度限制。
+- Cockpit 管理的 Codex 实时语音连接在重新接管后同步当前 API 服务端口，保留自定义语音地址。
+
+## [1.3.71] - 2026-10-20
+
+### 新增
+
+- **API 服务支持 ChatGPT 官方第三方授权**：绑定原 Codex 账号，在官方授权与本地网关之间选择，保留原账号资料和额度。支持授权管理、自动续期和“不再提醒”；移出服务仍保留授权，测智与唤醒优先使用已绑定授权。官方通道受模型和工具权限限制，不支持生图。
+- **Codex 自动额度同步**：活跃本地 OAuth 账号每 5–30 秒自动刷新额度，无需启动 API 服务；沿用账号禁用、套餐和分组筛选设置。
+- **OAuth 额度保护**：自动执行安全垫、临界区并发限制和请求前后额度确认，展示额度新鲜度与保护状态。
+- **API 服务自动能力兜底**：账号不支持所需能力时，在当前 Key 授权范围内寻找兼容账号；仅在明确未执行且历史可安全重放时切换。
+- **Codex 速度**：恢复标准、快速、超高速三档，保留默认设置并保存用户选择；超高速费用按标准档 6 倍估算。
+- **默认开启 Codex 客户端增强**：纯 API Key 账号无需绑定 ChatGPT OAuth，即可使用官方速度菜单和麦克风录音、取消与重试；档位按模型能力显示，听写通过当前实例的转写 API 回填草稿，也可主动选择发送。原生控件在干净的新启动页面自动加载；启动加载、菜单交互和临时忙碌只延后加载，在安全的启动窗口内自动重试，保留正在使用的窗口和未发送草稿。混合模式下，绑定的 ChatGPT 订阅额度耗尽后仍可继续本地 API 对话。额度徽章在录音和窄窗口下自动让位。通用设置与 Codex 快捷设置共用配置，说明文字对齐，保留用户明确关闭的选择；实际能力与费用仍取决于供应商。
+- 鹈鹕测智结果卡片支持快捷编辑和展示账号标签。
+
+### 变更
+
+- 改善安装包构建缓存，减少 macOS Universal 安装包的重复编译。
+- API 服务新绑定 OAuth 账号默认保留 30% 的 5 小时额度和 10% 的周额度，保留已有设置；接近保留值时加快额度确认。
+- 代理订阅自动更新并按需检查健康状态；沿用节点已声明的证书例外，普通 TLS 节点继续校验证书。
+- OAuth 切号自动保留经本地记录验证且有效的外部桥接。
+- 改善工具协议、流式响应和子智能体历史兼容，相关适配自动生效，无需额外开关或兼容模型名单。
+
+### 修复
+
+- 打包和验证后自动卸载临时 DMG 卷；卸载失败时保留临时文件并明确报错。
+- 修复额度不足换号、重启或切换引擎后，部分宿主消息和旧工具历史无法继续对话的问题。
+- 保留 TLS 故障详情并重建受影响的连接池，不强制重新授权或重放已部分输出的工具调用。
+- 修复 Windows 代理进程退出后残留占用端口，以及从 SUBST 驱动器或链接目录构建时重复 React 导致的启动白屏。
+- 修复模型配置保存与弹框菜单布局；统一 GPT-6 Astra、Sol、Luna 默认上下文为 272,000 tokens、最大 872,000 tokens，保留用户设置。
+- 仅调整图片能力时保留 Responses 原生路径和各 API Key 独立配置。
+- 启用客户端注入的受管 Codex 实例，其前端语音调用同样通过 Cockpit 代理。
+- 修复更新下载重复启动、进度回退的问题。
+
+## [1.3.70] - 2026-10-16
+
+### 修复
+
+- 修复 API 服务部分追问和子智能体续接失败的问题，改善重启、切换引擎和账号后的会话续接。
+- 移除 API 服务对话请求的固定大小限制，改善大历史续接与读取中断的错误提示。
+- 修复 Rust API 服务重启后可能因代理配置尚未就绪而返回 503 的问题。
+
+## [1.3.69] - 2026-10-16
+
+### 新增
+
+- **Rust 原生 API 服务**：新增 Rust 原生引擎，新安装及首次升级默认切换至 Rust，仍可选择 Go。
+- **Grok 与 Cursor**：展示服务端原始套餐值。Grok 补齐 4.7 型号能力与计费，两种 API 引擎均支持客户端工具发现、连续对话和子智能体，适配搜索与思考响应，并在后台更新兼容的请求版本。Grok 识别 The X Subscription 共享额度与实际重置周期，兼容旧套餐，不把购买余额或产品消耗占比当作独立额度；新授权补齐官方 CLI 支持的 workspace 权限。
+- **Antigravity 桌面切号**：WebSocket 请求可明确指定桌面客户端，仅写入凭据或要求重启；未指定目标的旧请求保留原有 IDE 行为。
+
+### 变更
+
+- 顶部导航默认独立展示各平台，Codex API 服务仍与 Codex 保持分组；展开其他未自定义的内置分组，保留自定义分组和布局设置，仍可在顶部布局中手动分组。
+- 移除 API 服务操作中的反代风险提示及对应确认步骤。
+- **Go API 服务**：优化稳定性，改善账号切换、会话续接和错误处理。
+- 更新 Codex 内置模型与默认配置，移除 GPT-5.5。
+
+### 修复
+
+- Windows 默认实例启动与切号使用同一自定义 `CODEX_HOME`，避免启动后读到其他目录的账号。
+- Grok 设备授权缺少完整链接时使用服务端验证地址；缺少数据共享偏好时按官方 CLI 默认退出收集，保留明确偏好。用量不足 100% 时不再因四舍五入显示耗尽。
+- Codex 上下文设置在当前弹框内展示配置冲突与重新载入入口；失败保留草稿，成功同步更新取消时恢复的配置。
+- Codex 启动预览的模型管理展开菜单时保持弹框和操作按钮稳定，模型列表内部滚动。
+- Codex 桌面代理在连续端口不可用时尝试分散候选，保留账号端口归属，说明恢复失败原因，不静默修改运行中客户端的端口。
+
+## [1.3.68] - 2026-10-13
+
+### 新增
+
+- 内置网关支持选择兼容 Images API 的 API Key 账号作为生图来源。按 `gpt-image-2` 或 `gpt-image-2.5` 模型族筛选，并在账号行选择包含后缀的完整上游型号，其他自定义型号按完整 ID 匹配；支持同步单张图片生成与编辑，使用所选供应商及型号，对话继续沿用原有路由。
+- 从已保存账号目录发现的生图型号及手动添加的型号会在本地保留，直到手动删除，删除后不会自动加回。账号行使用适配长名称和小窗口的紧凑型号下拉，缺少型号时可跨分页和筛选定位账号。型号目录操作超时后可重试；在用型号不能删除，实例网关准备期间删除会提示稍后重试。
+- API Key 生图校验参考图片、蒙版及返回图片，阻止从本机或内网地址下载；公网 CDN 跳转在校验目标地址后仍可使用。图片获取失败或取消后，仍记录上游已返回的用量。
+
+### 变更
+
+- Codex API Key 账号统一显示自定义名称或请求地址的主机名，缺失时使用供应商名称或本地化账号标签。账号视图、启动预览、生图来源选择、请求记录、托盘菜单及额度通知沿用同一命名规则。
+- 添加 Codex API Key 账号时默认选择「自定义」，请求地址留空；赞助供应商加载完成后不再自动选中供应商。
+- 生图主模型设置增加醒目说明，明确其用于官方生图转发，与出图模型选择区分；保留官方主模型变化时的手动更新入口。
+- Codex 推理档位在编辑器、保存／导入配置及生成的客户端目录中统一按 Low → Medium → High → XHigh → Max → Ultra 排列，并保留有效的显式默认值及旧配置的隐含默认值。
+- API 服务请求详情区分可识别的流打开超时、流中空闲超时与客户端取消；记录中的超时阈值可定位到「超时与重试」对应字段，其他 HTTP 504 保留上游诊断。默认超时及重试策略保持不变。
+- API 服务重启入口明确为「仅重启 API 服务」，说明会保留 Codex 窗口，但正在进行的 API 请求可能中断。重复点击不再重复排队重启，失败后可重试。
+
+### 修复
+
+- API 服务切换标准／快速后，无需重启网关，后续 HTTP 请求与同一 WebSocket 连接的新请求使用新默认档位；正在进行的请求保留原档位，客户端显式档位仍优先。运行中的服务未确认更新时，提示偏好已保存并可重试。
+- API 服务请求记录使用无前缀的快速／标准短标签，快速采用橙色闪电样式；详情分别保留请求档位与上游原始回报。Codex OAuth 响应中的 `default` 不再把快速请求覆盖为标准，缺少档位证据时保持未确认。因关闭 WebSocket 而被拒绝的握手保留诊断，不再计为推理失败。
+- API 服务快捷面板打开时优先显示用量统计；请求正文记录设置移至服务配置区末尾，并默认折叠，保留既有统计卡片布局及记录开关状态。
+
+## [1.3.67] - 2026-10-11
+
+### 新增
+- API 服务与 API 账号卡片使用普通账号相同的代理按钮、预览和设置，支持跟随统一代理、选择独立代理或不使用代理。保留已有配置，设置控制启动的 Codex 桌面客户端出口，网关上游仍使用各自配置；所选代理准备失败时明确提示并阻止启动。
+- Codex Responses WebSocket 支持转发中断请求，并在同一连接继续对话；HTTP 转发只中断对应响应，已知已结束回答（包括本地中断的 HTTP 回答与等待转发中断期间已结束的回答）的迟到中断会安全忽略，不会误停新回答，中断转发期间仍能及时处理客户端消息与断开。上游因托管工具等限制拒绝中断时，会保留原始错误，当前回答可继续完成，后续对话仍可进行。
+- API 服务请求日志与详情显示受支持成功流式请求的近似输出 Token 速度，排除首响等待；已完整结束的回复在客户端随后断开时保留有效测量，中途取消或未完整结束的回复不测速度。当前日志页按有效样本计算加权速度，未测速度会说明短输出、缺少用量或计时、失败及取消等原因。
+
+### 变更
+
+- Codex 顶部导航以主内容区为中心，在宽窗口中按可见页签收拢，避免尾部多余留白；会话管理收紧搜索筛选和日常操作，仅在存在会话时展示批量操作，禁用的删除操作使用中性样式。顶部排序支持本地保存失败提示与重试，并纳入配置备份。
+- 恢复 Codex 账号卡片、清单、启动预览及 API 服务页的标准／快速选择。API 默认速度与账号速度分别保存，切号时将账号速度同步到目标实例，并写入客户端当前 profile。正确转发 Fast 请求别名，避免协议转换丢失客户端明确选择的标准档或将其统计为快速。默认保持标准档；请求显式档位与已有会话的独立速度设置优先。
+- Codex 会话可见性修复执行计划中的 rollout 文件时间校正，仅统计实际完成项；时间回滚保留当前文件内容，包括修复期间追加的历史。
+- API 服务新 OAuth 绑定默认保留 5 小时及周额度各 10%；绑定弹框以轻量行内摘要展示当前保留比例并支持编辑，已有保留比例及关闭状态保持不变。
+- API 服务请求日志按固定列对齐请求来源、账号、Token 用量、估算价值和性能；代理与请求 ID 列可按需显示并保存偏好，小窗口通过横向滚动保持字段对齐，固定操作列使用不透明背景。刷新期间保留当前列表或空状态，不再显示加载文案过渡；刷新失败时仍保留已有日志。
+- API 服务请求详情采用紧凑的耗时与速度卡片、层次清晰的账号尝试记录和独立快照区域，并适配小窗口布局；页面标题、速度控件和卡片操作保持清晰，避免互相挤压。
+- API 服务新配置默认每个账号允许 2 个并发请求；已有配置的限制保持不变，包括 0（不限制）。
+
+### 修复
+
+- 关闭应用内全局代理后恢复启动时继承的代理与绕过环境变量，首次以关闭状态启动时也保留原有环境。
+- Codex API 服务在取消或连接关闭与上游失败同时发生时保留已确认的限流冷却，包括首个流事件尚未输出的情况，及时停止向已取消的客户端输出，并避免影响较新的凭据。
+- Codex OAuth 续聊与本地上下文压缩回放搜索历史时补齐仅使用缓存的搜索工具声明，兼容 Responses Lite，并保留明确指定的工具选择。
+- Codex OAuth HTTP 请求遇到明确拒绝的历史推理或压缩密文时仅恢复重试一次，保留消息、推理摘要和工具结果；明确的错误目标不会清理未匹配的密文，Unicode 错误文本也能安全处理。被拒密文按账号、实际认证请求头与会话隔离，后续请求避免重复发送；恢复成功后的首响耗时包含重试等待。
+- Codex Chat 兼容请求缩短超长工具调用 ID，按原 ID 保持调用与结果配对，拒绝孤立结果误绑定，并避免与已有 ID 冲突。
+- 使用 Chat 兼容供应商的实例网关在收到有效结束原因后支持正常 EOF，并保留末尾用量；未结束的候选回答、残缺函数参数、上游报错、读取失败与取消请求不会误判为完整回答，转换后的 Responses 事件保持正确的 SSE 分隔，空工具参数在各结束事件中保持一致。
+- Codex 紧凑账号视图在窄窗口保留账号名称和操作按钮，账号表格横向滚动不再受样式加载顺序影响，固定操作列不再透出底层文字。弹框内下拉菜单显示在所属弹框上方并适配视口，备份管理的关闭操作在滚动时保持可见。唤醒任务校验定位到错误字段；唤醒、OAuth 绑定、数据迁移、Codex 启动预览、公告和 API 服务使用风险提示弹框将键盘焦点保留在最上层，关闭后返回原控件；启动预览子弹框返回实际打开它的入口，点击遮罩丢失焦点后 Tab 会回到最上层弹框，Escape 按显示层级关闭当前弹框，即使低层弹框后打开也不会误关底层，待确认的唤醒请求显示在其他弹框上方。无效数据文件导入会明确提示 JSON 格式错误，不再误提示为空。状态、CLI、诊断和备份目录说明遵循所选语言及实际行为。
+- 备份目录加载失败后仍可更换；旧备份不可读时可保留原文件，仅切换到可写目录，恢复选择在重启后保留，不移动账号或应用配置数据。备份读取过慢时显示可重试的超时提示，不再一直显示加载中。
+- Codex 账号授权过期、无效或被服务端撤销时，卡片、表格和紧凑视图保留重新授权入口，保存的错误提示不含原始错误码时也可重新登录。强制刷新 Token 遇到网络失败时，不再把仍有效的授权误报为已过期，也不会在没有授权失败依据时引导重新授权。
+- 关闭 Responses WebSocket 传输后，已有 Codex 会话可自动回退 HTTP，保留上下文继续聊天，无需新建对话。
+- Codex 普通 OAuth 账号池的语音控制连接与通话创建统一使用同一本地网关，避免 404 失败，并保留用户明确设置的语音地址。
+- 切换 Codex 对话后，额度与供应商余额徽章跟随当前可见输入区，位置及所选模型展示保持与当前对话一致。
+- API 服务在账号暂时读取失败时保留账号池与 Key 绑定，并自动限次重试恢复配置；部分账号不可读时，正常账号继续服务，受影响的 Key 保留原账号范围，账号重新保存后自动恢复。配置和凭据未变化且经本地核验的运行中服务可继续使用，恢复进度可见，恢复后清除旧提示；需要手动处理时提示检查账号与 Key 绑定。停用会取消恢复，已删除账号、撤销的 Key 和收紧的访问范围不会回退到旧配置。
+- Codex OAuth 账号选择“不使用代理”后，重启桌面客户端会直接联网，不再依赖 Cockpit 本地转接；退出 Cockpit 不再导致这些直连启动的客户端断网。
+- 原生 Clash/Mihomo 订阅节点保留原始参数，不再使用 Cockpit 自行维护的协议或参数白名单，由已安装内核在测速和使用时判断兼容性。测速失败可重试，内核配置错误与连接失败分别提示，此前被拒绝的订阅缓存会提示刷新；继续保留本地文件访问、系统路由与持久化网络集成边界。
+- 订阅下载区分 TLS 连接失败、链接被拒绝和跳转受限，避免把其他网络错误误提示为跨站跳转。
+- Codex 后台刷新配额、订阅或凭据时保留账号已保存的代理选择，切换节点、恢复跟随和禁用代理不会被覆盖。
+- Codex 历史修复与同步保留原始 rollout 字节和分页游标；已停止的实例可以接收相同历史的新增内容，不替换已有字节。拒绝无法安全重建的分页链部分转移、分叉合并、运行中目标的历史更新及旧日志备份覆盖。
+- Codex 会话导入拒绝清单与 rollout 会话 ID 不一致的包；批量导入后续会话保存索引失败时，保留此前成功导入会话的索引，仅移除当前失败会话的暂存文件。
+- 设置为需要确认的 Codex 定时唤醒在确认后才发送；取消、关闭确认、超时和重启均不会发送或重放已认领请求。
+- 删除导入或旧实例时保留原目录；注销实例时整目录移入回收站须匹配实例所有者，并有本应用创建目录的来源记录。
+- Grok OAuth 对话转发使用当前稳定版客户端版本，避免旧固定版本被上游拒绝；配额查询在本机 Grok CLI 版本检测失败时使用相同的新兜底版本。
+- 客户端主动取消的 API 服务请求不再记成网关错误：请求日志按 499 与「客户端取消」归类，不再与网关故障混淆。
+- API 服务的模型不可用错误遵循所选语言，各请求路由使用一致的说明。
+- 账号并发或用量冷却等重试类错误会带上可安全透出的 `Retry-After` 重试时间，客户端可据此退避而不再盲目重试。
+
+## [1.3.66] - 2026-10-07
+
+### 新增
+
+- API 服务请求日志支持首响耗时和请求详情，展示账号尝试轨迹及失败阶段；可选在本地记录有限长度的客户端与上游请求快照，默认关闭，支持单独清除已存正文。记录开关在并发保存配置及重启后保持用户选择。
+- Codex Chat 兼容回复支持流式及非流式搜索 URL 引用，使用标准 Chat Completions 引用格式，文本位置兼容多段内容和 Unicode 字符。
+- 语音反代支持 Codex backend 通话与控制连接路由、听写转写及 OpenAI 兼容音频接口。OAuth 账号使用 ChatGPT 转写服务并支持 JSON／纯文本返回及对应的内容类型；API Key 供应商可转发转写、翻译、语音合成及上游支持的流式响应，保留音频与语言提示，并沿用既有账号范围。混合账号池为语音合成和翻译选择 API Key，保留 OAuth 绑定限制；旧音频请求的迟到失败及重试暂停不会使新凭据失效。
+- Codex 模型管理支持每模型默认推理档位，以及模型、价格、别名和路由配置的 JSON 导入导出；导入先预览冲突并说明字段缺失、格式无效或不受支持的问题，默认保留已有配置，不包含账号凭据或 API Key，导入价格后在后台更新历史费用估算。
+- API 服务账号池失败记录显示可复制的请求 ID 与失败时间，便于对照日志排查；不同 API Key、模型和请求类型的诊断分别保留，无关请求成功或迟到结果不会清除较新的失败。
+- 通用设置与 Codex 设置弹框支持在 OAuth 切号时可选保留已安装的 Codex Web GPT 桥接；仅保留经本地集成记录验证的桥接，默认关闭。
+- API 服务账号池异常显示相关账号及具体筛选原因，区分账号范围不匹配、凭据映射失败、绑定账号未加载及未进入当前请求候选池；客户端同步收到本地化的范围筛选错误说明。
+- 账号池异常新增“检查绑定／检查配置”和逐条“清除记录”；公开 Key 可直接定位到对应策略，生图、内部和实例请求进入账号页并提示对应检查方向。清除仅移除诊断记录，保留账号认证、额度及调度状态，后续失败时重新显示异常。
+- 生图转发支持单独设置主模型，与图片工具模型分别配置；留空沿用 gpt-5.5，所选 OAuth 账号需支持该主模型的 image_generation。
+- Codex 额度设置支持选择参与平台及分组定时刷新的 OAuth 套餐；默认仍全选，手动刷新、当前账号刷新、Token 保活及其他账号类型沿用原有行为。
+- 日志支持内容搜索及可选的正则表达式，可与日志级别组合筛选并复制匹配条目；筛选在可取消、带超时的后台任务中执行，日志读取在后台进行并限制等待时间，失败提示保留在日志弹框内。
+- 通用设置新增可选的 OLED 配色，深色模式使用纯黑背景，浅色模式使用白色背景；保留既有默认配色和其他主题。
+- Codex 会话用量新增按本地日期计算的“今天”范围及每日估算费用，沿用既有内置模型价格；包含未计价模型的日期明确显示无法估算，保留已保存范围及近七天默认值。
+- 额度悬浮窗新增极简额度样式和背景强度调节，与通用设置同步；文字保持清晰，默认保留原完整卡片及背景。
+- Codex 会话导入支持可选的项目路径映射，便于在电脑之间迁移聊天；更新执行目录及对应权限路径，保留消息原文，并在客户端支持时归入已有目标项目。不填写映射时保留原导入行为。
+- 启动页设置支持分别选择 Antigravity APP 和 Antigravity IDE。
+
+### 安全性
+
+- 更新 TLS 与 QUIC 依赖，覆盖已公开的 OpenSSL 缓冲区安全、证书撤销解析和流重组内存耗尽问题。
+
+### 修复
+
+- Codex API 网关在刷新或旧请求迟到完成时保留较新的凭据，刷新期间隔离被拒 Token，并保留仍有效的额度冷却。
+- Codex WebSocket 在激活阶段正确返回上游断链错误，客户端切换上下文窗口时重新建立响应链；Chat 兼容流区分完整结束与输出截断。
+- Codex 转发保留兼容供应商的推理状态和请求的搜索来源。
+- Codex 自动切号与额度预警按实际窗口时长匹配短周期及周额度阈值，支持周额度位于主窗口的仅周额度账号；忽略缺失窗口，未返回时长时沿用原字段映射。
+- API Key 转发补齐内置模型能力查询，避免 GPT-6.1 Sol 的 Responses Lite 请求丢失推理上下文而失败。
+- OAuth 账号缺少身份 Token 元数据时，写入客户端凭据仍可从访问 Token 补齐账号 ID；保留已有有效账号 ID，不影响独立访问 Token 登录。
+- API 服务在首个有效输出前识别明确的账号额度耗尽或停用错误，并在授权候选范围内尝试其他账号；已经产生有效输出的请求保持原有处理，避免重复执行。
+- WebSocket 客户端在等待上游首响时断开，会及时取消请求并释放账号并发槽位，避免静默上游继续占用资源。
+- 自动识别带自定义端口的 HTTPS 代理订阅链接，避免误判为普通代理信息而无法导入。
+- 自建代理组选择成员时保留展示不可用的订阅节点及原因，并提供单节点证书选项授权；明确授权后即可添加成员，弹框保持打开且保留已编辑内容。
+- Codex 同优先级可用账号在各 API Key 范围与模型内均匀轮询，账号临时退出或重新进入池时仍正确推进；不同 Key 和模型不再相互占用轮次，保留既有路由优先级。账号范围先于额度保留及备用选择生效，避免范围外账号阻止授权备用账号被选中，或造成误导性的范围错误提示。
+- Codex Token 在途刷新结束时保留较新的授权、账号编辑与额度数据；旧刷新响应与错误不再覆盖新凭据或误标新授权，已删除账号不会被刷新结果恢复。
+- 编辑供应商 API Key 时保留接入模式、模型设置及账号记录，并保持默认实例、多开实例、模型路由及 API 服务账号绑定有效；引用更新失败时保留原账号，支持重试。
+- 同一供应商下不同 API Key 分别保存模型目录、上下文设置与识图能力，保存一把 Key 不再覆盖其他 Key 的模型配置。
+- Codex 启动恢复设置在通用设置及 Codex 设置弹框中一致保存与回读，关闭后不再悄悄恢复为开启。
+- 混合模型路由恢复不再把 API 服务或供应商网关绑定当作 OAuth 账号，避免误报绑定账号不存在。
+- 供应商网关启动失败时保留原客户端配置，避免留下不可用的本地地址；停止网关时记录实例、端口及原因，便于排查连接失败，正常停止的网关不再计为异常。
+- Windows 默认 Codex 启动不再继承受管实例的配置目录与用户数据目录参数。
+- 账号暂时不可用时保留 API Key 声明的账号范围，包括部分账号缺失的情况；无法解析任何公开 Key 时保留上次网关配置和认证文件，避免写出不可用配置。
+- 账号卡片、启动预览和设置统一显示公开 API 服务状态；停用时确认端口释放，即使停止失败也尝试恢复客户端配置，失败在当前设置弹框内显示并可重试。
+- 复制 Codex 实例后使用副本自己的会话历史和本机项目映射，包含已提交的 SQLite WAL 数据、无目录项目及历史索引过期的旧副本；历史不完整时拒绝发布副本，复制在后台执行且不占住实例登记锁，取消后不登记实例。
+- macOS 关闭 Codex 时直接向选定实例请求退出，避免模拟按键权限报错及切换前台窗口，并保留该实例后台进程的清理。
+- CLI 刷新凭据兼容未返回 id_token 的响应，保留轮换后的 access_token 和 refresh_token；有旧身份信息时继续保留，桌面启动仍执行凭据预检。
+- 设置保存等待磁盘或配置锁时，已有配置仍可读取；保存失败保留上次成功设置，配置锁等待超时后可重试。
+- Codex OAuth 完成后保存授权前填写的密码、2FA 等账号信息；本地保存失败时保留弹框并支持重试，无需重复授权，也不清空已有信息。
+- Codex API 请求在 Rust 转发及 Chat 协议转换时保留客户端明确指定的并行工具设置；携带 Responses Lite 标记的请求继续遵守串行要求，Chat 请求未指定时保留 Lite 模型的默认串行行为。
+- 重启后保留已选择的 Antigravity 客户端和分组默认平台，避免安装探测或布局兼容处理改回 IDE。
+- Antigravity 自动切号沿用所选 APP / IDE 客户端，APP 使用与手动切号相同的系统凭据写入及启动流程。
+- macOS 会话同步、恢复等操作支持新版 ChatGPT / Codex 内置 CLI 路径，并保留旧版客户端兼容。
+- Codex 周配额及重置时间排序按实际配额窗口计算，支持仅有周额度的账号，并将缺失额度放在末尾。
+- Windows Claude 切号备份兼容源文件的 EFS 加密属性，避免因目标目录无法保留该属性而中断；文件内容及原文件保持不变。
+- Linux 托盘可见内容未变化时跳过菜单重建，减少 GNOME AppIndicator 重复更新；失败更新可重试。
+- Codex 启动预览在账号详情超过窗口可用高度时保留标题及启动按钮，正文在弹框内滚动；Token 到期展示区分请求授权与身份信息，不再仅因 id_token 到期显示授权危险状态，刷新说明明确 id_token 仅在上游返回时更新。
+- Codex 实例启动时保留与默认配置不同的独立 Skills、规则及 `AGENTS.md` 指令，避免被默认实例内容替换。
+- Claude Cookie 数据库存在待恢复 SQLite 日志时，通过临时副本读取，不修改原始配置；允许未登录时打开验证窗口。
+- 实例供应商网关和固定供应商路由遵守已配置的账号并发及等待限制，并发槽位保留至响应结束；按绑定账号与上游模型遵守供应商 Retry-After 暂停时间。
+- 将已明确撤销的 Codex access_token 标记为需要重新授权，停止在切号及配额请求中重复使用；获取新凭据后恢复。
+- 自动网关模型目录保留用户在「模型管理」中明确配置的模型，支持比内置清单更新的模型。
+- API 服务请求费用估算遵守用户明确编辑的长上下文价格，包括配置了 Priority 价格的模型上的 Standard、Flex 请求；未编辑及旧配置继续使用既有倍率。
+- 单账号刷新显示成功或具体失败原因，完成后恢复刷新按钮状态。
+- 补齐所有支持语言中的账号分组「全部」页签翻译。
+- 会话操作识别运行中的 Codex 默认桌面实例，不再要求受管实例目录参数。
+
+## [1.3.65] - 2026-10-02
+
+### 变更
+
+- Codex Pro 套餐标签统一显示为 PRO 100、PRO 200、PRO 500，优先采用官方档位。各档位使用更清晰的配色，PRO 500 增加轻量扫光与星芒效果，并跟随系统减少动态效果偏好。
+
+### 修复
+
+- 修复 Codex 官方登录凭据回收和 Windows 安全认证存储切号问题；最终导入失败时保留凭据，支持重试导入。
+- 减少大量 Codex 账号批量导入时的卡顿和重复资料查询，避免资料刷新覆盖较新的账号信息。
+- 优化 Windows 下 Codex 的切号与启动速度，减少进程探测超时和重复等待，并修复启动时弹出黑色终端窗口的问题。
+- 修复默认实例从账号切换到 API 服务后无法启动的问题；绑定保存失败时会停止启动并提示错误。
+
+## [1.3.64] - 2026-10-01
+
+### 变更
+- 公共数据目录入口统一使用 `.cockpit_tools` / `.cockpit_tools_dev`；已有安装自动建立兼容链接，保留已有账号及运行中实例路径，无需手动迁移。Codex 模型供应商预览显示实际配置的存储路径。
+
+### 修复
+- 修复 Windows Codex 因历史进程 ID 已退出或被其他程序复用而无法切号、启动的问题，保留对 ChatGPT 进程的实例归属保护。
+- 修复 Windows 默认 Microsoft Store 实例启动时，配置的代理未可靠传入 Codex 子进程的问题。
+- 修复 Codex 模型供应商 Responses 流式回复积压到生成结束才显示的问题，回复事件现在会及时送达客户端。
+
+## [1.3.63] - 2026-09-30
+
+### 新增
+
+- 新增 GPT-6.1 Sol 官方价格估算，覆盖缓存读取/写入、Fast/Flex 档位和长上下文费率。
+- 内置模型目录、唤醒/鹈鹕测智选择、供应商测试候选和网关原生模型识别新增 GPT-6.1 Sol，保留已有默认模型选择；GPT-6.1 Sol 在唤醒任务和鹈鹕测智中支持 `ultra` 推理档位。
+- 模型供应商提供“鹈鹕测智”入口，复用现有弹框，支持选择已保存的供应商、API Key 和模型；结果标明来源，共用历史和重试。测试使用独立临时网关，重试时重新读取已保存的凭据。
+
+### 修复
+
+- 模型供应商对话测试的本地 Responses 网关与唤醒统一使用默认模型 `gpt-5.6-luna`，供应商目录包含该模型时优先选择；保留手动指定模型及供应商自身的上游模型。
+- 手动刷新配额失败时现在会提示本地代理错误，不再没有任何反馈。
+- Windows 上扫描 Antigravity 元数据时不再探测 WSL 路径，避免顺带启动 WSL 或长时间卡住。
+- 其他批次更新时鹈鹕测智结果不再自动跳走，重试失败项会继续停留在当前批次。
+- 窄窗口下 Codex 账号工具栏按钮不再挤压搜索和筛选输入框。
+
+### 变更
+
+- 清理 5.5 之前的 GPT 内置模型、供应商测试候选和网关旧兼容槽位，DeepSeek 改用当前型号槽位；历史日志保留原有价格计算。
+- Windows 构建提供包含宿主应用和资源的 `x64-portable.zip` 便携包；需要 WebView2，用户数据仍保存在正常的 Windows 用户目录。
+- Codex 代理显示样式在代理预览中选择，移除通用设置和快捷设置的重复入口。
+
+## [1.3.62] - 2026-09-29
+
+### 修复
+
+- 修复 Codex 模型供应商协议切换无法保存、明确删除的 API Key 被账号同步加回，以及图片能力和视觉路由配置无法正确回读的问题。
+- 修复混合路由编辑模型 ID 时输入中断、取消后模型选择未恢复的问题；上下文配置需确认启用模型管理后保存。
+- 修复部分 DeepSeek Responses 工具搜索请求被拒，以及 reasoning ID 在协议转换中被错误改写的问题。
+- 修复外部账号导入错误推断或覆盖 API 地址的问题，保留包内明确指定的上游地址。
+- 修复 Antigravity 同邮箱账号重新导入不能原位更新的问题，保留旧 ID、备注及已有绑定；读取失败时不再覆盖原账号。
+- 修复 Antigravity 网页验证状态被旧配额清除、验证链接可能指向其他登录账号，以及部分免费账号配额查询失败的问题。
+- 修复分组编辑覆盖 Codex 配额刷新策略、并发保存覆盖成员及读取失败后错误写入的问题。
+- 修复 API 服务自动恢复账号时提前清除额度耗尽和冷却状态，以及启动时凭据刷新引起的读取竞争；凭据采用原子写入，停止刷新时等待在途任务退出。
+- 修复混合模型实例入口的账号范围被全局 API 服务成员规则错误清理的问题。
+- 修复 new-api 用量误用额度计数或猜测货币单位，以及 Antigravity 个人账号误走企业配额接口的问题。
+- 修复代理繁忙被误报为账号配额异常的问题；本地读取支持短暂重试，闲置代理运行记录可安全回收。
+- 修复 Windows 商店版 Codex 多开启动及账号隔离问题、键盘与输入法卡死，以及路径探测意外启动 WSL 的问题。
+- 修复 Ghostty 启动 Codex CLI 时工作目录和环境变量不生效的问题；macOS 凭据变更后提示仍持有旧账号的 CLI 后台服务。
+- 修复 Claude OAuth 刷新覆盖较新凭据的问题，并将轮转 Token 同步到绑定的 CLI 配置，钥匙串访问设有超时。
+- 修复删除实例时误处理共享或自定义目录、定时唤醒重复执行，以及已停用任务继续运行的问题。
+- 修复 TOTP 弹框关闭后仍刷新倒计时、下拉菜单背景透明及部分控件颜色不随主题变化的问题。
+- 修复窄窗口下 API 服务标题被按钮遮挡的问题。
+- 修复新版 Xcode 的 Swift runtime 查找及安装包未齐时提前公开更新的问题。
+
+## [1.3.61] - 2026-09-27
+
+### 新增
+
+- Codex 账号页在测智旁新增紧凑布局的回收站，删除账号后在本地保留并支持恢复，可单个或全部导出为可重新导入的 JSON；彻底删除与清空时可选择先导出，取消或导出失败时保留账号。恢复不会自动切号、启动客户端或恢复任务及 API 服务绑定。
+- Codex 代理预览支持主动检测当前运行节点的延迟，账号卡片与预览同步显示毫秒数及检测时间。
+- Cockpit 重启或升级后会恢复仍在运行的 Codex 桌面所使用的原代理入口；端口冲突可在代理预览中查看并重试，无需重启桌面，也不需要独立常驻服务。
+- Codex 账号卡片新增“简略、摘要、详细”三档代理展示，摘要单行展示节点与延迟，详细信息采用节省空间的紧凑行布局，并靠底显示在操作栏上方；可在 Codex 设置、通用设置及代理预览中同步切换，默认保留简略，所有样式均保留原位置的“代理”按钮。
+- Codex API 请求日志新增请求时的代理节点或直连信息，覆盖官方账号的普通与流式请求，切换代理后仍保留历史记录；仅记录代理入口时会在悬停说明中注明最终节点未知，旧日志显示“未记录”。
+- 数据管理新增实例残留扫描与手动永久清理入口，保护已登记实例和运行中客户端使用的目录。
+- 代理管理列表支持拖拽排序，也可通过“上移 / 下移”调整，重启后保留所选顺序。
+
+### 变更
+- 代理列表的“分配”按钮统一打开分配弹框，订阅节点可在弹框内选择后再分配给账号或统一代理。
+- 分配代理的账号列表新增订阅标识，颜色及标签样式跟随 Codex 账号页的统一设置。
+- 移除 Codex 账号工具栏的“导出失败账号”专用按钮；失败账号可移入回收站后统一导出，删除确认同步提示可恢复和导出。
+- CodeBuddy 展开的额度明细支持在账号卡片内滚动，避免长列表撑高整个页面。感谢 [@xhrxgr](https://github.com/xhrxgr)（[#2608](https://github.com/jlcodes99/cockpit-tools/pull/2608)）。
+- API Service 现在会传递生图接口的结构化失败和上游断流错误，不再把未完成响应合成为成功；Codex 代理取消和 WebSocket HTTPS 代理处理也已与当前上游行为对齐。
+- Chat 与 Responses 请求会保留支持的 `service_tier` 值（`priority`、`ultrafast`），并删除不支持的值。
+- Codex 官方账号请求会携带与当前模型和服务等级一致的路由信息；API Key 透传行为保持不变。
+- 新建自定义代理策略的健康检测间隔默认为 30 秒，可在高级设置中调整；保留已保存策略及订阅自带的检测间隔。
+- Codex 桌面在没有账号代理且启用全局代理时，同时向 Chromium 注入全局代理参数；含认证凭据的代理地址保留原有环境变量注入方式。
+- Codex 同一账号的账号请求、API 服务与桌面转接共用固定代理入口和选路内核，避免各通道独立选出不同节点；切换出口时已有连接可继续传输。
+- 不再写入 Codex 已移除的远端压缩开关，也不再仅凭保存该配置就报告已启用本地压缩。
+- Codex 代理预览与账号代理设置支持“跟随统一、独立代理、不使用代理”三种模式；解除代理后不再自动使用统一代理，已接入本地转接的桌面保留入口，新连接按新模式连接。
+- Codex 代理预览中的运行记录、近期请求和代理日志按内容向下展开，可通过弹框主体统一滚动查看更多条目，标题与底部操作按钮保持可见。
+
+### 修复
+- 测智的错误详情会保留上游错误消息、错误码、响应未完成原因及连接或解析异常，不再统一显示模糊提示；账号凭据会脱敏，已收到的内容仍可查看。
+- 修复严格校验的第三方 Responses 服务拒绝 Codex 多 Agent 会话请求的问题，保留 Agent 消息正文和路由信息。感谢 [@lwwtl](https://github.com/lwwtl)（[#2609](https://github.com/jlcodes99/cockpit-tools/pull/2609)）。
+- 修复部分非流式 Responses 请求在上游已结束后仍报超时的问题，并正确保留失败和未完成状态。感谢 [@wzxsph](https://github.com/wzxsph)（[#2332](https://github.com/jlcodes99/cockpit-tools/pull/2332)）。
+- 修复 API 服务重试后 Token 用量归入其他账号或丢失账号归属的问题；已有历史用量记录保持不变。感谢 [@yangeni](https://github.com/yangeni)（[#2379](https://github.com/jlcodes99/cockpit-tools/pull/2379)）。
+- 修复保存配置期间关闭 Codex 启动预览后，待执行的启动或实例切换仍可能继续的问题；已成功保存的配置仍然保留。感谢 [@y4ho0](https://github.com/y4ho0)（[#2545](https://github.com/jlcodes99/cockpit-tools/pull/2545)）。
+- 补全韩语 2FA 查询页面及 OTP 输入说明的本地化。感谢 [@jakero](https://github.com/jakero)（[#2595](https://github.com/jlcodes99/cockpit-tools/pull/2595)）。
+- 修复账号页标题和账号筛选回退为英文的问题，并在简繁中文界面缩放说明中补充 Ctrl 快捷键。感谢 [@HUF457](https://github.com/HUF457)（[#2113](https://github.com/jlcodes99/cockpit-tools/pull/2113)）。
+- 修复新版 macOS ChatGPT 切号时无法识别内置后台进程的问题；启动前核对目标账号绑定，代理入口创建失败时明确报错，不再静默改用其他出口，并区分这些故障与授权失败。
+- 修复 Windows ChatGPT 切号时将已有进程或多开实例误判为新默认实例的问题；关闭前核对实例归属，启动后确认稳定的新进程。Windows 桌面识别改为 ChatGPT.exe，不再匹配旧 Codex.exe。
+- 修复 Codex 模型供应商网关改写推理条目 ID 导致继续对话时加密内容校验失败的问题，保留普通消息和工具调用的 ID 兼容处理。
+- 修复 macOS 删除 Codex 实例后仍残留对应应用数据目录的问题。
+- 修复 Codex 账号启用代理后切号启动时的 HTTP 连接失败，并完善回复与压缩中断的连接诊断，不记录凭据或对话内容。
+- 修复更新或重启后自定义侧栏布局被重置，Grok CLI 等平台回到「更多平台」的问题。
+
+## [1.3.60] - 2026-09-25
+
+### 新增
+- **Codex 代理功能**：支持订阅导入、手动添加、统一代理、账号独立代理及批量绑定；提供节点切换、分组测速、自动选择、故障转移和负载均衡，可查看出口 IP、连接流量与请求日志。
+- **Codex 顶部布局设置**：支持调整页签顺序及「更多」菜单。
+
+### 变更
+- **支持新版 WorkBuddy**：支持账号切换与本机账号导入。
+- **更新 Codex 模型配置**：修正 GPT-6 系列默认上下文，统一自动压缩阈值，并更新 GPT-5.6 Sol 费用估算。
+- **鹈鹕测智与唤醒可独立运行**：无需启动 API 服务。
+- **新建实例默认使用空白配置**：仍可选择复制已有实例。
+
+### 修复
+- 修复 Codex API 服务的账号异常误报、恢复后再次失效及流式回答重复问题。
+- 修复切回 Codex 官方账号后供应商配置残留，以及同邮箱的 Codex OAuth 与 Grok 供应商账号相互覆盖的问题。
+- 修复客户端启动卡住、弹框滚动跳动及 Codex 实例表格列遮挡的问题。
+
+## [1.3.59] - 2026-09-23
+
+### 新增
+- **内置模型新增 GPT-6 Sol 与 GPT-6 Luna**：账号模型清单、API 服务模型选择器与唤醒模型预设都会带出这两个官方模型，顺序与官方客户端一致（排在 GPT-6 Astra 之后、GPT-5.6 系列之前）。API 服务的费用估算按官方公开价目计入标准档与快速档，长上下文按与其它 6 代模型相同的倍数计算。模型清单仍跟随官方推荐集的用户会自动补齐这两个模型，自己改过清单的用户不受影响。
+- **账号额度行新增「≈$」满额折算金额**：5h / Weekly 额度行在「A $已花费」之后补一个 `≈$` 数值，按当前已用比例把本窗口费用折算成「满额约合多少」，方便判断这段额度的实际价值；窗口内没有费用或还没有用量时不显示，原有额度、进度条与重置时间都不受影响。
+- **DeepSeek 模型目录补齐 V2 协作能力声明**：API 服务与 DeepSeek 目录在模板覆盖后仍保留声明，旧目录通过生成版本检查自动重建；GPT 与 Grok 的声明保持不变。
+- **恢复鹈鹕测智**：Codex 账号可再次向所选账号并行发起统一提示词测试，查看生成结果、HTML 预览与并排对比，重试失败账号，并按保留天数自动或手动清理测试记录与生成文件；测试请求重新走本地 API 服务的内部调度链路，与唤醒共用账号并发、Token 与额度冷却。
+
+### 变更
+- **内建模型显示名统一带 `GPT-` 前缀**：唤醒与鹈鹕测智的模型预设、模型管理列表和受管模型目录现在统一显示为 `GPT-6 Astra`、`GPT-6 Sol`、`GPT-6 Luna`、`GPT-5.6 Sol`、`GPT-5.6 Terra`、`GPT-5.6 Luna`、`GPT-5.5`；升级后旧短名（`6 Astra`、`5.6 Sol` 等）会自动补上前缀，模型 ID 与你手动改过的展示名保持不变。
+- **账号「重新授权」默认打开官方登录并显示账号信息**：账号卡片、表格行与账号异常弹框里的重新授权入口现在直接进入「官方登录」，弹框顶部固定显示目标账号邮箱与备注入口，重新授权时也能直接查看或编辑备注。
+- **移除账号风控检测（已失效）**：账号总览不再提供「风控检测」入口与检测弹框，账号卡片/表格不再显示「疑似风控」「未知」等状态标签，API 服务请求日志也不再标注 state 长度与分级；唤醒与网关转发不再旁路记录 state 观测。已有本地观测数据不做删除，仅停止继续采集与展示。
+- **CodeBuddy 账号总览移除「本机会话文件」列表**：会话查看统一走「会话」页签的会话管理器，总览页不再在账号列表下方显示本地 JSON/JSONL 文件列表。
+- **账号总览移除 Codex 速度切换**：账号卡片、清单行、账号操作菜单与 API 服务卡片不再显示「标准 / 快速」档位选择。
+- **macOS DMG 安装窗口改为两行布局**：Cockpit Tools 与 Applications 别名保持同一行，拖拽安装的动线不变；说明文件改名为「安装与常见问题.txt」并下移到第二行，内容先讲安装步骤，再讲“应用已损坏”的处理，并把不需要密码的「系统设置 → 仍要打开」放在前面，命令行方式作为备选。
+
+### 修复
+- **修复重新授权后本地网关仍用旧凭据**：重新授权或本机导入完成后会立刻把新 Token 写穿到 API 服务 sidecar，并在后台重置该账号的调度与失败状态，不再等到下一次整体重载才生效，界面也不会继续显示上一次的失败原因。
+- **修复 API 服务账号「恢复」在凭据失效后没有反应**：恢复前会先强制刷新该账号的 Token 并同步给本地网关；凭据已失效（上游 401 invalidated oauth token）时账号异常弹框改为提供「重新授权」，不再只提示已提交却无法恢复。
+- **修复一次性历史清理在大历史库上的内存峰值**：清理第三方推理历史时改为分批次扫描并逐批提交，回滚备份改为边扫描边落盘，内存占用不再随命中的行数线性增长；备份文件结构与覆盖范围不变，仍可手动回滚。
+
+## [1.3.58] - 2026-09-22
+
+### 新增
+
+- **账号风控检测**：账号总览新增「风控检测」入口，按官方上游返回的 `x-codex-turn-state` 长度判断：`state` 为 312 即在账号卡片标记「疑似风控」（单次即判定），292/332 视为正常并自动摘除标记，其它长度只提示长度异常。检测、唤醒与 API 服务转发都会记录观测，点开可查看时间、state 长度与判定依据。只记录长度，不保存 state 原文；API Key 账号不参与。
+- **API 服务请求日志显示 state 长度与疑似风控**：每行请求记录补充上游 state 长度；`state` 为 312 时直接标出「疑似风控」，其它长度如实显示，缺失时标出「未返回 state」。
+- **中转站密钥改为横排表格，并可把官方配置一键写入本机**：密钥列表按「名称 / API 密钥 / 模型 / 用量 / 状态 / 添加时间 / 操作」横排展示，只显示本地保存与查询得到的真实数据；每行提供「使用密钥」弹窗，按该密钥真实返回的模型自动识别分组，渲染 Codex App、Codex CLI、Claude Code、Claude Desktop 的官方配置，并可直接写入 `~/.codex/config.toml`、`~/.codex/auth.json`、`~/.claude/settings.json`（写入前自动备份，JSON/TOML 合并写入不覆盖其它配置）。原有的「添加到 Codex / 添加到 Claude / 添加到 Claude CLI」入口保留为横排按钮。
+- **Codex 启动预览按卡片记住目标实例**：账号卡片、API 服务卡片和模型供应商卡片会各自记住上次在启动预览里选择的目标实例；再次打开时仍选中该实例，实例被删除后回退到默认实例。
+- **API 服务支持把生图交给指定 GPT 账号**：启动预览提供与 DeepSeek 一致的「启用 GPT 生图」。勾选并选择 GPT 账号后，生图与图片编辑由所选账号执行并消耗其额度，对话仍按账号池调度。未启用时保持原有调度。
+- **DeepSeek、Grok 模型支持 Codex 子智能体协作**：可派发、通讯和续跑子智能体，`wait_agent` 能正常等待结果；Grok 模型目录补齐多智能体能力声明，新开的 Grok 会话会注入协作工具。官方模型行为不变。
+- **API 服务明细同时展示请求模型与实际上游模型**：日志首行保留客户端请求模型，第二行标出实际上游模型；仅在没有记录上游模型时回退为单行。
+- **macOS DMG 安装包内附「已损坏」排查说明**：安装窗口附带双语说明，解释 Gatekeeper 提示（尚未接入 Apple Developer ID 签名与公证），并给出 `xattr` 与「仍要打开」两种处理方式。
+
+### 变更
+
+- **「启动后自动最小化」默认关闭**：升级后会一次性关闭该开关并写入配置；之后若再手动打开，不会被再次改回。
+- **模型管理默认清单跟随账号池，并隐藏 5.5 以下官方模型**：只列出该实例或 API 服务账号池实际能承接的模型。官方模型默认只保留 `gpt-5.5` 及以上，账号池没有 GPT 能力时不再显示官方 GPT / `gpt-reserve`。Grok 供应商账号，以及只提供 DeepSeek / GLM / Kimi 等非 GPT 模型的账号（含借用 GPT 壳位的映射）不计入官方 GPT 能力；第三方 GPT 中转 Key 按它自己的模型清单提供官方 GPT 模型。未由用户主动保存的旧清单会回到跟随账号池；只有用户保存过的清单才停止自动更新，重置后重新跟随。
+- **第三方 GPT 中转 Key 的模型清单直接追加进可用模型**：从上游获取到的 GPT / Codex 模型（`gpt-5.5`、`gpt-5.6-*`、`gpt-6-astra` 等）会并入该 Key 的可见模型与路由，客户端选择器、启动预览、`/v1/models` 与请求校验保持一致；不在官方推荐集里的 GPT 名字（如 `gpt-4o`）以及 DeepSeek 等账号的壳位别名仍不展示。
+- **Grok（xAI）模型可使用 Codex 原生编辑文件工具**：新开的 Grok 窗口走编辑文件工具，不再退回 shell 命令。
+- **Codex 唤醒统一走宿主直连 API**：由宿主带所选账号凭据直接请求官方接口，不需要本机 Codex CLI，也不需要 API 服务运行；不再提供 CLI 执行方式。API Key 账号不支持唤醒，Agent Identity 走该直连链路。
+- **唤醒默认模型改为 GPT-5.6 Luna，并过滤 5.5 之前的模型**：任务与手动测试不再提供 5.5 之前的预设（含 `gpt-5.4`、`gpt-5.4-mini` 及更早的自定义预设）；已有任务会改到 GPT-5.6 Luna 并使用默认推理档位。
+- **模型目录可按模型设置上下文**：支持跟随默认值、516K / 460K、1M / 900K 或自定义窗口与压缩阈值，并按模型保存。启动预览里点「应用上下文」立即写入；切到自定义会展开输入框并保留当前数值。
+- **移除 Codex「超高速」选项**：仅保留「标准」与「快速」，已保存的超高速回退为标准。
+- **移除鹈鹕测智**：不再提供测试入口及后台功能，已有本地测试历史不做删除。
+- **同一份模型目录使用同一个压缩格式哈希**：减少仅因切换模型、哈希不同而触发的压缩。
+
+### 修复
+
+- **修复 Windows 切号后因托盘菜单重建卡住界面**：切号完成后先在后台读取托盘文案，再一次性提交原生菜单，不再为每个菜单项同步等待 `set_menu`。
+- **修复只加 DeepSeek / Grok 账号时仍显示官方 GPT 模型**：仅用于「启用 GPT 生图」转发的绑定 OAuth 账号不再被算作账号池的 GPT 能力，API 服务启动预览与 profile 模型清单只列出对话账号真正能承接的模型；生图转发账号仍正常保留凭据。
+- **修复同一会话切换模型后，DeepSeek / Grok 等上游拒绝历史请求**。
+- **修复 DeepSeek 等严格 Responses 上游因历史工具调用缺少 ID 而拒绝请求**。
+- **修复 Codex 账号表单滚动时弹框被带出屏幕**：添加、编辑 API Key 和切换供应商时，弹框保持固定，长表单只在内部滚动，操作按钮保持可达。
+- **修复重新打开 Codex 启动预览后暂时无法操作**：后台读取配置不再锁住关闭和无关操作，读取过慢时提供超时和重试。
+- **修复 Codex 网关把上下文超限当成断流反复重连**：超限交给客户端做正常的窗口处理，而不再反复重连。
+- **修复 Antigravity 个人账号配额显示 100%、窗口拆分错误及 GCP ToS 误标**：个人订阅不再仅凭套餐被当成 GCP 账号；无真实项目的账号按官方 IDE 用空请求体查配额，并清理占位项目和孤立 GCP 标记。账号卡片只展示 Claude 与 Gemini 的 5h / 周窗口，缺失显示无数据而不是满额；不再因重置时间较远显示 100%，也不再把模型高低配置当成小时或周窗口。刷新失败时保留可用缓存并标记陈旧数据；手动批量刷新会跳过短期 API 缓存。([#2326](https://github.com/jlcodes99/cockpit-tools/pull/2326))
+- **关闭更新提醒后不再自动弹窗**：即使远端策略要求弹窗，或检查过程中关闭提醒，也会遵守本地设置；手动检查更新不受影响。
+- **修复普通 Responses 供应商无法按模型开关识图**，含大写字符的模型名也能正确保存开关。
+- **`gpt-5.5` 及以上模型默认按支持图片输入处理**：`openai/gpt-5.6-sol` 这类带命名空间或后缀的写法同样生效，不再因为逐模型能力表为空被 Provider Gateway 判定为 text-only 而删掉图片；`gpt-5.4` 及更早、`gpt-reserve`、`gpt-image-*` 与非 GPT 模型保持原样，显式开关（含手动关闭）仍然优先。
+- **修复升级后自定义 Responses 供应商的旧识图开关丢失导致图片被网关丢弃**：升级时会把供应商级识图开关展开成逐模型能力并落盘，网关生成配置时也会按账号级/供应商级开关补齐逐模型表，图片不会再被静默删除。
+- **修复首页纵向卡片不显示额度进度条**，不改变横向布局及额度数值。
+- **瞬时连接故障不再误报为账号池耗尽**：TLS、EOF 和连接重置在配置次数内重试，真实认证、配额及账号池异常保持原有处理。
+- **API 服务后台维护不再覆盖用户改过的 Codex 配置**：受管连接字段被外部修改后停止维护对应实例，并保留用户的模型与上下文选择；停止服务时恢复仍由服务接管的登录态，但不覆盖用户另行登录的账号或已被外部修改的实例。
+- **修复混合模型路由中的 Grok 请求不可用**：请求使用路由绑定的 Grok 账号，不会回退到其他账号。
+- **修复 Grok 模型请求报「账号池没有可用账号（候选 1 个，其余为 0）」**：宿主与本地网关对 Grok 平台的 provider 命名不一致，导致 Grok 模型被注册到 Codex 账号并被 API Key 账号范围过滤；现在按网关标识归一化，Grok 请求只会命中 Grok 账号。
+- **修复升级后模型目录不自动刷新**：受管模型目录新增版本戳与内容校验，应用启动时发现旧版本（或没有版本戳）会按当前生成逻辑在后台重建一次，不再依赖切号；重建保留原有模型清单与展示名。
+- **删除 Grok 账号不再影响 API 服务中其他成员处理请求**。
+- **修复 API 服务成员弹框中 Grok 账号不显示、平台筛选结果为空**：异步加载的账号会立即出现，切换平台后列表正确更新。
+- **修复 Grok 流式工具调用的名称与参数前后不一致**。
+- **修复 Codex 额度刷新在 Grok 查询过慢或被取消时丢失已刷新凭据**，刷新完成后徽章会更新。
+- **修复 Grok 网关凭据过期时间不正确，同步失败后可能保留旧 Token 或恢复已删除账号**。
+
+## [1.3.57] - 2026-09-18
+
+### 新增
+
+- **Codex 客户端底部额度改为跟随当前所选模型**：绑定 API 服务的实例底部按当前所选模型显示各自的样式与点击弹框。GPT 原生模型恢复「账号 / 5h / 周」三个并排胶囊，点击打开账号池状态弹框（套餐明细、Grok 平台额度行、余额行、可用/异常/冷却）；Grok 模型显示 `● Build 94%` 这类「产品短名 + 剩余百分比」，点击打开 Grok 额度弹框（产品行、账号数、剩余百分比）；DeepSeek 显示 `● 余额 ¥19.11`，点击打开余额弹框（按币种的总余额）。切换模型时样式与弹框一起切换，只显示当前模型真实存在的额度，没有数据的窗口不渲染胶囊；打开模型选择器、切换推理档位时界面上的临时占位文案不会被当成模型名，底部不会跳到其它模型的样式。刷新按钮保持不变，并在刷新账号池的同时重新拉取余额与 Grok 额度。
+- **API 服务成员弹框支持跨平台选账号（默认全部平台）**：集合成员列表现在把 Codex 与 Grok 平台的账号放在同一张列表里，行内交互（勾选、优先级、生图策略默认禁用、标签、请求数）完全一致，末尾标签显示「Grok」，额度只展示 GrokBuild；顶部新增平台筛选，默认「全部平台」。勾选 Grok 账号即接入为 API 服务上游，模型目录自动带入（默认 `grok-4.6 / grok-4.5 / grok-4.3`，可在「模型与能力」中调整），也可用于混合模型路由；上游凭据由 Grok 账号统一维护，令牌过期自动刷新，本地网关仍按实例独立启动。Grok 账号只在这个入口添加，「添加账号」弹框不再单独提供 Grok 页签。
+
+### 变更
+
+- **「添加账号」弹框页签顺序调整**：顺序改为「官方登录 → OAuth 授权 → Token / JSON → API Key → 导入」，官方登录排在最前，并且打开弹框时默认就选中官方登录。
+- **API 服务点击弹框新增一行余额**：绑定 API 服务的实例底部仍只显示账号池与额度徽章，点开弹框后在配额明细下方显示一行「余额 ¥xx.xx」。余额汇总 API 服务账号池里可查官方余额的 DeepSeek 账号，按币种合并；池里没有这类账号时不显示该行，也不展示总余额、赠金余额、充值余额等明细。
+
+### 修复
+
+- **修复上下文压缩使用切换前的旧模型（例如 gpt-5.5）**：账号池里没有能承接官方 GPT 模型的账号（例如只加了 Grok）时，API 服务与实例 profile 现在会强制走本地压缩——压缩由**当前选择的模型**完成，不再把远端压缩请求带着旧模型 ID 发出去；含 OAuth 订阅账号或声明了 GPT 壳位的账号池（DeepSeek 网关模式）行为不变。
+- **修复账号池没有 GPT 能力时仍显示官方 GPT 模型**：API 服务与供应商网关 profile 的客户端模型清单改为只反映账号池真实能承接的模型——账号池为空、或池里只有 Grok 等第三方账号且其目录里没有 GPT/Codex 名称时，不再塞入官方推荐 GPT 集（客户端内部需要的隐藏条目仍保留）。OAuth 订阅账号、以及声明了 GPT 壳位的供应商账号行为不变。
+- **修复账号池没有 GPT 能力时仍显示 `GPT-5.6 Reserve`**：API 服务 profile 的客户端模型目录只会在已有官方 GPT 模型、或用户自己列出 `gpt-reserve` 时才追加额度兜底条目；账号池清单也不再在没有账号可承接官方模型时保留它，只加 DeepSeek / Grok 账号的池子不会再出现该选项。
+- **修复 Grok 供应商账号在账号总览里多占一行**：加入 API 服务的 Grok 账号只在「添加至 API 服务」的 Grok 平台行里呈现，不再同时出现在账号总览的账号列表与统计里（成员弹框仍拿完整账号列表，勾选状态不受影响）。
+- **修复 GPT 名字的请求被静默交给 DeepSeek 导致工具调用失效**：DeepSeek 供应商账号不再把 Codex 内置模型 id（`gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`）当作客户端可见模型名，存量模型映射会迁移为 DeepSeek 官方 slug 加当前目录壳位；provider gateway 也不再把未声明的 Codex/GPT 模型 id 兜底成默认上游模型，因此 GPT 请求会明确报「模型不可用」，而不是由只能返回文本工具调用标记（如 DeepSeek 的 `<||DSML||...>`）的非 GPT 上游作答。
+- **修复切换实例绑定后 DeepSeek 余额徽标与 API 服务额度徽章重叠**：切换绑定会残留上一套注入的宿主节点和定时器，两套徽章此前会叠在同一位置。现在 API 服务注入运行时会清理残留的余额宿主，切到 DeepSeek 绑定时会清理残留的额度徽章，同一位置只保留与当前绑定匹配的那一套。
+- **修复上游内容审核 4xx 把 Codex 会话卡在重连循环**：DeepSeek 等上游返回 `Content Exists Risk` 这类内容审核 400/403 时，本地网关不再把原始错误抛给客户端，而是以 200 正常结束本轮并给出「本轮内容被上游内容审核拦截，请切换模型后重试」的明确文案；普通参数错误、额度与限流仍按原状态码返回。
+- **修复开启混合模型路由会隐式打开「开机自启」与「启动最小化」**：此前开启实例的第三方 API 路由时会一并把 `app_auto_launch_enabled` 与 `startup_minimized` 写入全局配置，这两个开关会在没有告知的情况下被打开。现在路由不再改写这些通用设置，两个开关完全由用户控制；开启确认弹框也不再提示会启用开机自启。
+
+## [1.3.56] - 2026-09-16
+
+### 修复
+
+- **修复「上下文压缩后当前任务丢失」**：压缩会先总结当前任务再继续，不再直接重置上下文窗口导致任务丢失。
+- **修复「官方登录」打开官方客户端后立即关闭、读不到登录信息**：注入脚本的路径在 Windows 上没有做分隔符归一化，官方客户端启动阶段即退出；现在路径已归一化，并补上兜底——注入未生效时自动退回官方原生流程再启动一次，默认开启的「拦截浏览器跳转」可正常使用。
+- **修复商店版 Codex 更新后多开实例启动失败（拒绝访问 / os error 5）**：商店更新换目录后仍沿用旧路径，每次启动都被系统拒绝，只能手动「重置路径」。现在会自动按已注册的商店包重新解析路径并重试，不再需要手动重置。
+- **修复 WindowsApps 直启被拒、改走 PowerShell 兜底时丢失附加环境变量**：兜底启动现在会一并传递附加环境变量（含临时登录注入所需的 `NODE_OPTIONS`）。
+- **修复商店版 Codex 更新后「客户端已经启动，Cockpit 却判定未运行」**：进程识别此前要求可执行文件全路径完全一致，商店更新换目录后会读不到真实进程 PID。现在同一商店包族即视为匹配，非商店路径仍要求完全一致。
+- **修复经网关使用 DeepSeek 时工具调用与输出错位导致整轮被拒**：DeepSeek 按位置校验工具调用——同一回合的多个调用必须连续，这些调用的输出要紧跟在该批次之后，否则整段请求被拒（「调用 → 消息 → 输出」报 `No tool output found for tool call ...`，同批并行调用被输出拆开则报 `reasoning_text` 缺失），线程无法继续。发往 DeepSeek 的请求现在按批次还原顺序：连续调用保持相邻、输出紧跟批次之后，本来就合法的历史逐字节不变。
+- **修复回放给 DeepSeek 时推理正文丢失导致整段请求被拒**：DeepSeek 思考模式要求回放必须带 `reasoning_text`。发往 DeepSeek 的请求现在会还原该正文，其它请求逐字节透传。
+
+### 变更
+
+- **修复「官方登录」在商店版 Codex 上始终报「商店版应用目录可能已被更新替换」**：Windows 会拒绝包外进程执行 `C:\Program Files\WindowsApps\...` 里的官方客户端（`os error 5` / `Access is denied`），PowerShell 的 `Start-Process` 走的是同一条被拒的路径，所以直启与兜底会同时失败，而路径本身完全正常——「重新检测路径」永远修不好。现在这两种方式都失败时会改用**包身份激活**（`Invoke-CommandInDesktopPackage`）启动官方客户端，`CODEX_HOME`、隔离的运行目录与临时登录注入用的 `NODE_OPTIONS` 都会完整传入，多开实例与「官方登录」在商店版上恢复正常。失败提示也改为说明真实原因并建议修复/重装商店版 Codex。
+- **商店版启动失败不再直接把内部错误串抛给用户**：改为统一的 Windows 操作弹框，说明原因并提供「重新检测路径并重试」，诊断信息可随错误一起复制。
+- **经网关使用 DeepSeek 时请求关闭并行工具调用**：从源头减少并行批次造成的调用与输出错位，已经落盘历史里的顺序问题由批次还原兜底。
+
+## [1.3.55] - 2026-09-16
+
+### 修复
+
+- **修复 DeepSeek 账号在实例网关或 API 服务下上下文压缩失败**：1.3.53 起托管 provider 的名字被写成 `OpenAI`，客户端因此按官方上游处理，把压缩请求发往没有该能力的 DeepSeek，压缩必然失败并让会话无法继续（表现为压缩处报错）。现在名字改回非 `OpenAI`，DeepSeek 等第三方上游恢复本地压缩，功能与 1.3.51 / 1.3.52 一致；已经写成旧名字的实例配置会在下次启动时自动修正，不需要重新绑定。相应地，官方账号经本地网关或 API 服务时也和 1.3.52 一样使用本地压缩。
+- **修复唤醒与鹈鹕测试改走 API 服务后不可用**：1.3.54 起定时/手动唤醒与鹈鹕测试统一交给本地 API 服务进程处理，但内部请求沿用了直连上游时的路径处理，把客户端路径（`/v1/responses`）裁剪成上游路径（`/responses`）后才发给 API 服务。API 服务只注册 `/v1/*` 路由，唤醒因此直接返回 404 `endpoint not supported`，鹈鹕测试更早一步在本地就报「仅支持 /v1 或 /backend-api/codex 路径」。现在内部请求保留 API 服务的对外路径，唤醒与鹈鹕测试恢复正常，仍然共用 API 服务的账号选择、Token 续期、并发与额度冷却调度。
+
+## [1.3.54] - 2026-09-16
+
+### 新增
+
+- **新增「官方登录」：打开官方客户端登录，读取账号后自动关闭并清理**：添加账号弹框新增「官方登录」页签。点击后会按多开实例的空白实例方式，在应用数据目录下创建一次性的临时配置并打开官方 Codex 客户端，由官方客户端完成真实登录。在这台官方客户端里点「继续登录」不再跳转浏览器，官方生成的授权地址会直接显示在弹框里，可一键复制后拿到本机任意浏览器完成登录，也可以点「用默认浏览器打开」直接在本机浏览器继续（地址完全由官方客户端生成，Cockpit 不改写、不自行拼接、不替换参数，也不参与授权回调与 token 换取；万一本次没能截获，弹框会明确提示，官方客户端照常打开浏览器）。弹框里提供「拦截浏览器跳转，直接显示授权地址」开关，默认开启；关闭后完全走官方原生流程，仍可使用官方客户端自带的「复制登录链接」。Cockpit 一旦读到登录信息就立即关闭这台客户端，并硬删除临时配置目录、该实例的运行目录以及 macOS 钥匙串条目，不留凭据副本；随后在后台单独刷新这一个账号的额度与资料，不需要再手动刷新。成功、失败、取消都走同一套清理流程，关闭或取消都会一并清理；异常退出遗留的临时配置会在下次启动以及此后每 10 分钟的巡检中继续删除。默认实例与多开实例不受影响，临时配置也不会出现在实例列表里。
+- **Codex API 服务支持自动混合路由**：账号不再按类型过滤，OAuth 账号、`OpenAI API Key` 账号、Chat Completions / DeepSeek 账号以及其他 provider gateway 账号都可以加入集合。绑定 API 服务的 profile 会把集合里的模型写入客户端模型列表，同名模型只显示一次，且 GPT 推荐集始终排在最前面：GPT 系列只保留官方推荐集且显示名与官方客户端一致（`GPT-6 Astra`、`GPT-5.6 Sol`、`GPT-5.6 Terra`、`GPT-5.6 Luna`、`GPT-5.5`），额度兜底模型改名为 **GPT-5.6 Reserve**，`gpt-5.4` 等历史兼容模型仍可被旧客户端请求但不再出现在列表里；DeepSeek 账号与 DeepSeek 网关模式保持一致，只列出账号自身模型列表里的模型（`DeepSeek-V4.1-Flash`、`DeepSeek-V4-Pro`），推理档位同样为 low / high / max 三档（含最高档）。与该网关相同，账号只要拥有可识图模型，就会为这些模型声明可发送图片，并把带图片的请求自动转到识图模型，因此选中 Pro 这类纯文本模型时图片依然可用。请求优先走原生 Codex 账号池，只存在于 Chat Completions / DeepSeek 账号的模型会按对应协议自动转换并转发；首个账号在还没有输出任何内容前失败时，会自动改用其他提供同一模型的账号重试。账号选择界面不再把这些账号标记为不支持，路由清单在服务启动时生成，不会改写你保存的配置。
+- **获取本地账号支持选择多开实例**：点击「获取本地账号」时，只有一个实例仍然直接读取；检测到多个实例（含默认实例）时，会先列出实例让你指定从哪一个读取，列表显示实例名、profile 目录与运行状态。默认实例与多开实例都按官方客户端真实落盘规则读取各自 profile（`auth.json` 或 macOS Keychain），多开实例的账号不再需要手动导出导入；读取失败时错误显示在实例选择弹框内，可以直接改选其他实例。
+
+### 变更
+
+- **API 服务里的 DeepSeek 模型默认使用最高推理档位**：从 DeepSeek 账号汇总的模型继续保留官方 low / high / max 三档，但在客户端模型目录和网关模型列表里都把默认档位声明为 `max`，配合接管 profile 时补齐 `max` 档位开关，尚未选过档位、或当前档位对该模型不可用时，DeepSeek 会直接落在最高档；你在模型选择器里已经手动选择过的档位不会被覆盖。
+- **API 服务接管 profile 时自动补齐 `max` 推理档位**：Codex 客户端的「可用推理强度」默认不含 `max`，接管后会在该 profile 的 `config.toml` 中把 `max` 追加进 `[desktop] enabled-reasoning-efforts`，保留你已有的档位与顺序，仅在缺少该配置项时按客户端默认集合写入；这样 DeepSeek 等只声明 low / high / max 的模型在选择器里也能看到最高档，与 DeepSeek 网关模式保持一致。
+- **Codex 唤醒与鹈鹕测试改为统一走 API 服务进程**：定时/手动唤醒和鹈鹕测试不再各自直连上游，而是与其它请求一样交给同一个本地 API 服务进程处理，账号选择、Token 续期、额度冷却、账号级并发、重试与请求日志因此共用同一套调度；这些请求会以「内部调度」显示在 API 服务的请求日志中。停用 API 服务只关闭对外入口，唤醒与鹈鹕测试不受影响，进程随应用退出一起停止。
+- **Codex 授权与切号落盘对齐官方客户端**：切号写入桌面端登录信息时，`auth.json` 现在与官方 codex 同构——OAuth 账号写入 `auth_mode: "chatgpt"`，不再带历史上多余的 `type` 字段；`last_refresh` 改用官方同款时间格式，缺少更新时间时直接省略该键而不是写入 `null`；个人访问令牌（`at-` 开头）账号保持官方「只写凭据字段、不写登录方式」的形态；`auth.json` 与备份文件的权限统一收敛为仅本人可读写（`0600`）。OAuth 授权在本地 1455 端口被占用时自动改用 1457，不再直接提示端口冲突。额度与主动重置次数的查询不再伪装成网页请求，改用官方 codex 形态的 `User-Agent`（`Codex Desktop/<版本> (<系统> <版本>; <架构>)`）与 `originator`，不再携带网页专用的 `Referer`、`sec-fetch-*`、`OpenAI-Beta`、`oai-language` 等请求头。
+
+### 修复
+
+- **修复 DeepSeek 实例网关下自动压缩与手动压缩失败**：实例绑定 DeepSeek 供应商网关后，profile 由本地网关账号接管，接管写入会清掉切号时写入的 DeepSeek 压缩兜底，压缩因此走远端 `responses/compact` / `compaction_trigger`；而本地网关出口为兼容官方账号会把推理正文改写成 `summary`，DeepSeek 上游在思考模式下要求回传明文 `reasoning_text`，会直接以 `The reasoning_text in the thinking mode must be passed back to the API` 拒绝，表现为「上下文已压缩」处报错且会话无法继续。现在供应商网关接管 profile 后会按该 profile 补回 DeepSeek 压缩兜底（关闭 `features.remote_compaction_v2`、启用 `features.token_budget`），压缩回到本地流程；启动自愈发现网关仍健康、本次不重新接管时也会幂等补写一次，升级后无需重新绑定；切走时按原备份还原你的设置。
+- **修复 Codex API 服务账号池含 DeepSeek 时压缩失败**：DeepSeek 没有服务端压缩能力——`/responses/compact` 返回 404，`compaction_trigger` 只会返回普通 message，而 Codex 的远程压缩要求响应里恰好有一个压缩输出项，因此只要压缩请求被调度到 DeepSeek 账号就必然失败（并先以 `The reasoning_text in the thinking mode must be passed back to the API` 拒绝）。现在 API 服务接管的 profile 只要账号池或路由渠道里存在 DeepSeek 上游账号，就会把该 profile 的压缩切回本地流程（关闭 `features.remote_compaction_v2`、启用 `features.token_budget`）；该改动只涉及这两个压缩键，不影响同一账号池里官方账号的 `service_tier`、联网搜索等设置，停用 API 服务或解除接管时按接管前备份精确还原。混合模型路由同理适用于其中的 DeepSeek 渠道。
+
+## [1.3.53] - 2026-09-14
+
+### 变更
+
+- **Codex API 服务的 provider 改为跟随官方远程压缩链路**：托管写入的 provider 显示名改为 `OpenAI`，与官方客户端的 provider 能力判断保持一致，使自动压缩和手动压缩都走远程 `/responses/compact`；已接管的旧 profile 也会自动校正。请求仍先经过本地网关，实际压缩能力由当前选择的上游负责。
+
+### 修复
+
+- **修复历史工具调用不完整导致 Codex 旧会话被严格 Responses 上游拒绝**：Codex 请求现在只在调用和输出能够配对时为缺失的 `function_call` / `custom_tool_call` 补齐 `call_id`，保留已有 ID 与回放命名空间；无法配对的匿名输出会从本次请求中移除，不再生成 `call_missing_output_*` 合成 ID，旧会话不会因 `No tool call found for function call output` 无法继续。该修复覆盖本地 API 网关与 provider gateway 两条链路。
+
+## [1.3.52] - 2026-09-14
+
+### 新增
+
+- **DeepSeek 实例在底部显示账号余额**：绑定 DeepSeek 账号的实例不再受接入方式限制，网关列出、CDP 注入和直连官方都会在输入框下方显示余额徽标；点击可查看总余额、赠金余额、充值余额、可用状态与币种，也可手动刷新。余额来自 DeepSeek 官方余额接口，60 秒自动刷新一次，查询失败时保留上一次的有效结果。该显示跟随「显示 API 服务额度」开关，关闭后不再注入。
+- **实例网关现在可以在账号总览直接查看**：API 服务卡片上新增「实例网关」入口，显示数量与异常提示；点开后的弹框以只读方式列出所有实例级本地网关（供应商网关、混合模型路由），每张卡片按「实例与状态 → 账号 / 本地地址 / 协议 / 上游模型」对齐展示，地址行可直接复制，重启与关闭放在卡片右侧竖排；网关较多时只在列表区域内部滚动，标题、刷新与关闭按钮保持可见。
+- **实例网关支持启动自愈**：宿主重启后，只要 profile 仍绑定需要网关的账号，且该网关此前启动过（或对应 Codex 实例仍在运行），供应商网关会在后台自动重建，失败会按次数重试并在实例网关弹框里显示失败原因。网关端口改为按 profile 持久化，仍处于打开状态的 Codex 实例不会因为端口变化失联；端口被占用时会自动改用新的空闲端口。
+- **鹈鹕测智支持展示本轮 Token 与 5h 额度**：每个账号列会显示本轮消耗的 Token 数与 5h 额度消耗值（无法计算差值时显示剩余额度），结果详情弹框展示剩余额度与重置时间。额度优先读取上游响应头，缺失时回退到账号配额接口。
+- **统计与日志支持展示 Codex 请求的速度模式**：每条请求日志都会显示实际生效的档位标记（「快速」「超高速」「标准」，客户端请求的其它档位如 flex 按原值显示），便于确认哪些请求真正以快速模式处理。取值依次来自上游实际返回的档位、客户端请求的档位和当前速度注入的默认档位，被上游降级或按标准档位处理的请求不再显示为空。
+- **Codex 账号导出与导入现在会带上标签和分组**：导出「Cockpit Tools」格式时，每个账号会一并写入标签、账号备注名、账号结构与所属分组（文件夹）名称；导入同一份文件时会自动恢复这些标签与归类，同名分组直接复用，缺失的分组按文件自动创建，方便多人或多设备沿用同一套分类管理。旧版本导出的文件没有这些字段，导入行为与之前完全一致；`auth.json`、`sub2api`、`cpa` 等对外格式不受影响。
+- **Codex 速度支持官方「超高速」档位**：账号总览、启动预览与实例表单的速度选择器在「标准」「快速」之外新增「超高速」（官方 service tier `ultrafast`），切号与启动时按官方客户端当前的落盘规则写入 `config.toml` 顶层 `service_tier`（快速写 `priority`，标准写 `default`），并保留旧的 `[desktop] default-service-tier` 与客户端持久化状态，切换账号后速度仍然生效。托管给官方客户端的模型目录会与官方一致地为 `gpt-5.6-sol` 声明该档位，API 服务会原样转发 `service_tier: "ultrafast"` 而不再丢弃，请求日志以「超高速」标记（官方尚未公布单独费率前，费用估算按快速档费率计算）。
+
+### 变更
+
+- **模型管理默认关闭，并且不再被混合模型路由打开**：升级后首次启动会把历史遗留的「模型管理」统一关闭、恢复跟随官方模型目录，且只执行这一次，之后由你自己开启或关闭。混合模型路由不再改动这个开关：它需要的那份模型目录只在实例运行期间临时生效，停止实例或退出 Cockpit 后自动恢复，其他账号和实例不受影响。
+
+### 修复
+
+- **修复第三方推理历史导致会话切到严格 Responses 上游或官方账号后无法继续**：DeepSeek 等第三方供应商返回的 reasoning 项会把可见推理正文放在 `content` 里，同时带上非官方的 `encrypted_content`，官方 Codex 后端会直接拒绝（`Invalid 'input[i].content': array too long. Expected an array with maximum length 0`，以及 `The encrypted content ... could not be verified`），自动压缩同样失败，导致用过这些供应商的会话切到官方账号或直连 Responses API Key 后无法继续。现在本地网关在响应出口就会把这段正文改写成合法 `summary`、把 `content` 清空，并丢弃非官方格式的 `encrypted_content`（流式与非流式、API 服务与 provider gateway 都覆盖），新产生的历史不会再出现该问题；更早写下的历史改为启动后在后台一次性迁移，不再每次切号或启动都扫描，迁移同时清理历史库与会话日志（`sessions` / `archived_sessions`），只读取推理条目、只备份被改动的内容，不再复制整库；仍在写入中的会话日志会跳过并在下次启动继续处理。
+- **修复用过混合模型路由后第三方账号看不到自己的模型**：切到 DeepSeek 等 API Key / 第三方供应商账号时，模型目录不再被「模型管理」覆盖，账号自己的模型清单（如 DeepSeek Flash / Pro）会正常显示；这些账号的切换也不会再清掉你在模型管理里保存的清单。
+- **修复切换账号被混合模型路由拦截**：混合模型路由现在只在实例绑定「可直接登录的 OAuth 订阅账号」时生效；把实例或默认实例切到普通账号、API Key 账号或 API 服务时，路由会自动关闭（渠道配置保留）并释放对应网关，不再报「必须先绑定 OAuth 订阅账号」而中断切换或启动。
+- **修复实例不运行时实例网关仍然存在**：实例级网关现在只在实例运行期间保留，实例关闭后会自动停止并还原接管配置，也不会再出现在「实例网关」列表里；运行中的实例网关新增「关闭」和「重启」两个手动操作（关闭混合模型路由网关会同时关闭该实例的混合模型路由，渠道配置保留）。
+- **修复删除账号后混合模型路由残留报错**：删除实例绑定的 OAuth 底座账号，或删除某个路由使用的 API 账号后，会自动关闭相关实例的混合模型路由（渠道配置保留）并释放对应网关，不再因为路由引用了已删除的账号而反复恢复失败并弹出与删除操作无关的提示。
+- **修复开启第三方 API 路由的实例无法切换账号或启动**：启动预览现在会在实例有效绑定与所选 OAuth 订阅账号不一致时，把该账号一并保存为实例绑定，选择「直接登录的 OAuth 订阅账号」不再报「必须绑定直接登录的 OAuth 订阅账号」；该报错文案也补充了处理方式。
+- **修复会话管理「打开位置」和「打开会话文件」在多实例下无效**：会话同时存在于多个实例时，原来会弹出要求输入实例 ID 的系统输入框，但界面位置列显示的是实例名称，输入的 ID 不正确就无法打开。现在改为在会话管理内弹出实例列表，直接点选位置列里显示的实例名称即可打开，打开失败的原因也会显示在该弹框内。([#2129](https://github.com/jlcodes99/cockpit-tools/issues/2129))
+- **修复 Codex 会话管理里的会话名与官方客户端不一致**：会话标题改为按官方客户端的展示规则读取（优先客户端维护的会话展示名，没有生成标题时显示首条消息并截断），不再只认 `session_index.jsonl`，未生成标题的会话不再显示成一串会话 ID；分组标题同时改用官方客户端项目名，在 Codex 里重命名项目后会话管理会同步显示新名称。
+- **修复在会话管理把会话移到废纸篓后 Codex 侧仍然显示**：删除改为调用官方 Codex 的会话删除流程，会话会同时从官方会话列表、状态库与本地会话目录移除，无需重启客户端即可消失；官方删除不可用时会自动回退到原有文件方式，并在结果提示里说明需要重启 Codex 才会同步。
+- **修复 Windows 关闭到托盘后后台额度刷新停止**：只要启用了任意平台的自动刷新，关闭到托盘现在会隐藏主窗口而不是销毁 WebView，现有刷新调度器可以继续运行；当所有自动刷新都禁用时，仍保持原来的销毁 WebView 以省内存行为。
+- **修复严格 Responses 上游因历史工具调用缺少 `call_id` 而拒绝请求**：Codex 请求在转发前会为缺失 `call_id` 的 `function_call` / `custom_tool_call` 补齐 ID，并让对应输出使用同一个 ID；已有 ID 不会被改写。该修复覆盖本地 API 网关与 provider gateway 两条链路。
+- **修复开启模型目录同步后 HTTP-only 自定义 Responses 渠道失效**：缺失 `wireApi` 时现在会按 Responses 处理，关闭 WebSocket 的自定义渠道即使开启模型目录同步也会保留独立的 HTTP-only provider，确保 `supports_websockets = false` 生效，Codex 不再尝试 `wss://.../responses`。
+- **修复 Codex 会话亲和在账号额度耗尽后不故障转移**：选择器包装层现在会把执行结果转发给会话亲和选择器，绑定账号失败后会解绑，下一次请求可切换到其他可用账号。调度选项里的会话亲和开关在服务运行时也可以取消勾选，仅在实际保存调度选项时禁用。
+- **修复 Windows 上 Store 版 Codex 实际已启动却提示启动失败**：当系统入口已经拉起 Codex、但未能匹配到新进程时，旧逻辑会回退直接启动受保护的 `WindowsApps` 可执行文件并返回 `ACCESS_DENIED (os error 5)`。启动器现在会依次尝试 `powershell.exe`、Windows PowerShell 绝对路径和 `pwsh.exe`；确认 Codex 已在运行时按成功处理；不再直接启动 `WindowsApps` 路径，并给出可操作提示，避免误导性的启动失败。
+- **修复窗口高度受限时弹框遮挡内容或操作按钮**：弹框限制高度后，账号选择器的同优先级样式可能把正文滚动覆盖回去，同时正文区块仍可能被压到零高度。现在 API 服务与分组账号选择弹框的正文区块固定按内容高度排列并独立滚动，标题栏与底部操作栏始终保留在视口内，总量统计、额度池、服务配置以及「取消」「保存集合」「添加账号」等操作都可正常访问；鹈鹕测智结果详情弹框也会固定保留关闭操作，仅让较长的结果正文滚动。
+- **修复中文等非 ASCII 项目路径的信任记录被删除**：Codex `config.toml` 里的 `[projects.'E:\中文项目\店铺管理']` 本身是合法 TOML，但配置净化逻辑会把所有非 ASCII 头部判定为不安全并整段删除（`config.toml.bak` 也会被一并清理），导致这些项目每次启动都要重新信任。现在只有缺少 `]` 或无法按 TOML 表解析的头部才会被移除，合法的 Unicode 路径与 `\uXXXX` 转义写法都会原样保留。
+- **修复在 API 账号与 ChatGPT 登录账号之间切号后官方客户端提示「继续登录」**：官方 `config.toml` 里的 `forced_login_method` 是限制登录方式的开关，手工设置过该键的用户切到另一种账号时，官方客户端会把已经写好的有效凭据判定为未登录，只能手动改回该键才能使用。现在切号写入登录信息时会按当前账号类型同步该键（API Key 账号写 `api`，OAuth 账号写 `chatgpt`），仅在该键与本次凭据冲突时改写；用户从未设置过该键时保持原样，仍由官方客户端按 `auth.json` 自动识别登录方式。([#2209](https://github.com/jlcodes99/cockpit-tools/issues/2209))
+- **修复切到 DeepSeek 后 `preferred_auth_method` 残留**：该键现在与其他 DeepSeek 临时改动一起记录，切走时还原用户原值（原本没有该键则删除），避免切回官方 ChatGPT 账号后仍保留 DeepSeek 的登录方式设置。([#1961](https://github.com/jlcodes99/cockpit-tools/issues/1961))
+- **修复 Windows 上 Store 版 Claude Desktop 切号时因登录态文件被占用而备份失败**：备份前改为用登录态文件本身确认 Claude 已经退出——按与备份完全相同的复制路径探测 `Network\Cookies`、LevelDB `LOCK` 等 Chromium 独占文件；仍被占用时按 Store / MSIX 包路径结束还持有这些文件的 `claude.exe`（含 network service 等 Electron 子进程，排除 Claude Code CLI）后复检。若文件依旧被占用，会返回「请完全退出 Claude Desktop 后重试」的可读提示，而不是抛出 `os error 32` 并中止整次切号。([#2161](https://github.com/jlcodes99/cockpit-tools/issues/2161))
+
+## [1.3.51] - 2026-09-13
+
+### 新增
+
+- **启动预览新增 OAuth 绑定行**：API Key 账号的启动预览里会多出一行「OAuth 绑定」，位于「强制刷新 Token」一行上方、风格与其他行一致，可直接绑定或更换 OAuth 账号，绑定账号需要重新授权时同一行显示「授权异常」并提供「重新授权」。说明文案明确绑定后启动与普通账号没有任何差异，可使用 OAuth 的全部能力（远端压缩，浏览器操作，各类插件等），对话仍由当前 API Key 供应商处理。模型供应商的启动预览同样可用，并与账号总览共用同一个绑定弹框。
+
+### 修复
+
+- **DeepSeek 模型元数据与官方声明完全对齐**：直连与桌面注入模式下，客户端此前会把部分 GPT 模型的能力当成 DeepSeek 的能力显示（例如并不存在的极速档位与套餐限制），多 agent 能力、客户端最低版本等也与官方声明不一致。现在实例里的 DeepSeek 模型直接使用官方 `models.json` 的完整条目。
+- **切到 DeepSeek 时禁用客户端内置联网搜索并清理冲突配置**：此前切换到 DeepSeek 后，客户端仍可能发出上游不支持的联网搜索请求，config.toml 里遗留的思考档位、压缩提示词、服务等级等设置也会被一起发给上游并可能报错。现在切号时按官方要求禁用内置联网搜索并临时移除这些冲突项，切走时按原值精确还原。
+- **修复跨供应商会话切到官方账号后请求被拒**：同一会话在 DeepSeek 与官方 GPT 账号之间来回切换时，历史里第三方产生的推理项会让官方后端报 `input[i].content` 校验失败（`array_above_max_length`），普通请求和自动压缩都无法继续。网关在转发给官方账号前会清空这类字段，并丢弃只带第三方思考文本、没有可复用推理状态的推理项。
+- **修复从 DeepSeek 网关切到普通账号后旧会话报错**：第三方用过的会话会在历史里留下带可见思考文本的 reasoning 项，而官方直连账号要求这类项必须为空，切换后整段请求（普通回合与自动压缩）都会被拒。现在切号与启动前会自动清理这类历史项，写入前先生成备份，且只作用于直连官方的普通账号（走网关的账号仍由请求级清洗处理）。
+
+## [1.3.50] - 2026-09-13
+
+### 新增
+
+- **DeepSeek 支持绑定 GPT 账号进行生图**：在启动预览里开启后选择 GPT 账号，Codex 内置生图工具发出的图片需求会交给所选账号完成，对话仍由 DeepSeek 处理。
+- **模型供应商新增 Codex 启动预览**：模型供应商的「启动」改为打开与账号总览一致的启动预览（账号、供应商、模型与用量、上下文管理等），确认后绑定实例并启动；DeepSeek 可在其中选择启动方式（网关列出 / CDP 注入 / 直连官方）。
+- **上下文管理统一到启动预览**：添加账号、编辑 API Key 与模型供应商编辑弹框不再提供逐模型上下文，改为在启动预览里按实例设置。
+- **DeepSeek 自动压缩兜底**：切到 DeepSeek 时写入本地兜底压缩配置，切走时按原值还原，其他账号不受影响。
+- **赞助商线路变更自动跟随**：赞助商 Base URL 变化后自动替换已保存的供应商与账号地址（APIKEY.FUN 已切换到 apikey.fan）。
+- **Codex API 服务支持账号并发数**：可限制同一账号同时运行的会话数，账号占满时优先切换空闲账号，等待超时返回可读原因。
+
+### 变更
+
+- **弹框尺寸与高度更稳定**：弹框尺寸不再受 CSS 打包顺序影响，高度超出视口时由内容区滚动，标题与操作按钮不会被裁掉。
+- **鹈鹕测智请求与本地 API 服务对齐**：请求特征与 API 服务保持一致，降低被上游风控的概率。
+
+### 修复
+
+- **修复实例网关生图请求的模型改写**：经 ChatGPT 账号执行的生图请求不再被改写成供应商模型名而被上游拒绝。
+
+## [1.3.49] - 2026-09-12
+
+### 变更
+
+- **DeepSeek 模型列表支持自定义并逐条控制识图**：默认模型更新为官方最新的 `deepseek-flash`（DeepSeek V4.1 Flash）与 `deepseek-v4-pro`（旧模型名继续兼容），模型列表改由账号数据决定，可自行新增或删除上游模型，并为每个模型单独开关图片输入（官方 Flash 默认支持识图，自定义模型默认关闭）。模型列表、识图能力和思考档位会同步到本地网关列出与 CDP 注入的模型列表。
+- **DeepSeek 模型供应商按协议收敛**：Responses 下只保留模型目录与逐模型识图开关，供应商级图片开关、图片模型列表与图片兜底模型不再展示；模型目录里的上下文改为预设选择（跟随官方 / 516K / 1M / 自定义），与 Codex 的上下文设置保持一致。
+- **并排对比鹈鹕测试结果**：开始测试后打开紧凑的独立结果弹框，每个邮箱对应一列画布；进度、失败提示和重试均在对应格子内操作，失败格子提供紧凑的错误、重试和原始回复操作，成功格子直接打开 HTML 预览，详情弹框仍支持在浏览器中打开。结果区移除测试参数说明和账号标签操作。
+- **鹈鹕结果可在浏览器打开**：新增一次性本地地址（随机端口、随机路径、15 分钟自动过期，最多同时两个）承载结果页，页面注入 CSP 与沙箱锁定脚本，禁用联网、WebRTC 与弹窗类接口；清空测试数据时同步关闭。
+- **保留 OpenCode Go 会话标识**：供应商网关请求会转发已有的 `x-opencode-session`，或根据客户端会话标识生成；缺少会话信息时使用不透明兜底标识。
+
+### 修复
+
+- **修复 DeepSeek 思考强度被重置**：切换账号或启动实例时不再把 `model_reasoning_effort` 重置为 `high`，Codex 里已选的 `low` / `high` / `max` 保持不变。
+- **收敛 CDP 注入的改动范围**：模型列表识别收紧为真正的模型描述符，不再改动队列、线程等通用数组；默认模型改为只在用户显式切换模型时回写，减少任务运行中的后端写入。同时修复注入脚本因引用已删除常量而在每次执行末尾报错、导致 CDP 下切换模型状态无法回传的问题。
+
+## [1.3.48] - 2026-09-11
+
+### 变更
+
+- **完善跨平台回归验证与发布质量门禁**：PR 验证现在统一运行 TypeScript、release script、Go sidecar 和核心 Rust 回归测试，并在 Windows、Ubuntu x86_64 / ARM64、macOS Intel / Apple Silicon / Universal 构建前执行对应检查。
+- **改进安全报告与代码安全扫描**：补充真实可执行的漏洞报告指引，明确敏感凭据脱敏要求，并将 Go sidecar 纳入 CodeQL 分析。
+- **同步发布文档与实际流程**：补充多平台安装包、Tauri updater signing、target manifests、legacy `latest.json`、`SHA256SUMS.txt` 和 Homebrew Cask 的当前说明。
+- **优化发布状态管理**：发布流程在所有平台产物和校验文件准备完成前保持 draft，避免失败时公开不完整的 latest 版本。
+- **统一 Codex API 供应商配置**：API Key 账号现以已保存的模型供应商为端点、密钥、模型目录、协议和 Responses WebSocket 配置的唯一来源；编辑 API Key 时会展示供应商的协议与 WebSocket 状态，供应商配置仍在模型供应商弹框中统一维护。“添加 Codex 账号”和“编辑 API Key”弹框宽度已与模型供应商弹框对齐。
+- **生产环境统一使用内置 Sidecar 作为 Codex API 网关**：移除已退役的进程内 legacy 网关及其生产环境中的拒绝字段重试逻辑，保留测试所需的共享传输辅助代码；API 服务请求统一使用单一的路由、账号选择、额度处理和上游错误响应链路。
+- **改进 Codex API 传输与故障切换**：Responses 流保留官方嵌套错误详情与序号，正确处理被拆分的 CRLF，并保留 WebSocket 预热后续请求和具名工具输出；容量不足与 `model_not_found` 可正确切换账号，永久拒绝的 OAuth 凭据停止重试，请求规范会话可用于填充自定义请求头，Codex 工具 Schema 会移除不支持的 Unicode 正则，并支持 `gpt-image-2.5` 变体。Cockpit 专属的 API Key 范围控制、实例网关、Responses Lite、Agent Identity 以及现有 `gpt-5.5`／`gpt-image-2.5` 生图默认值保持不变。
+- **移除旧版 Codex 指纹与客户端策略控制**：移除本地设备／会话／完整指纹改写、“仅官方客户端”限制、“允许第三方客户端”例外、对应账号设置和 Sidecar 元数据下发；历史字段仍可读取，用于备份与导入兼容。API Key 鉴权、账号范围控制、账号凭据、Agent Identity 兼容、导入导出和实例专属网关保持可用。
+- **收敛 API 服务日志与超时设置**：移除已经不存在的新旧网关标签和筛选项，剩余超时配置统一说明为流式超时。
+- **保持启动期间的平台布局持久化非阻塞**：界面偏好改为后台加载，保存请求串行执行，使用版本号防止旧窗口覆盖较新布局；读写失败会在当前布局弹框中显示并提供重试，启动迁移不再产生误导性的额外写入。
+
+### 修复
+
+- **修复 Grok CLI 账号索引恢复和列表读取导致账号消失**：索引缺失、为空或损坏时可从加密账号详情恢复，不会删除账号、覆盖更新数据或静默丢弃无法读取的凭据；恢复在 UI 线程之外执行，具备单飞保护和超时限制，失败后保留原数据并允许重试。
+- **修复更新后自定义平台顺序丢失**：将已有布局迁入持久文件，协调较新的已保存布局并保留启动期间的新调整；偏好在后台加载，不阻塞首屏。
+
+## [1.3.47] - 2026-09-09
+
+### 新增
+
+- **支持配置 API 服务生图模型**：可在服务面板设置，或通过启动预览中“强制刷新 Token”上方的入口打开独立设置弹框，选择 `gpt-image-2.5`、`gpt-image-2`，或输入自定义生图模型；新建与已有配置默认使用 `gpt-image-2.5`，保存后应用于生图和图片编辑请求。
+- **支持 Codex 账号鹈鹕测智**：可向所选账号并行发送统一且可编辑的提示词，查看生成结果和 HTML 预览，重试失败账号、管理账号标签，并自动或手动清理测试记录与生成文件。
+
+## [1.3.46] - 2026-09-09
+
+### 变更
+
+- **默认使用 `gpt-5.5` 转发生图请求**：由于官方 ChatGPT 账号通道已不再稳定支持 `gpt-5.4-mini` 作为这条生图链路的基础模型，原先转换后的请求可能因基础模型不兼容被上游拒绝；本地 API 服务现改用 `gpt-5.5` 作为 Responses 基础模型，同时保留 `gpt-image-2` 作为生图工具模型。
+- **提升 Codex 协议兼容性**：清理上游不接受的 JSON Schema 方言元字段，按 Codex 规则清洗工具名称，在唯一匹配时恢复工具命名空间，保留 `service_tier` 和缓存写入 token 用量，函数工具未提供 `strict` 时明确传递 `false`，并将提示可重试的 server error 纳入 Codex 账号故障切换。
+- **增强 Codex 故障与协作处理**：简化大型常量工具 Schema 联合结构，识别静默的零 token `response.incomplete` 终止，将配额故障限定到受影响的 credential，并在多 Agent 优化后恢复带点号的 collaboration 工具名称。
+
+## [1.3.45] - 2026-09-08
+
+### 修复
+
+- **修复 DCP 注入额度与 Cockpit 账号池状态不一致**：额度池快照现在携带账号套餐信息；账号文件短暂刷新或读取失败时保留上一份有效额度，只有确认账号池确实为空时才显示 `0/0`，避免额度区域在正常数据和“暂无额度统计”之间闪烁。
+- **修复 Windows 刷新 Codex 额度时的栈溢出闪退**：降低额度刷新对主线程栈的占用，避免手动或自动刷新额度时主程序意外退出；保留历史额度和原有刷新后处理行为。
+- **仅在“统计与日志”页签显示用量统计区域**：服务总览、客户端 Key、账号池和模型与能力页签不再重复显示统计范围、指标卡和趋势图。
+- **修复账号异常弹框恢复成功后看似没有反应**：恢复结果会直接显示在当前弹框内；全部恢复成功后会清除旧 Sidecar 遗留的聚合账号池异常，单账号恢复仍保留其他账号的异常状态。
+
+### 变更
+
+- **Codex 额度刷新优先响应手动操作并限制资源占用**：手动与后台刷新各有独立通道，各最多执行 1 个账号、排队 16 个账号，同一账号的重复请求共享一次刷新；手动刷新会将本轮尚未开始的后台任务延后至下一轮，不因插队中断已开始的请求。排队和执行分别设置 2 分钟超时，任务结束后释放任务资源及等待者，并提供本地化的繁忙、超时和异常提示。
+- **仅为已开启混合路由的实例运行后台监控**：启用混合路由后启动监控，关闭后停止对应后台检查和自动恢复，不影响其他实例及独立的 API 服务。关闭路由不打断正在运行的 Codex 会话，配置变更在下次通过 Cockpit 启动时生效。
+- **恢复 API 服务进程监控和受保护的自动恢复**：服务启用时检测 Sidecar 意外退出，并在原有限制内尝试恢复；清理端口前校验 Sidecar 命令行和父进程归属，保留手动重启、请求重试和账号池故障切换。
+- **恢复退出时的混合路由配置清理**：退出 Cockpit 时恢复未运行的历史受管实例配置，保留仍由运行中 Codex 会话使用的配置；未使用混合路由的普通实例不参与对应的进程检查。
+
+## [1.3.44] - 2026-09-08
+
+### 变更
+
+- **针对 Windows 闪退反馈恢复 API 服务既有行为**：针对 `1.3.43` 中运行 API 服务时主程序退出的反馈，将 Sidecar 退出处理和端口清理恢复为 `1.3.42` 的行为。
+- **恢复 1.3.42 的 Codex API 服务进程状态逻辑**：移除每秒 Sidecar 退出监控，以及进程异常退出或读取状态时触发的自动拉起；Sidecar 意外退出后会在读取状态时显示异常，手动重启、原有请求重试与账号池故障切换仍然可用。
+- **恢复 1.3.42 的 API 服务端口清理逻辑**：移除 Sidecar 命令行与父进程归属检查；启动时按原逻辑处理检测到的旧服务，现有“清理端口”操作会结束占用配置端口的进程，并在服务已启用时重新启动，保留原有换端口兜底与确认文案。
+
+### 新增
+
+- **分离 Codex 上下文设置与模型管理**：普通账号默认跟随官方模型目录，只有用户明确开启并确认“模型管理”后才使用 Cockpit 配置目录；开启后可添加、删除、排序和调整模型，但不会自动跟随官方目录更新，并可一键恢复当前版本的 Cockpit 默认模型清单、顺序、推理强度和默认模型，确认“应用配置”后才会落盘。模型管理不再设置单模型上下文或压缩阈值，历史覆盖会自动清理；独立的紧凑“上下文管理”支持跟随官方、`516K / 460K`、`1M / 900K` 与自定义方案，统一写入当前 Codex 实例的官方顶层配置并对该实例所有账号生效，切号时保持不变，恢复“跟随官方”时会移除对应配置。
+- **Codex 可见模型支持自定义排序**：模型列表可通过拖拽调整顺序，新模型会插入到相同来源的模型之后；下次通过 Cockpit 启动 Codex 后，下拉模型顺序与保存的列表一致。
+- **保留 Business 账号的 Team 历史额度**（[#2293](https://github.com/jlcodes99/cockpit-tools/pull/2293)）：账号切换为按量计费 Business 模式后，可继续查看移除席位前保存的 Team 额度和预计重置时间；历史数据按用户与工作区隔离，并明确标记为本地快照而非当前可用额度。
+
+### 修复
+
+- **兼容 Homebrew 6 的 Cask 安装流程**（[#2279](https://github.com/jlcodes99/cockpit-tools/pull/2279)）：移除已废弃的 URL 验证参数，并将安装后隔离属性清理迁移到 `postflight_steps`，保持原有安装行为不变且不再显示废弃警告。
+- **修复 WebSocket 长连接的分次用量统计**（[#2292](https://github.com/jlcodes99/cockpit-tools/pull/2292)）：同一 Responses WebSocket 连接中的每次执行会分别记录 Token 用量并去重，保留实际账号归属；握手失败和 Token 限制请求仍进入原有诊断记录。
+- **修复 Antigravity GCP ToS 账号切换资格与状态丢失**（[#2286](https://github.com/jlcodes99/cockpit-tools/pull/2286)）：切号和实例启动前会补齐 GCP ToS 与项目元数据，正确写入 OAuth 信息并保留 IDE 已有的模型、功能和历史状态缓存；账号页可识别 GCP ToS 账号，已存在的 Antigravity 与 Antigravity IDE 数据目录会同步接收切号凭据。
+- **修复 Codex API 服务账号恢复后仍不可用或界面疑似卡住**：账号恢复不再等待持久化写入，会忽略恢复前已开始请求产生的过期失败状态，按账号显示恢复进度，并在超时后明确提示而不会让弹框持续忙碌；账号与 API Key 保持不变，正常停止 Sidecar 时在系统支持的情况下优先优雅退出。
+- **修复第三方 API 路由无法关闭**：关闭路由后会保存明确的禁用状态并保留渠道配置，重新打开设置或更换绑定账号时不会再次自动开启；运行中的实例会在下次通过 Cockpit 启动时应用变更，当前会话保持可用。
+- **修复混合路由下即时语音不可用**：语音通话建立与实时控制连接会使用同一本地网关和账号；退出 Cockpit 时不再提前恢复仍在运行的 Codex 实例，避免当前会话后续请求出现 `401`。
+- **修复第三方 GPT 模型缺少 Fast 和 Ultra 档位**：带渠道前缀的已知 GPT 模型会保留对应的推理强度、速度档位和上下文能力，同时继续按用户保存的模型顺序展示。
+- **修复模型路由配置的草稿与提示状态**：刷新账号不会覆盖尚未保存的渠道配置，未选择模型的渠道可以正常保存，切号预览中的保存成功提示也会正常显示。
+
+感谢 [@we1jia](https://github.com/we1jia)（[#2259](https://github.com/jlcodes99/cockpit-tools/pull/2259)）的贡献。
+
+## [1.3.42] - 2026-09-07
+
+### 修复
+
+- **恢复 Codex API 服务首输出前的容量错误重试**：HTTP 与 WebSocket 请求暂存初始握手事件，在现有重试预算内重试临时模型容量错误；开始输出后的失败直接报告，不重放已生成内容。
+- **区分容量错误与账号额度耗尽**：临时容量错误不再让正常账号进入冷却，并返回可重试的服务端错误；额度、认证和策略错误保持原有处理。
+- **统一 Codex API 服务 OAuth 身份头版本**：出站 `Version` 与 `User-Agent` 的版本保持一致，不改变 API Key 透传与实例专属 provider gateway。
+- **保留仍有可用 Credits 的 Codex 账号**：常规额度窗口为 0 但 Credits 仍有余额或未限额时，账号继续参与 API 服务调度；确认常规额度耗尽且无可用 Credits 的账号才进入额度冷却。
+- **扩大本地账号池恢复范围**：账号池没有可选账号时可恢复可恢复的调度和额度冷却状态，手动恢复可以清理选中账号的本地冷却状态；账号移出 API 服务后会清理其运行时调度和额度状态。
+- **增强 Codex 配置文件容错**：`config.toml` 损坏时优先从有效的同目录备份恢复，无法恢复时隔离坏文件并继续使用空配置；有效 UTF-16 配置会改写为 UTF-8，避免阻断切号、启动和 Provider 配置。
+- **及时释放已退出进程遗留的 Codex 刷新锁**：Token 刷新锁检测到持有进程已退出后立即回收，同时继续保护仍在运行的持有进程不被抢锁。
+
+## [1.3.41] - 2026-09-06
+
+### 变更
+
+- **统一模型列表管理弹框与 Codex 模型配置弹框的尺寸**：采用相同的桌面端宽高上限，并让模型行填充弹框可用空间，完整目录可见且保持可滚动。
+- **默认使用近 7 天统计范围**：API Service 与会话管理用量详情打开时默认展示最近 7 天，并保留日、周、月和自定义范围切换。
+- **记住用户最后选择的统计范围**：切换为日、周、月或自定义日期后，API Service、服务设置弹框和会话用量详情下次打开会恢复对应范围；预设范围会按当前日期重新计算。
+- **增加统计与日志明细刷新**：统计与日志页现在可以单独刷新当前范围的统计和请求明细，不会清除统计、重置筛选条件或改变分页位置。
+- **新增 API 服务与会话管理用量走势图**：API Service 统计页面根据所选时间范围展示请求日志的按小时/按日 Token、请求数和估算费用走势；会话管理复用已有会话日志汇总，展示按日 Token 与请求数走势。
+- **统一 Codex 统计与会话管理的视觉风格**：采用主指标 Hero、输入/缓存/输出指标卡片、圆角渐变走势图和会话条目布局；补齐悬浮 Tooltip、竖向指示线、节点高亮和多色指标层级，会话走势按时间正序展示，有值节点按不重叠规则显示 Token 徽标并修正边缘标签裁切，不改变原有数据来源和操作逻辑。
+- **统一 Astra 官方展示名称**：受管模型目录和 API Service 统一显示为 `6 Astra`，请求模型 ID 仍保持为 `gpt-6-astra`。
+- **新增官方实验性上下文管理开关（默认关闭）**：可在 Codex 设置、快捷设置和当前 Codex 配置中按需启用；关闭时移除该实验开关配置并回到官方默认行为，启用或关闭后需完全重启 Codex 生效，不影响上下文窗口、压缩阈值或 API 服务。
+- **明确实验开关名称**：界面标题显示为 `开启experimental_mode = true（实验性上下文管理）`，与实际写入的官方配置项一致。
+
+### 修复
+
+- **修复账号异常弹框的单条恢复误清空全部账号状态**：恢复单个账号时只清理该账号的调度与池诊断状态，其他异常账号继续保留在列表中。
+- **更新 Codex 客户端身份兜底并保留 API Key 透传请求头**：OAuth 兜底身份改用当前 `0.153.4` 基线；API Key 的 HTTP 与 WebSocket 请求保留下游客户端的 `User-Agent` 和 `Originator`，不再被改写成旧的 `0.146.0` 身份。
+- **自动恢复被 Sidecar 调度状态阻断的账号**：API Service 现在会将 `auth_available=false` 的调度冷却识别为可恢复的账号池异常；当账号池全部不可用时会进入自动恢复流程，不再必须手动重置。
+- **统一 CDP 注入额度徽标与 API Service 的有效窗口口径**：周额度耗尽时，CDP 注入的 5h 徽标现在与 API Service 一致显示为 0，不再把各账号原始值相加成超过 100% 的结果。
+
+## [1.3.40] - 2026-09-05
+
+### 新增
+
+- **常驻提供 Luna Reserve 手动选项**：API Service 与 Codex 受管模型列表提供 `gpt-reserve`，不因暂时没有合格账号而隐藏；不自动切换、不设为默认，也不预设固定压缩阈值。请求保持 `gpt-reserve` ID，仅在当前 API Key 的账号范围内选择常规额度不可用、备用额度允许且服务端标记为 `luna_reserve` 的 OAuth 账号；没有合格账号则报错，不改用普通账号或其他模型。用户显式配置的模型访问限制仍生效，关闭可见模型受管后仍由官方控制模型可见性。
+
+### 变更
+
+- **恢复 Codex OAuth 凭据过期后的单次重试**：Codex Alpha Search 收到上游 `401` 后会刷新当前 Home 凭据并重试一次，与常规 Codex 请求的恢复行为保持一致。
+- **账号池暂时无可用账号时自动恢复并重试一次**：当账号池存在候选账号但没有账号可被选中时，Cockpit Tools 会重置运行时调度状态并重试原请求；如果重试后仍没有可用账号，响应会明确说明已执行自动恢复。
+- **确认关闭第三方 API 路由后立即保存状态**：关闭路由时会立即保存“已关闭”，但不会影响当前正在运行的会话；配置会在下次启动 Codex 时生效。
+- **按 API Key 作用域隔离 Codex 会话绑定**：同一 Codex 会话在不同客户端 API Key 下不会复用另一 Key 的账号绑定，避免受限 Key 被错误路由到不属于自身范围的账号。
+- **按客户端版本返回 Codex 模型能力**：模型目录会依据 `client_version` 过滤不兼容的 `max`/`ultra` 推理强度，并保留官方模型别名、上下文窗口、优先级、服务层级和可用推理强度；Astra 使用已确认的官方模型能力模板。
+- **补齐 Codex API Service 的 HTTP、Responses 与 WebSocket 链路**：支持 Codex client model 路由、Responses/WebSocket 流式事件、连接保活与 Ping、上游事件和配额响应头合并、握手限额的 `Retry-After`，以及本地升级失败时的兼容回退。
+- **支持 Codex 多 Agent 与分支会话**：兼容 `collab_spawn` 委派标记、orphan delegation、fork/subagent 会话层级和父子会话身份，保证协作请求能沿正确会话继续执行。
+- **完善 Claude/OpenAI 协议转换**：修正工具调用与 `tool_result` 顺序、工具相邻关系、JSON Schema `required` 严格度、推理文本增量/摘要映射，并保留 Codex→Claude 的 cache-write 用量信息。
+- **增强 Codex 认证、调度与配额状态一致性**：改进 OAuth 刷新和 `401` 重试、并发刷新合并、模型级冷却与配额耗尽状态、重试后错误归因、别名/子 Agent 选择和候选账号回退，避免可恢复请求被错误冷却。
+- **补齐流式用量与诊断信息**：区分首个数据包与有效 TTFT，补充流式模式、WebSocket 响应观察、重试隔离的响应头和请求级诊断信息，使额度与请求失败原因更准确。
+- **保持非 Codex 模型目录独立**：本次 API Service 同步仅更新 Codex 模型条目及其必要的共享底层能力，不覆盖其他供应商的模型配置。
+
+## [1.3.39] - 2026-09-05
+
+### 新增
+
+- **补齐 GPT-6 Astra 的 Ultra 推理强度**：Astra 现在会在模型能力目录和 API 请求中支持 `ultra`，与官方客户端的可选强度保持一致。
+
+## [1.3.38] - 2026-09-05
+
+### 新增
+
+- **支持卸载 Claude Desktop 登录组件**：Claude 账号弹框现在可以删除本地下载的 Electron 登录 runtime 和未完成登录的临时 profile，释放磁盘空间，同时保留已保存的 Claude 账号。
+- **适配 6 Astra 模型**：在 API Service、账号切换、可见模型目录、唤醒预设和 Provider sidecar 中支持官方 `gpt-6-astra` 模型 ID 与 `6 Astra` 显示名称，并将它排在这些模型列表的第一位；同时补齐 105 万上下文、`max` 推理强度、Fast 档元数据和本地成本估算。仅增加可选模型，不改变默认模型。
+
+### 变更
+
+- **优化 Claude 登录组件缓存管理展示**：卸载区域改为独立的缓存卡片，显示实际占用空间并将说明、确认操作与按钮分层排列；空间统计在后台读取，不阻塞账号弹框打开。
+- **关闭可见模型目录后恢复官方模型可见性**：保存为关闭状态时会移除当前生效的 `model_catalog_json` 覆盖和 Cockpit 受管目录状态，但保留用户自己的目录文件；之后由官方 Codex 客户端根据账号权限决定可用模型。
+- **生成过验证码的 2FA 秘钥会自动保留到查询历史**：在 2FA 管理器或账号备注弹框输入有效秘钥后，只要能生成一次性验证码就立即加入近期查询，即使未保存账号备注直接关闭也可找回；查询历史不再自动淘汰超过 50 条的旧记录。
+
+### 修复
+
+- **修复 Claude Gateway 映射中的 1M 上下文复选框导致弹框错位的问题**：为自定义复选框建立独立的定位上下文，点击或勾选 1M 上下文后映射行和弹框内容保持稳定。（[#2229](https://github.com/jlcodes99/cockpit-tools/issues/2229)）
+- **修复混合模型路由被内部 `__provider_gateway__` 标识拒绝的问题**：不再把 Provider Gateway 内部绑定标识当作用户可配置的路由命名空间或账号 ID，使合法的 OAuth 订阅绑定和 API Key 路由可以正常保存并启动。（[#2222](https://github.com/jlcodes99/cockpit-tools/issues/2222)）
+- **修复 CodeBuddy 导入账号切换后的官方会话与国际版额度请求问题**：国际版 CodeBuddy 的计费请求补齐必要的 `User-Agent`，CodeBuddy、CodeBuddy CN 与 WorkBuddy 的 JSON 导入账号现在会保留 `expires_at`，避免切换到官方客户端后会话立即失效。（[#2194](https://github.com/jlcodes99/cockpit-tools/pull/2194)）
+- **修复 API Key 上游的 Responses Lite 请求兼容性**：规范化 API Service 发往 API Key 上游的 Responses Lite 请求头和工具调用参数，减少多轮请求被上游拒绝的情况。（[#2169](https://github.com/jlcodes99/cockpit-tools/pull/2169)）
+- **修复 Windows 工具栏按钮被拖拽层遮挡的问题**：窗口滚动后，顶部工具栏按钮仍可完整点击。（[#2187](https://github.com/jlcodes99/cockpit-tools/pull/2187)）
+- **修复 Codex API Service 在上游网络传输失败时错误冷却账号的问题**：DNS 失败、断网和连接被拒绝时仍可重试，不再修改账号或模型的冷却状态。
+
+## [1.3.36] - 2026-09-02
+
+### 新增
+
+- **启动时自动恢复 Codex 代理接管**：启用后，Cockpit Tools 启动时会恢复上次生效的 Codex 代理接管和可见模型配置，并可在设置中单独控制该行为。
+
+### 修复
+
+- **修复保存 Codex 可见模型、模型路由或复制实例时删除已有上下文配置的问题**：仅修改模型目录或路由时会保留 `config.toml` 中已有的 `model_context_window` 与 `model_auto_compact_token_limit`；原本未配置的用户仍保持默认状态，失败回滚也会恢复原值。
+- **修复 Provider Gateway 清理误伤其他模型目录和默认模型的问题**：只有存在 Provider 所有权记录或明确的旧 Provider 目录时才执行清理；路由关闭、正常退出、启动失败回滚或 watchdog 回退后会重新应用已启用的实验模型目录。启用实验模型时也会先记录原 `model` 状态，关闭后精确恢复原值或“未配置”状态。
+
+### 升级说明
+
+- 如果受影响版本已经删除了上述两个字段，Cockpit Tools 无法判断删除前使用的是 `1M/900K`、`516K/460K` 还是自定义值，因此不会自动猜测恢复。请按原设置手动恢复 `config.toml`，或者前往「Codex 设置 → 可见模型 → 管理」，为需要的模型重新选择上下文与压缩预设或自定义值，然后重启 Codex 并新建任务验证。
+
+## [1.3.35] - 2026-09-01
+
+### 新增
+
+- **Codex Desktop 支持混合模型路由**：Codex 实例可选将指定模型或 namespace 分流到已配置的第三方 API，同时让官方订阅模型继续走官方链路；启动预览现提供路由开关、供应商/模型选择和模型可见性同步。
+- **支持 DeepSeek V4 Flash Vision**：新增 `deepseek-v4-flash-vision-exp` 视觉模型及图片输入元数据，Codex 可通过原生直连和 Provider gateway 链路发送 `input_image` 内容。
+- **Cursor 配额失败账号筛选与批量删除**：账号列表可快速定位配额查询失败的账号，并一次性删除筛选结果。
+
+### 变更
+
+- **Codex API Service 异常账号弹框改为纯账号级展示**：不再单独显示池级摘要；每个不可用账号会展示对应模型、失败原因，并在可恢复时提供单账号或全部恢复操作。
+- **各平台添加账号弹框尺寸统一**：桌面端统一采用 Codex 的 760px 大弹框基准，移动端继续自适应可用宽度。
+- **混合路由生命周期隔离**：第三方 Provider gateway 按 Codex profile 独立管理；关闭路由或停止 profile 时会恢复 Cockpit 管理的 `config.toml` 状态，启动中断或失败也会执行相同的回退清理。
+- **托盘菜单重建合并**：150ms 短窗口内的重复重建请求会合并处理，减少账号变更期间的重复磁盘读取。
+- **侧边栏布局跨版本保留**：布局保存到数据目录的 `ui_preferences.json`，升级后自动恢复并兼容旧的平台条目。
+
+### 修复
+
+- **恢复 WorkBuddy、CodeBuddy 与 CodeBuddy CN 在新版官方客户端下的额度查询**：OAuth 与刷新请求头、WorkBuddy 接口及带版本号的登录参数、个人/企业计费请求体、响应解析、无限额度和 WorkBuddy 共享登录文件布局均与最新版官方行为对齐；刷新失败时保留原额度快照。
+- **修复 Qoder OAuth 授权完成后弹框停留且账号未显示的问题**：授权成功现在会确认新账号已写入并出现在列表后自动关闭弹框；列表读取异常或账号不可见时保留弹框并提示失败，避免显示假成功。
+- **修复 Qoder macOS 切号仍复用旧内存会话的问题**：现在可以识别并关闭当前版本的 `Qoder IDE.app` 主进程，再注入凭据并重新启动默认实例。
+- **修复 Codex API Service 激活忽略所选实例的问题**：从非默认实例激活时，现在会准备并启动所选 profile，不再固定修改和启动 `__default__`。
+- **对齐 ZCode 3.10.2 客户端的额度查询**：请求补齐官方来源元数据与设备标识，避免服务端将请求判定为 `parameter error`；支持数字字符串形式的余额与重置时间，官方成功但暂无套餐时保留套餐标签并清除旧失败状态。
+- **对齐 Devin/Windsurf 官方额度请求元数据**：额度查询会从已安装客户端动态读取产品版本与 Language Server 版本，避免旧的 `1.0.0` 占位版本被服务端拒绝。
+- **对齐 Claude 官方客户端的新额度响应**：账号管理现在支持解析最新版 Claude Desktop 返回的 `limits[]` 额度封装，覆盖会话、周额度、Sonnet 专属额度和额外用量。
+- **修复 Codex API Service 高流量统计反复复制无界内存事件历史的问题**：历史日志改为从 SQLite 流式聚合，运行时只保留最近 100 条事件，统计落盘也不再重复复制事件列表。
+- **过期 Codex 订阅按有效套餐归类**：已过期的 Plus/Pro 账号会显示并分组为 `FREE`，本地 API Service 的免费账号限制也使用有效套餐判断。
+
+感谢 [@enenH](https://github.com/enenH)（[#2159](https://github.com/jlcodes99/cockpit-tools/issues/2159)）、[@we1jia](https://github.com/we1jia)（[#2155](https://github.com/jlcodes99/cockpit-tools/pull/2155)）、[@HUF457](https://github.com/HUF457)（[#2110](https://github.com/jlcodes99/cockpit-tools/pull/2110)）、[@yifayun](https://github.com/yifayun)（[#2089](https://github.com/jlcodes99/cockpit-tools/pull/2089)）、[@Jonesxq](https://github.com/Jonesxq)（[#1986](https://github.com/jlcodes99/cockpit-tools/pull/1986)）和 [@TakaSoap](https://github.com/TakaSoap)（[#2056](https://github.com/jlcodes99/cockpit-tools/pull/2056)）的贡献。
+
+## [1.3.34] - 2026-08-28
+
+### 新增
+
+- **Codex OAuth Token 支持手动刷新**：可在账号总览刷新账号凭据，并在独立弹框中查看结果、失败原因、重试或重新授权操作。
+- **账号池异常诊断**：请求没有可用账号时，账号池弹框会说明选路结果并提供恢复操作。
+- **按账号设置生图策略**：API Service 账号池可单独启用或禁用账号的生图能力，不影响文本请求。
+
+### 变更
+
+- **Codex 认证流程统一**：账号总览、默认实例、多开实例、API Service 和 API Key OAuth 绑定现在共用凭据准备、刷新、重新授权、进度和结果处理流程。
+- **客户端授权状态改为提示信息**：检测到客户端跳转登录页时不再阻止切号或 API Service 使用；服务端明确撤销仍是最高优先级状态。
+- **OAuth 授权与官方桌面入口保持一致**，无本地 Codex 客户端时也可使用；浏览器授权等待时间延长至 10 分钟，客户端版本默认值支持远端管理、本地缓存和设置覆盖。
+- **网关按 profile 隔离并优化额度刷新**：API Service 与多开实例使用独立网关，批量刷新减少重复进程探测和请求争用。
+- **启动操作可恢复**：启动弹框支持取消、重试、重新授权，以及跳过可跳过的非阻断失败。
+- **订阅信息统一标记为“订阅有效期”**，与 Token 有效期明确区分。
+
+### 修复
+
+- **修复重新授权、切号、额度刷新或 profile 同步后恢复旧 OAuth 凭据的问题**，避免账号回退到旧 Token。
+- **修复客户端登录页观测导致账号卡片状态过期或更新延迟的问题**：账号总览会及时更新客户端状态，并与 API 授权异常分开显示。
+- **修复调度失败后账号池异常被隐藏的问题**：无可用账号时保留池级诊断，并在账号池弹框中显示本地化恢复信息。
+- **修复 API 401 仍显示 API Service 可用的问题**：账号状态现在反映真实的上游拒绝结果。
+- **修复取消切号后账号卡片仍处于 loading 状态的问题**。
+- **修复纯文本请求因上游不支持生图而失败的问题，并修正部分控件显示浏览器原生灰色按钮样式的问题**。
+
+## [1.3.33] - 2026-08-27
+
+### 变更
+
+- **账号总览与多开实例现已使用一致的 Codex 客户端启动体验**：账号总览中的“切号并启动”、默认实例和多开实例复用同一套启动进度与认证结果展示，统一显示 `access_token`、`id_token` 的有效期、刷新状态和重新授权结果；授权或启动失败时可在同一弹框内重试，并在重新授权成功后继续原启动操作。
+
+## [1.3.32] - 2026-08-26
+
+### 变更
+
+- **Codex OAuth 账号不再受跨实例占用限制**：同一账号可用于默认实例、多开实例、API Key 绑定和 API Service，不再仅因已被其他实例使用而阻止启动或绑定。
+- **默认 Codex 实例的切换更加安全**：开发版与正式版同时操作默认实例时会直接提示冲突，避免刚完成的切换被另一环境改回；API Service 接管默认实例前会先结束仍占用该实例的官方客户端。
+- **Codex 启动预览显示 OAuth Token 到期时间**：标准 OAuth 账号会同时显示 `access_token` 与 `id_token` 的本地到期时间和相对剩余时间，并标识临期或已过期状态。
+- **后台自动刷新额度改为依次处理账号**：手动批量刷新仍保持并发速度，后台刷新采用更平稳的请求节奏，减少短时间限流和连接争用。
+- **Codex 实验模型的上下文预设改用紧凑标签**：预设值与压缩阈值以更简洁的格式显示，减少模型编辑弹框中的内容拥挤。
+
+### 修复
+
+- **修复旧的 Codex OAuth 凭据覆盖较新 Token 的问题**：切号、重新授权、实例启动和本机凭据同步会优先保留更新的有效凭据，避免账号恢复旧 Token 后再次出现远端撤销或登录失效。
+- **修复 Codex 客户端使用过期 `id_token` 启动后跳转登录页的问题**：默认实例、多开实例和 API Key 绑定 OAuth 会在启动前自动刷新已过期或临期的 `id_token`；无法取得有效 Token 时会进入通用重新授权流程，多开实例可直接显示授权弹框，并在授权成功后继续启动原实例。
+- **修复 Codex API Key 与 API Service 绑定 OAuth 后授权状态不一致的问题**：绑定账号会显示授权异常并提供重新授权入口，重新授权后的凭据会同步用于 API Service；`access_token` 仍可用时账号仍可继续提供 API Service，不会被计入失败账号。
+- **修复 OAuth 重新授权后账号页面仍显示旧状态的问题**：授权完成后账号列表、当前账号和 API Service 绑定状态会立即更新，不再被稍后返回的旧数据恢复成授权前的状态。
+- **修复 Codex 客户端启动失败仍显示切号或 API Service 激活成功的问题**：启动失败会保留明确的错误结果和重试入口，不再把仅完成凭据切换误报为客户端可用。
+- **修复 Codex 本机导入可能采用旧 OAuth 凭据的问题**：OAuth 账号会从官方凭据存储导入，包括 macOS Keychain；API Key、Agent Identity 和 personal access token 仍沿用原有导入方式。
+- **修复 Codex API Service 文本测试在部分账号上被生图能力检查阻断的问题**：普通文本测试不再向不具备生图能力的上游声明生图工具，正式生图请求不受影响。
+- **修复 Codex 批量刷新额度在 Windows 上反复探测桌面进程的问题**：同一轮刷新会复用一次运行态检测结果，减少 PowerShell 子进程和额外等待。感谢 [@popokcn](https://github.com/popokcn) 贡献（[#2106](https://github.com/jlcodes99/cockpit-tools/pull/2106)）。
+
+## [1.3.31] - 2026-08-25
+
+### 修复
+
+- **修复 Codex 账号删除后重新出现、重新授权仍使用旧凭据的问题**：删除结果不再被稍后完成的旧额度或资料任务写回覆盖，后端成功返回空账号列表时会同步清理前端本地缓存；新授权凭据也不会再被旧账号快照或原运行态的 `auth.json` 覆盖。删除后重新授权同一账号会稳定保留新 Token，后续切号不再因旧凭据返回 401。
+- **修复官方账号检查影响 Codex 实例启动的问题**：`accounts/check` 现在只在实际切号时调用，包括 OAuth 重新授权完成后的自动继续切号；已有实例启动保持原来的本地凭据准备逻辑，不再因该检查的 401 被误判为需要重新授权。
+- **修复新版 Codex API Service 无法生图的问题**：恢复官方 `image_gen` 与托管 `image_generation` 同时出现时的冲突处理，并覆盖顶层工具、嵌套 `additional_tools`、历史 `response` 和 `tool_choice`；HTTP、流式请求与 Responses WebSocket 现在都能正确选择生图能力，不再因重复发送两套工具而被上游拒绝。
+- **修复 API Service 实验模型目录导致生图模型被提前拦截的问题**：当选定账号存在可用的 OAuth 生图能力时，即使实验模型目录未列出 `gpt-image-2`，网关也会恢复其可见性并继续执行账号路由；账号能力不足或显式模型过滤时仍会按原规则隐藏。
+- **修复 Codex Responses Lite 与 WebSocket 的非生图工具兼容问题**：恢复 Lite 模型目录判定及 `function`、`custom`、客户端 `tool_search`、namespace 和 `allowed_tools` 的递归过滤，移除不受支持的 `web_search`、服务端 `tool_search`、空工具选择和无效 input namespace；HTTP 与 WebSocket 请求保持一致，协作工具和其他受支持工具不再因代理重构出现异常。
+- **修复 Gemini CLI 来源的 Payload 规则无法匹配的问题**：重新将 `gemini-cli` 来源协议归一为 `gemini`，已有按 Gemini 来源配置的默认、覆盖和过滤规则会继续正常生效。
+- **修复 Cursor 悬浮卡不显示 API Usage 的问题**：悬浮卡现在会完整显示 Cursor 的 Total Usage、Auto + Composer 和 API Usage 三条主要配额，其他平台原有的两条展示上限保持不变。
+
+## [1.3.30] - 2026-08-25
+
+### 变更
+
+- **Codex 账号切换与多开启动判定与官方客户端保持一致**：以可用的 `access_token` 和官方账号检查结果作为客户端可用性依据；仅在 access token 失效或官方检查明确返回未授权时尝试刷新，`id_token` 不再作为切号或启动门槛，避免因身份资料令牌过期而误判账号不可用。
+- **账号占用提示支持直接关闭**：当 OAuth 账号已在其他实例运行时，冲突弹框提供底部“关闭”和右上角关闭按钮；关闭只退出当前提示，不会停止、定位或转移任何实例。
+
+## [1.3.29] - 2026-08-24
+
+### 新增
+
+- **Codex 新增统一启动预览**：从账号总览、多开实例或 API Service 启动 OAuth 账号、API Key 与本地服务时，可先在同一弹框查看账号、额度与用量、目标实例等状态，切换实例和运行速度，并直接管理可见模型、默认模型及按模型的推理强度、上下文与压缩配置，修复会话可见性及使用常用账号操作；账号启动时可明确选择“切换”或“切换并启动”，只有确认后才会修改客户端状态。
+- **Codex 历史会话支持完整 Provider 迁移与目录修复**：可全量同步 `sessions` 与 `archived_sessions` 中的 Provider 元数据，回写所有会话 SQLite 库中的 Provider、用户事件、工作区路径和本地会话目录，补齐缺失目录、移除子 Agent 误索引、规范化全局工作区状态，并提示可能无法跨 Provider 续聊的加密历史；支持预览、指定会话和多实例范围，写入前会创建可回滚备份并要求退出目标实例。
+- **Codex 账号新增设备代码授权**：可随时在浏览器 OAuth 与设备授权之间切换；需要启用设备代码时可直接打开 Codex 安全设置，输入验证码后由 Cockpit 自动完成登录和账号保存，且不占用本地 `1455` 回调端口；浏览器与设备授权也会申请 Codex Connector 所需的读取和调用权限。
+- **Codex API Service 新增 Live 与 Realtime API**：支持创建 WebRTC 通话、连接 Sideband 与 Realtime WebSocket、生成 Client Secret、创建 Session 与 Transcription Session、处理 Realtime Translation，以及执行 Hangup、Accept、Reject、Refer 通话控制。
+- **Codex API Service 新增扩展请求与对话能力**：支持 HTTP/SSE 与 Responses WebSocket 传输、跨回合 Reasoning Replay、Multi-Agent V2 任务和扩展后的 Codex 模型目录。
+
+### 变更
+
+- **Codex 快速会话修复改为按官方侧边栏规则精准处理**：仅检查目标实例的官方 `state_5.sqlite` 和被引用 rollout，按当前 Provider、活动状态、预览内容、rollout 路径及根会话来源筛选，自动补齐可见会话的预览字段，避免扫描或改写归档、子 Agent 和无关历史文件。
+- **Codex 会话修复中的 Provider 候选读取更快**：读取目标 Provider 仅检查实例 `config.toml` 和官方 `state_5.sqlite`，打开修复弹框时不再扫描 `sessions` 与 `archived_sessions` 下的 rollout 文件。
+
+### 修复
+
+- **修复正式 Release 缺少 Linux 安装包的问题**：修复 Linux 目标下 Codex 桌面端进程识别代码编译失败的问题，恢复 x86_64 与 aarch64 的 AppImage、deb 和 rpm 构建发布。
+- **修复 API Key 绑定 OAuth 后单独启动 OAuth 账号可能提示授权过期的问题**：组合实例会持续识别实际 OAuth 凭据归属，并在启动前接回官方客户端轮换后的最新 Token；即使随后解绑、改绑或在正式版、开发版与多开实例之间切换，也会避免再次使用旧 `refresh_token` 导致 `refresh_token_reused`，同时保留原 API Key Provider 配置。
+- **修复同一 Team/Workspace 成员之间 API Service 用量重复显示的问题**：账号窗口统计现在统一使用 Cockpit 本地账号 ID 归属，因此多个本地账号即使共享上游 `account_id`，请求数和 Token 用量也会分别统计。
+- **修复异常 Codex API Key 账号显示生成的 `api-key-xxxx` 标识而不显示自定义标题的问题**：账号健康弹框现在优先显示手动设置的账号名称，仅在未设置自定义名称时回退到生成的标识。
+- **修复官方 ChatGPT/Codex 客户端运行时刷新额度被 RT 保护误判为账号错误的问题**：额度查询现在只要求有效的 `access_token`，不会因 `id_token` 临期或主动保活周期轮换 `refresh_token`；官方客户端持有 RT 时仍可正常获取最新额度，确需等待新 AT 时会保留上次额度，不再显示内部 RT 所有权提示或将账号标记为配额异常。
+
+## [1.3.28] - 2026-08-23
+
+### 修复
+
+- **修复 Linux/Ubuntu 官方 ChatGPT/Codex 桌面端切号失败并补齐实例管理**：支持自动识别官方 `chatgpt` 安装，默认实例和多开实例会使用与 macOS/Windows 一致的凭据检查与刷新、占用保护、桌面运行态关闭、profile 服务停止、凭据写入和重新启动事务；多开通过独立的 `CODEX_HOME` 与 Electron user-data 目录隔离，并可按实例识别和关闭，在系统提供窗口控制工具时也可定位窗口。
+- **Codex CLI 模式不再误关闭官方桌面客户端**：用户明确选择 CLI 模式时，切号、启动、停止和关闭全部实例只管理对应 profile 服务与配置；macOS、Windows 和 Linux 的 App 模式继续管理各自的官方桌面客户端运行态。
+- **修复 Trae Work CN / Trae Solo CN 账号被旧本地会话覆盖或错误归类**：运行中会话只在平台一致时同步 Token，并保留 OAuth 生成的平台、Host、scope、设备密钥和 ExchangeToken 上下文；非运行态旧 `storage.json` 只有确实晚于已保存凭据时才会参与同步，避免账号被错误归入 Trae CN 或丢失新版刷新能力。
+- **修复 Trae Work CN 账号刷新后被错误归入 Trae CN**：OAuth 完成后的运行时快照只会在账号身份、平台和凭据新旧关系匹配时同步 Token，不再用旧 `storage.json` 覆盖 `platformId`、回调信息、设备密钥和 Exchange 上下文；不同 Trae 平台的快照会被明确拒绝，避免账号分类变化或新版认证失效。
+
+### 新增
+
+- **Windows 系统操作增加统一恢复弹框**：切号、实例启停、API Service Sidecar、端口清理、备份和导出遇到“拒绝访问”、`os error 5`、文件占用或程序缺失时，会在最外层弹框显示原始原因和脱敏详情，并提供重试、手动处理后继续、打开位置和复制错误；安全范围内的受支持客户端进程可通过一次性 Windows 授权继续，后台非关键探测不会打扰用户。
+
+### 变更
+
+- **正式发布构建改为更充分的并行流程**：macOS Universal 与各平台包同时构建，校验和与 Homebrew 收尾并行执行，并修复 Cask PR 已可合并时自动合并失败的问题，缩短后续版本的发布等待时间。
+
+## [1.3.27] - 2026-08-23
+
+### 修复
+
+- **修复 Windows Codex 切号被系统权限阻断的问题**：恢复稳定的官方客户端关闭与启动方式，不再直接调用 WindowsApps 内部的 `codex.exe app-server daemon stop`，避免“拒绝访问（os error 5）”或 PowerShell 不可用导致切号失败。
+
+## [1.3.26] - 2026-08-23
+
+### 修复
+
+- **修复 Windows 新版 Codex 切号失败问题**：修复启动官方 `Codex app-server daemon stop` 时，因 WindowsApps 中的 `codex.exe` 返回“拒绝访问（os error 5）”而无法继续切换账号的问题。
+
+## [1.3.25] - 2026-08-23
+
+### 变更
+
+- **Codex 切号与重新授权更加可靠**：解决部分账号切换后需要重新登录、重新授权后账号状态或新登录信息未生效的问题；授权完成后可继续切号或启动原实例。
+- **Codex 客户端授权与 API Service 可用性分开判断**：客户端需要重新授权但 API Token 仍可用时，账号继续提供 API Service，也不会被计为无效账号。
+- **Codex 多开实例增加账号占用保护**：同一 OAuth 账号不会同时用于多个官方实例；发生占用时可定位当前实例、改选其他账号或转移账号使用权。
+- **Codex API Service 端口冲突时可自动恢复**：原端口不可用时会自动更换本地端口并恢复服务，账号、API Key 和账号池设置保持不变。
+- **行为备份改为有界保留**：Claude、Codex、WorkBuddy、CodeBuddy 及相关会话和配置修复备份按来源与实例保留最新一份，避免长期占用磁盘空间。
+
+### 修复
+
+- **修复 Codex API Service 流式对话卡住和不同对话身份互相影响的问题**：流式响应结束后会正常完成请求，不同对话保持独立会话身份。
+- **修复 Codex 账号重新添加后 API Service 统计归零的问题**：统计按官方 Codex 账号 ID 归属；删除后重新授权或导入同一官方账号，原有请求数、Token 用量和账号计费会继续保留。
+- **修复 Codex 默认实例识别和启停异常**：默认实例及其后台进程可以被正确识别、启动和关闭。
+- **修复已关闭 WebSocket 的 Codex 实例仍反复尝试连接的问题**：API Service 会保持实例当前的 WebSocket 设置。
+
+### 新增
+
+- **Grok 切号可同步 OpenCode 登录信息**：可选择在切换 Grok 账号时同步 OpenCode，并自动重启 OpenCode 使新账号立即生效；第三方自定义地址账号不会覆盖现有登录。感谢 @FB208（[#2002](https://github.com/jlcodes99/cockpit-tools/pull/2002)）。
+- **备份存储目录支持迁移到其他磁盘**：macOS 和 Windows 可在设置中选择新的本地备份目录；迁移完成后继续使用原有备份，并可按来源查看与清理占用空间。
+- **Codex 账号支持导出为官方 `auth.json` 文件**：OAuth、API Key 和 Agent Identity 账号会按对应格式导出，多个账号会生成独立文件。
+- **Codex 模型目录支持按模型配置上下文窗口与压缩阈值**：每个模型可使用默认值或自定义配置，并同步用于 Codex 客户端和 API Service。
+
+## [1.3.24] - 2026-08-20
+
+### 修复
+
+- **修复最新版 Codex 切号失效问题，并跟随官方最新认证逻辑**：覆盖当前凭证前会先保存当前账号最新的官方认证状态；默认文件模式读取 `$CODEX_HOME/auth.json`，明确配置为 `keyring` / `auto` 时读取对应的 `Codex Auth` 条目。切号操作改为串行执行，重写 OAuth 认证文件时保留无关的官方或自定义字段并清除旧账号凭证，减少切回账号后需要重新登录的问题。
+
+### 变更
+
+- **Codex OAuth 登录与 Token 刷新改用官方凭证请求身份**：Token 交换与刷新请求会发送与官方客户端一致且相互配套的 `originator` 和 `User-Agent`。
+- **Codex 切号后启动设置移到 Codex App 启动路径旁**：说明文案同步明确，开启后会在切换账号后启动或重启 Codex App。
+
+## [1.3.23] - 2026-08-19
+
+### 变更
+
+- **Codex OAuth 设备指纹重新默认打开（会话），并按账号切开 API 服务身份**：未单独设置为设备 / 完整的账号按会话模式生效；1.3.22 升级时被切到关闭的账号也会回到会话。会话模式会为每个账号生成稳定的安装 / 会话 / 线程 / 回合 ID，并改写父子谱系和工作区路径、Git remote、commit，避免同机多号共用一套环境身份。启动后会把本地 API 服务里上次默认关闭写入的状态同步回来，需要时仍可手动改为关闭 / 设备 / 完整。
+- **Codex Business 月度 credits 改为单行剩余展示**：有剩余时显示 `Credits：数量`，不再画进度条；剩余为 0 时不显示这一行。
+- **关闭右上角推广广告**。
+
+### 修复
+
+- **Linux 上可正确解析并启动 Antigravity**：支持配置路径、`PATH`、安装根与 `bin/` 布局、用户本地 `~/.local/share/antigravity-ide`，并校验执行权限；Debian 包补充 `libsecret-tools`，供官方切号调用 `secret-tool`。感谢 @KirschBluteX（[#1944](https://github.com/jlcodes99/cockpit-tools/pull/1944)）。
+
+## [1.3.22] - 2026-08-18
+
+### 新增
+
+- **Codex 支持可见模型目录管理**：新版会将旧版本目录一次性迁移为预设的官方可见模型列表；之后可在独立管理弹框中新增、编辑或删除模型，为每个模型选择跟随官方或自定义推理强度，并将任意可见模型设为默认模型。设置会在默认目录、多开实例和账号切换后保持一致，并尊重用户自定义的模型目录。
+- **新增 Codex OAuth 客户端策略**：在 Codex 右上角设置弹框开启允许 app-server 后，可继续在策略弹框中批量或单独配置仅允许官方客户端、允许 app-server 和设备指纹模式，修改后会同步到本地 API 服务。
+- **macOS 启动终端新增 Ghostty**：Claude CLI 和 Codex CLI 可直接用 Ghostty 打开。感谢 @Jonesxq（[#1948](https://github.com/jlcodes99/cockpit-tools/pull/1948)）。
+- **Linux 上可启动 Codex 终端**：支持系统终端，并依次回退到 gnome-terminal、konsole。感谢 @Jonesxq（[#1950](https://github.com/jlcodes99/cockpit-tools/pull/1950)）。
+
+### 变更
+
+- **Codex 设置中的可见模型改为只读摘要**：主设置弹框只展示当前模型列表，点击“管理”后在独立弹框中编辑模型 ID、展示名和推理强度，避免主设置内容拥挤。
+- **Codex OAuth 设备指纹本次版本对所有人默认改为关闭**：升级后已有账号也会切到关闭，需要时仍可手动改回会话 / 设备 / 完整。
+- **Codex OAuth 设备指纹与客户端策略统一移至 Codex 右上角设置弹框管理**：设备指纹支持关闭、设备、会话、完整四种模式，并在后台同步到本地 API 服务，不阻塞设置页保存。
+- **Codex API Service 统一使用 sidecar 网关**：移除旧网关选项及仅适用于旧网关的超时字段，已有旧网关集合会自动迁移到 sidecar 模式。
+- **Codex API 服务默认估算价与公开价目对齐**：`gpt-5.6-luna` 调整为 $0.2 / $0.02 / $1.2，`gpt-5.6-terra` 调整为 $2 / $0.2 / $12（均为每百万 token 的输入 / 缓存读 / 输出）；未单独改过价格的账号会改用新单价，之后的新请求按新价估算，已有统计不会重算。
+- **Codex 账号卡片上的 API 服务用量仅在账号加入账号池后显示**：未加入时不再显示请求数、token 和账号计费。
+- **界面缩放最小值调整为 30%**，便于在较小窗口中完整使用设置和管理页面。
+- **内置 CLIProxyAPI 源码目录改为 `sidecars/cockpit-cliproxy/third_party/CLIProxyAPI`**：原先的 `cdk/CLIProxyAPI` 已替换，本地构建 sidecar 需改用新路径。
+
+### 修复
+
+- **选择 MiniMax 预设时会保留识图能力**：目录里只有 `MiniMax-M3` 支持图片输入，`MiniMax-M2.7` 仍按纯文本。感谢 @octo-patch（[#1968](https://github.com/jlcodes99/cockpit-tools/pull/1968)）。
+- **Codex Business 账号可显示月度 credits**：解析并展示剩余、总量和重置时间。感谢 @Jonesxq（[#1953](https://github.com/jlcodes99/cockpit-tools/pull/1953)）。
+- **macOS 上 API 服务 sidecar 不再继承 Cockpit 应用身份**：避免访问局域网网关失败。感谢 @Jonesxq（[#1947](https://github.com/jlcodes99/cockpit-tools/pull/1947)）。
+- **开启菜单栏额度后，关闭到托盘仍会继续刷新额度**：主窗口改为隐藏而不是拆掉 WebView。感谢 @Jonesxq（[#1952](https://github.com/jlcodes99/cockpit-tools/pull/1952)）。
+
+## [1.3.21] - 2026-08-15
+
+### 新增
+
+- **Codex 支持可选的实验模型目录**：默认目录和多开实例都可添加、编辑实验模型 ID 与展示名，初始提供 `gpt-5.6-sol-wm` / `GPT-5.6 Sol WM`；自定义实验模型可用于 Codex 客户端和 Cockpit API 服务，切换不同账号类型后设置仍会保留，并尊重用户自定义的模型目录。
+- **Antigravity 账号分隔行导入支持辅助邮箱与 Google refresh token**：refresh token 可用时可直接恢复账号登录，不可用或未填写时仍会保留密码、辅助邮箱和 2FA 等待授权资料；账号导出也会保留辅助邮箱。
+
+### 变更
+
+- **Codex 设置改为扁平布局并即时保存**：配置文件、上下文预设、自定义值、实验模型、切号联动、额度显示和自动切号都与外层设置保持同级；点击预设或开关、编辑字段后直接持久化，不再需要单独的保存或刷新按钮，连续修改也会按顺序保存。
+
+## [1.3.20] - 2026-08-14
+
+### 新增
+
+- **Codex MiniMax Token Plan 和智谱 GLM Coding Plan 账号可显示额度**：可刷新并查看剩余百分比、套餐和重置时间。感谢 @Jonesxq（[#1929](https://github.com/jlcodes99/cockpit-tools/pull/1929)）。
+- **Codex 模型供应商新增 OpenCode Go，OpenRouter 补上 Luna Pro 模型**：可直接选择 OpenCode Go 及其当前模型目录。感谢 @Jonesxq（[#1922](https://github.com/jlcodes99/cockpit-tools/pull/1922)）。
+- **已有 Codex 模型供应商 API Key 可直接编辑**：不用删掉重建，关联账号会同步新 Key。感谢 @Jonesxq（[#1923](https://github.com/jlcodes99/cockpit-tools/pull/1923)）。
+
+### 变更
+
+- **考虑到 Codex Spark 等长标题，调整了账号额度布局**：标题放在进度条上方，进度条保持对齐。
+- **Codex 里的 DeepSeek 改为展示真实推理档位**：`low` / `high` / `max`，不再套用 Codex 默认的 `medium` / `xhigh`。感谢 @Jonesxq（[#1931](https://github.com/jlcodes99/cockpit-tools/pull/1931)）。
+
+### 修复
+
+- **已关闭的引导、账号分组和自定义排序在更新后会保留**：网关引导、风险提示和侧栏提示会记到本机数据目录，旧的 localStorage 键也仍视为已关闭；账号列表未就绪时不会再清空分组成员或自定义排序。分组文件读取失败不再当成空数据，写入改为原子替换。感谢 @Jonesxq（[#1933](https://github.com/jlcodes99/cockpit-tools/pull/1933)，[#1919](https://github.com/jlcodes99/cockpit-tools/issues/1919)）。
+- **CodeBuddy 国内版和 WorkBuddy 企业账号可显示真实用量**：个人资源接口为空时改走官方企业用量接口。感谢 @Yuyang-0423（[#1911](https://github.com/jlcodes99/cockpit-tools/pull/1911)）。
+- **供应商用量查询支持只填根地址**：先试你填的地址，再回退到 `/v1`。感谢 @Jonesxq（[#1926](https://github.com/jlcodes99/cockpit-tools/pull/1926)）。
+- **Codex 切到内置 OpenAI 时，不再覆盖用户自己选的非托管 `model_provider`**。感谢 @Jonesxq（[#1930](https://github.com/jlcodes99/cockpit-tools/pull/1930)）。
+- **WorkBuddy 定时签到更稳**：保存配置后会立刻唤醒调度，启动时检查一次，活动暂时关闭会重试而不是记成今天已签。感谢 @Jonesxq（[#1932](https://github.com/jlcodes99/cockpit-tools/pull/1932)）。
+- **Codex API 服务请求日志会记录推理力度**。感谢 @Jonesxq（[#1924](https://github.com/jlcodes99/cockpit-tools/pull/1924)）。
+
+## [1.3.19] - 2026-08-14
+
+### 变更
+
+- **Codex 账号额度标签改为短写法且不再换行**：`5h` / `7d` / `5w`，模型专属窗口如 `Spark 7d`，Code Review 用短标签。完整名称只在悬停时显示。
+
+## [1.3.18] - 2026-08-14
+
+### 新增
+
+- **Codex 第三方模型目录支持按模型设置上下文窗口**：可在添加 / 编辑 API Key 的模型列表、模型供应商编辑页，或 API 服务的模型映射表中填写。官方 / DeepSeek 目录默认保留厂商值；其他模型留空则回落到「上下文与压缩阈值」或 128000。保存后，Codex 客户端和 API 服务对外模型目录都会按该窗口上报；Codex 需重启后生效。
+- **安装后首次打开和更新后启动会显示进度条**：应用加载时窗口不再长时间空白。
+- **Codex 账号卡片显示本窗口从满额到现在的用量**：API 服务池里的官方账号会显示请求数、token 和账号计费（`A $`）；没有用量时也保留 `0 req`、`0`、`A $0.00`。
+- **Codex 会话管理增加会话用量**：可从本机会话日志汇总真实 Token 用量，不依赖官方配额百分比，也不要求请求一定走 API 服务。
+
+### 变更
+
+- **Codex 官方额度改为小进度条，重置时间单独一行并与额度标签左对齐**。
+- **Codex API 服务官方 OAuth 出站身份与官方客户端对齐**：默认使用配对的 `codex-tui` 身份，不再转发下游客户端 UA；会话头改为 `Session-Id`，并带上窗口与线程标识。
+
+### 修复
+
+- **修复安装后首次打开和更新后启动卡在白屏、像死机的问题**：启动过程现在会显示进度，首屏也不再等待远程字体。
+
+## [1.3.17] - 2026-08-13
+
+### 新增
+
+- **Codex 模型供应商支持 DeepSeek 原生 Responses**：可在 Codex 中直接使用 DeepSeek Flash / Pro，默认使用官方 Responses 接口，需要时仍可切换为 Chat Completions；符合条件的账号可直接查看余额。感谢 @usertianziyang 提供部分思路（[#1839](https://github.com/jlcodes99/cockpit-tools/pull/1839)）。
+- **Codex OAuth 账号支持设备指纹模式**：可按单个或批量账号选择会话 / 设备 / 完整 / 关闭，默认使用会话模式；API Key 等其他账号类型不受影响。
+- **Codex API 服务客户端 Key 支持可选总量限额**：可为每个客户端 Key 设置总 token 额度，额度用尽后拒绝继续调用；未设置额度的 Key 保持不限量。感谢 @ndhao164（[#1870](https://github.com/jlcodes99/cockpit-tools/pull/1870)）。
+- **WorkBuddy 支持按账号隔离的内置浏览器**：可在独立窗口打开成长中心等页面，各账号登录态互不串号。感谢 @xhrxgr（[#1896](https://github.com/jlcodes99/cockpit-tools/pull/1896)）。
+- **WorkBuddy 自动签到改为后台执行**：关闭主窗口、仅保留托盘时，仍可按计划自动签到。感谢 @xdd666t（[#1772](https://github.com/jlcodes99/cockpit-tools/pull/1772)）。
+- **Trae 账号支持可选自动签到**：可按账号设置签到计划，默认关闭，不影响正常使用。感谢 @xhrxgr（[#1834](https://github.com/jlcodes99/cockpit-tools/pull/1834)）。
+- **Antigravity 账号支持本地信息管理**：可保存备注、2FA、密码、手机号及邮箱验证码查询地址，授权前可自动预填，导出时可选择是否包含敏感信息。
+- **添加或编辑 Codex API Key 时可复用同一供应商下已有的 Key**：也可继续手动输入新 Key。
+- **Codex API 服务账号可直接从账号列表移除**：无需再进入服务面板管理成员。
+
+### 变更
+
+- **WorkBuddy 开启切号共享会话后，会合并已有本地会话**：切换账号后对话历史不易丢失。感谢 @xhrxgr（[#1880](https://github.com/jlcodes99/cockpit-tools/pull/1880)）。
+- **Antigravity 账号本地资料改为整文件加密保存**：历史账号首次读取后自动迁移，原有数据不受影响。
+- **提升 Codex API 服务多轮对话与流式输出的稳定性**。
+
+### 修复
+
+- **修复部分 API Key 供应商无法保持 WebSocket 连接的问题**：开启 WebSocket 的供应商现在可维持稳定的实时连接。
+- **修复明确关闭 WebSocket 的自定义中转仍被改回官方连接方式的问题**：自定义中转的连接设置现在会被保留。感谢 @yaobii-lab（[#1867](https://github.com/jlcodes99/cockpit-tools/pull/1867)）。
+- **修复本机其他端口的本地 API 服务无法作为上游的问题**：本机任意端口的本地 API 服务现在都可正常接入。
+- **修复 Sub2API 导入后完整 OAuth 账号变成仅 Access Token 的问题**：导入后完整登录态不再丢失。感谢 @Jonesxq（[#1886](https://github.com/jlcodes99/cockpit-tools/pull/1886)）。
+- **修复 Codex 账号总览等处丢失自定义 API Key 名称的问题**：自定义名称现在可正常显示。感谢 @andrew05060414（[#1817](https://github.com/jlcodes99/cockpit-tools/pull/1817)）。
+- **修复开启压缩后 Codex API 服务误报缺少模型的问题**：开启压缩不再触发误报。感谢 @DragonLingLuo（[#1836](https://github.com/jlcodes99/cockpit-tools/pull/1836)）。
+- **修复 Multi-Agent 协作时加密消息被当成普通正文的问题**：协作消息现在可被正确处理。
+- **修复多轮对话中带命名空间的工具调用在第二轮失败的问题**：工具调用现在可跨多轮连续执行。感谢 @Jonesxq（[#1887](https://github.com/jlcodes99/cockpit-tools/pull/1887)）。
+- **修复思考型 Chat 供应商在多轮对话中被拒绝的问题**：思考型供应商现在可正常进行多轮对话。
+
+## [1.3.16] - 2026-08-02
+
+### 新增
+
+- **Codex `at-*` 个人访问令牌账号支持设置 ChatGPT 工作区 ID**：Token / JSON 导入会识别 `account_id`、camelCase 字段以及 headers / custom headers 中的 `ChatGPT-Account-Id`；账号备注弹框可查看、复制和修改 Team / Workspace UUID，保存后同步到 API 服务 sidecar。未提供真实工作区 ID 时不再使用 Cockpit 本地账号 ID 冒充上游账号 ID。
+- **Codex sub2api 导出支持 API Key 与仅 Access Token 账号**：API Key 账号使用 sub2api 原生 `apikey` credentials；仅 Access Token 账号写入真实 token 到期时间并启用到期自动暂停；OAuth 导出补齐官方 client ID、用户与组织身份、登录提供方、访问令牌及订阅到期时间，并使用默认并发数 3、优先级 50。
+
+### 变更
+
+- **Codex API 服务透明对齐最新 Responses 兼容策略**：官方 Codex OAuth 保留函数、自定义工具、通用工具与 MCP 调用项的 namespace，API Key、自定义上游与 Compact 请求移除不兼容 namespace；缺失、`null` 或空白 instructions 使用对应模型的官方基础指令；GPT-5.6 Sol / Terra / Luna 仅在全部路由均为官方 Codex 时使用 Responses Lite，自定义或混合供应商改用完整 Responses 以保留 `web.run` 等工具。
+
+### 修复
+
+- **修复过期加密推理或压缩内容导致 Codex 对话直接中断的问题**：HTTP、流式 HTTP、Compact 与下游 WebSocket 在尚未输出内容时会移除失效的 `encrypted_content`，保留可复用历史并安全重试一次；同类错误不会无限重试，大整数请求字段保持精确。
+- **修复 `response.failed` 限流事件被误报为 HTTP 400 的问题**：`error.code` 或 `error.type` 包含 `rate_limit` 时映射为 HTTP 429，使 API 服务按既有限流策略重试或切换账号。
+- **修复 Responses 转 Anthropic 时工具结果数组、图片和 namespace 工具丢失的问题**：文本与图片结果转换为 Anthropic content block，空数组提供明确结果；顶层与 `additional_tools` 工具合并，custom tool call、tool use/result 配对以及流式和非流式 namespace 回程保持一致。
+- **修复 Responses 转 Chat Completions 时工具输出图片被丢弃的问题**：data image URL 及嵌套 `input_image` / `image_url` 会移入带调用归属的 user 多模态消息，同时保持 tool call 顺序、回复邻接关系以及无媒体输出的原始 JSON 语义。
+- **修复 Codex Team / Workspace 账号可能显示个人 Free 订阅的问题**：订阅解析优先按 organization ID 匹配，再按 account ID、默认账号及付费套餐回退，避免多工作区响应选中错误记录。
+- **修复 sub2api 账号回导后把 Access Token 有效期显示为订阅有效期的问题**：导入现在只从 `subscription_expires_at` / `subscription_active_until` 读取订阅时间，不再将账号或 credentials 中的通用 `expires_at` 当作 Plus / Team 订阅到期时间。
+- **修复 Codex 导出转换失败时静默回退为 Cockpit Tools 格式的问题**：所选账号类型不受支持或认证信息不完整时，导出弹框现在显示明确错误并保持当前格式，不再生成内容与选择不一致的文件。
+- **修复 Claude Desktop Gateway 模型映射编辑时输入框可能失焦或重置的问题**：映射行使用独立稳定标识，修改上游模型、桌面模型或 1M 支持开关时不再因 React 重建行而中断输入。
+- **修复 Windows 从 `1.3.15` 更新时桌面与开始菜单快捷方式可能同时消失的问题**：更新模式保留现有快捷方式，仅针对 `1.3.15` 两个快捷方式均缺失的升级状态自动恢复；普通手动安装仍清理历史产品名快捷方式，不会恢复用户主动删除的单个快捷方式。
+
+## [1.3.15] - 2026-07-29
+
+### 新增
+
+- **Grok CLI 支持第三方 API Key 接口**：添加账号时可选择 xAI 官方或 OpenAI 兼容第三方接口，并配置 Base URL、模型 ID 与 API Key；API Key 账号使用独立 `GROK_HOME`，不会覆盖官方 OAuth 登录，密钥只注入对应的 CLI 进程。
+- **CodeBuddy CN 新增可选的切号共享本地会话能力**：开关默认关闭；开启后切换本机账号时会合并本地会话正文与恢复数据库，修改前创建本地备份，内容不会上传。
+- **Codex 模型供应商一键测试支持先选模型再测**：可从已选供应商的模型目录中选择、手动输入模型 ID，或保持自动探测，不再固定只用优先模型测试。([#1729](https://github.com/jlcodes99/cockpit-tools/issues/1729))
+- **Codex API 服务请求日志可展示思考强度与服务等级**：请求带有 `reasoning.effort` / `reasoning_effort` 或 `service_tier` 时，日志列表会显示对应值，便于核对实际调用参数。([#1690](https://github.com/jlcodes99/cockpit-tools/issues/1690))
+- **Codex 可隐藏中转站额度**：在设置与 Codex 快捷设置中提供开关，可隐藏中转 / New API 类额度面板，减轻列表重叠与视觉干扰；偏好写入用户配置。([#1692](https://github.com/jlcodes99/cockpit-tools/issues/1692))
+- **编辑 Codex 模型供应商时，已有 API Key 较多可搜索定位**。([#1750](https://github.com/jlcodes99/cockpit-tools/issues/1750))
+- **WorkBuddy 支持可配置自动签到**：默认关闭；可按账号设置随机签到时间段与日志保留，不会在未开启时对已有账号发起签到。
+- **macOS 菜单栏可显示实时额度**：默认关闭；可在设置中选择监控平台，并可选显示账号标识前缀。
+- **MFA 速查支持 Google Authenticator 迁移二维码批量导入**：可扫描 `otpauth-migration://` 迁移码并批量写入本地 MFA 记录。
+- **Claude 额度展示可切换「已用% / 剩余%」**：默认仍为已用百分比；开启后仅改变 UI 展示，自动切号与预警阈值仍按已用比例计算。
+
+### 变更
+
+- **ChatGPT Web Session 导入改为仅支持查看额度**：不再自动注册为 Agent Identity，也不再加入 Codex API 服务账号池；导入后可查看额度，但不能切号、启动官方客户端或 CLI，也不能加入 API 服务或作为 OAuth 绑定账号。
+- **Codex API 服务透明对齐官方 Multi-Agent V2 请求逻辑**：仅对 Codex Desktop 与 `codex-tui` 请求生效；网关按上游模型目录更新 `spawn_agent` 描述、规范化加密 agent 消息、为非 Codex 上游协议完成转换，并在响应中恢复 collaboration namespace，不新增用户操作流程或设置项。
+- **Codex API 用量统计升级为 canonical token accounting v2**：输入缓存读写、未缓存输入、普通输出与推理输出使用互斥桶统计；矛盾或无法分类的上游数据明确标记为 `inconsistent` / `unclassified`，避免缓存和推理 token 重复计数。
+- **Codex API 服务账号成员支持明确设置“最高 / 正常 / 最低”三级使用优先级**：三级优先级统一作用于所有调度策略与会话亲和；最高优先使用，正常账号继续遵循所选调度规则，最低仅在更高优先级账号不可用时使用。旧版备用账号配置继续兼容并视为最低优先级。
+- **Codex API 服务主页面的调度选项补齐会话亲和及过期时间设置**：可直接启用或关闭会话亲和，并配置与成员管理弹框一致的 60～86400 秒 TTL。
+- **Responses 中转类 API Key 切号改为走内置 OpenAI provider + `openai_base_url`**：与官方直连投影方式对齐，避免误用 local-access provider 标识。
+- **CI 构建矩阵与正式发布工作流加速**：preflight 拆分为可并行步骤，并优化缓存与矩阵调度。
+
+### 修复
+
+- **修复 Codex API 服务平均延迟把失败或 0ms 通讯错误也算进均值的问题**：平均延迟仅统计成功请求。([#1657](https://github.com/jlcodes99/cockpit-tools/issues/1657))
+- **修复 Windows NSIS 重装/更新时桌面快捷方式重复堆积的问题**：安装前会清理 Cockpit Tools 已知的历史桌面与开始菜单快捷方式，再创建当前版本快捷方式。([#1656](https://github.com/jlcodes99/cockpit-tools/issues/1656))
+- **修复 Codex 自动压缩上下文后，xAI 等严格校验的 Chat Completions 服务商返回 HTTP 400 的问题**：Responses→Chat Completions 转换在没有有效工具时会移除 `tool_choice`，避免客户端进入无限重连。([#1727](https://github.com/jlcodes99/cockpit-tools/issues/1727))
+- **修复导入 ChatGPT Web Session 时因 Agent Identity runtime 注册返回 HTTP 403 导致导入失败的问题**：此类格式不再发起 runtime 注册，按仅查额账号导入。
+- **修复 Windows Desktop 会话路径含 `\\?\\` 前缀时工作目录规范化异常的问题**。
+- **修复自定义图标写入 localStorage 配额失败时可能撑坏布局的问题**。
+- **修复 Windows CLI 快速启动在 `system` 终端下弹出裸 PowerShell 的问题**：检测到 Windows Terminal 时优先通过 `wt` 启动，未安装时保持原有回退。
+- **修复 Codex API 服务页等处硬编码中文 fallback 的问题**：补齐对应 i18n 键与默认文案。
+- **修复 Codex Responses 在 HTTP 与 WebSocket 切换、上游 1009 关闭或失败 tool turn 后可能丢失上下文或污染后续请求的问题**：增量请求只复用原 WebSocket 与原账号，无法安全续接时要求完整重放；1009 不再触发账号轮转，失败 turn 不再写入全局 tool cache。
+- **修复第三方 Responses 上游明确拒绝 `input[N].namespace` 或 `max_output_tokens` 时请求直接失败的问题**：仅在 400 且上游明确返回 unknown/unsupported parameter 时删除被拒字段并安全重试，保留最多 6 次、请求体去重及工具项类型校验。
+- **修复 Codex Responses 输入项 ID 超出 64 字符导致上游拒绝的问题**：超长 ID 按 Unicode 字符确定性缩短并避免冲突；携带加密内容的超长 reasoning 项按官方兼容规则移除。
+- **修复 Codex API 服务混合套餐账号池可能将 Spark 请求路由到无权限账号的问题**：网关根据账号额度中的模型权限生成账号级排除规则，并在会话亲和及其他调度规则前过滤不支持的账号；OAuth 与限定账号范围的 API Key 池均会只把 Spark 请求发送给真正可用的账号。感谢 @kin001（[#1759](https://github.com/jlcodes99/cockpit-tools/pull/1759)）。
+- **修复 Codex 切号会重置 Memories 等官方 `[features]` 设置的问题**：启动前清理现在会完整保留官方 features 表，仅继续修复 Cockpit 管理的配置格式。感谢 @we1jia（[#1734](https://github.com/jlcodes99/cockpit-tools/pull/1734)）。
+- **修复 Cockpit 重启而受管 Codex 实例仍在运行时额度浮层无法恢复的问题**：启动后会在后台识别已经运行的默认实例与多开实例，恢复其真实 CDP 端口及 profile 专属注入，不阻塞主窗口显示。
+- **修复 Codex profile 切回内置 OpenAI 模式后仍残留 API 服务模型目录的问题**：只清理 Cockpit 预留的目录及接管备份，保留用户自定义目录，后续切号或 API Key 模型目录同步不再复用过期模型。感谢 @kin001（[#1718](https://github.com/jlcodes99/cockpit-tools/pull/1718)）。
+- **修复 New API 供应商仅返回 Token 分配或计费字段时账号不显示额度的问题**：账号页、首页与供应商页面统一兼容 `quotaLimit`、`quotaRemaining` 和 `accessUntil` 备用字段。感谢 @kin001（[#1712](https://github.com/jlcodes99/cockpit-tools/pull/1712)）。
+- **修复二进制或无效 UTF-8 rollout 文件导致 Codex 启动或会话可见性修复失败的问题**：修复流程现在只处理普通 `rollout-*.jsonl` 文件，遇到不可读条目会记录诊断并跳过，不再中断启动。感谢 @kin001（[#1710](https://github.com/jlcodes99/cockpit-tools/pull/1710)）。
+- **修复 xAI 图片生成与编辑请求遗漏用量统计的问题**：成功请求、上游失败、限流和请求构造失败都会写入用量事件，并记录实际请求模型。感谢 @Ac-spider（[#1629](https://github.com/jlcodes99/cockpit-tools/pull/1629)）。
+- **修复 Codex 批量导入过快完成时可能一直停留在准备状态的问题**：扫描先于前端取得会话 ID 完成时，会立即恢复已持久化的最终预览，不改变导入协议或凭据格式。感谢 @HUF457（[#1716](https://github.com/jlcodes99/cockpit-tools/pull/1716)）。
+
+## [1.3.14] - 2026-07-22
+
+### 新增
+
+- **支持将 Web Session 自动注册为 Agent Identity**：确认导入后会自动加入 Codex API 服务账号池，并支持跨设备导出与导入；此类账号仅限 API 服务使用，不支持普通切号、客户端或 CLI 启动及 OAuth 绑定。
+
+### 修复
+
+- **修复开启“同步模型目录到 Codex”的自定义 Responses API Key 无法加入 Codex API 服务的问题**：模型目录同步继续只影响单账号切号与实例专属网关，不再改变 API 服务账号池准入；Chat Completions 账号仍保持实例专属网关隔离。
+
+## [1.3.13] - 2026-07-22
+
+### 修复
+
+- **修复 K12 Agent Identity 账号无法使用 Codex 官方直连唤醒的问题**：唤醒请求现在会动态生成 `AgentAssertion`；task 缺失或失效时自动注册、持久化并安全重试一次，普通 OAuth 账号的唤醒行为保持不变。
+
+## [1.3.12] - 2026-07-22
+
+### 修复
+
+- **修复同一 K12 workspace 下的多个 Agent Identity 用户互相覆盖的问题**：账号现在按 ChatGPT account 与 user 的组合身份区分；同一用户重新导入仍会更新原账号并保留已有资料，旧版已保存的账号继续沿用原标识。
+
+## [1.3.11] - 2026-07-22
+
+### 新增
+
+- **Codex 账号与 API 服务支持新版 Agent Identity 认证**：可导入官方 `auth.json`、JSON/JSONL 及 Sub2API 备份中的 Agent Identity 账号，兼容 Sub2API 使用的 PKCS#8 v1 Ed25519 私钥，按 ChatGPT account 区分 Team 并切换到官方 Codex；额度、主动重置、HTTP、Responses 流式、Compact、图片和 WebSocket 请求均会动态生成 `AgentAssertion`，缺少或失效的 task 会自动注册、持久化并恢复，不影响现有 OAuth、Access Token、PAT 与 API Key 账号。
+- **ChatGPT 客户端中的 Codex API 服务额度浮层支持手动刷新与账号池健康信息**：账号与额度标签旁新增紧凑的刷新按钮，点击后刷新 API 服务账号池；刷新期间图标原位旋转，完成后更新账号数、5h 额度、周额度，以及可用、异常、冷却和套餐分组信息，空账号池会立即显示账号数与额度均为 0。
+- **Codex CLI 启动弹框支持快速预览与启动选项**：账号页和实例页可选择最近工作目录、Terminal.app、iTerm2、PowerShell、pwsh、Windows Terminal 或 cmd，并快速生成对应命令；复制或终端执行时才准备实例运行环境，同时会跳过无法实际启动的旧版或损坏 CLI 路径，并继续选择其他可用 CLI，包括官方客户端内置 Codex。
+- **CodeBuddy 与 WorkBuddy 新增“切号共享本地会话”开关**：开关默认关闭；开启后，切换本机账号时会在真实本地会话目录和数据库中合并会话与恢复状态，并在操作前创建本地备份，内容不会上传。
+
+### 变更
+
+- **Codex API 服务支持配置会话亲和与过期时间**：可在 60～86400 秒范围内设置会话亲和 TTL，账号池会按会话键在有效期内保持账号绑定。
+- **Codex API 服务网关准备与账号刷新改为可观测的后台流程**：页面显示启动准备和账号刷新进度；OAuth 凭据刷新在网关可用后后台执行，避免启动过程被整个账号池阻塞。
+- **自定义 Codex Responses 模型目录支持官方展示模型映射**：同步到 Codex 客户端时使用可识别的官方模型展示名，实际请求仍路由到配置的上游模型。
+
+### 修复
+
+- **修复 Windows 重启时偶发 PowerShell `0xc0000142` 弹窗的问题**：Cockpit Tools 会提前监听系统关机通知，在 Windows 结束会话前暂停后台注入并禁止再创建 PowerShell 等后台子进程；若关机被取消则恢复正常运行，同时不改变开机自启动设置。
+- **修复多开实例页面重复进入或操作后闪回加载状态的问题**：实例列表现在优先显示已加载或本地缓存的数据，后台刷新完成后静默替换；仅在首次没有任何可展示数据时显示加载状态。
+- **停用 Codex API 服务时会恢复受管 Codex profile 文件**：Cockpit Tools 仅移除 `config.toml` 中由 API 服务写入的字段，恢复接管前的 `auth.json`，删除注入的 profile 文件和模型缓存，同时保留用户其他设置与其他网关备份；仍绑定 API 服务的实例启动时也不会再静默重新启用已停用的服务。
+
+---
+## [1.3.10] - 2026-07-19
+
+### 新增
+
+- **Codex API 服务支持在 ChatGPT 客户端显示账号数量与额度**：功能默认开启，重启对应 Codex 实例后，会在输入框下方显示 API 服务账号数量、5h 额度和周额度，并随窗口与输入区布局实时调整位置。无需此功能或遇到显示异常时，可在设置中手动关闭。
+- **Codex Token / JSON 输入框批量导入显示逐账号进度**：JSON 数组、Sub2API 账号数组、逐行 JSON 或 Token 会按账号依次导入，状态区与导入按钮实时显示 `1/10`、`2/10` 等真实进度；单账号对象保持原样处理，部分失败时会保留已成功导入的账号并列出失败数量与原因。
+
+### 变更
+
+- **Codex 账号删除改为快速实时反馈**：账号从本地持久化存储删除后立即从界面消失，API 服务账号池清理与网关同步在后台完成，不再让慢速维护工作阻塞删除操作。
+
+### 修复
+
+- **修复 Windows 下 Codex 批量删除后账号仍暂时显示的问题**：批量删除进度推进、暂停、完成或手动清理任务时会立即与本地账号库重新对账；删除全部账号时允许同步空列表，并将删除事件同步到悬浮卡片窗口，不再需要点击切号触发“账号已不在本地账号库中”后账号才消失。
+- **修复 Codex 授权弹框“加备注”按钮丢失项目样式的问题**：Portal 弹框中的备注操作重新使用与账号页一致的胶囊按钮样式，不再显示为浏览器原生按钮。
+
+---
+## [1.3.9] - 2026-07-17
+
+### 变更
+
+- **Trae CN / TRAE SOLO CN 配额与套餐逻辑对齐官方 v2 与社区方案（#1281）**：CN 账号刷新优先调用 pay v2（`ide_user_pay_status` / `ide_user_ent_usage`），并补充 `user_current_entitlement_list` 兜底；识别 `CNExpress(100)`、`Pro+ Pack(5)` 等 CN 产品类型；展示速通可用次数与 Solo 权益并发，有数据但算不出剩余时显示「已同步，剩余额待确认」，不猜测免费剩余；CN 添加账号页明确仅支持完整 JSON、不鼓励裸 Token。感谢 @sqmw（[#1281](https://github.com/jlcodes99/cockpit-tools/pull/1281)）。
+
+### 修复
+
+- **修复 Windows 当前用户级 NSIS 更新意外申请管理员权限的问题（#1642）**：Tauri 无法识别安装包类型时，更新器会对可写的用户级安装选择 NSIS，并对受保护目录继续保守回退 MSI；已明确识别的 NSIS/MSI 类型仍具有最高优先级，真正的系统级 MSI 安装保持原有更新行为。感谢 @xdd666t（[#1642](https://github.com/jlcodes99/cockpit-tools/pull/1642)）。
+- **修复 Codex Responses Lite 丢失带命名空间的协作工具问题（#1647）**：现在会保留顶层 `tools`、嵌套 `input[].additional_tools`、payload override 以及 namespace `tool_choice` 中的命名空间工具定义；派生 GPT 会话可再次使用 `spawn_agent`、`wait_agent`、`send_message`、`followup_task`、`interrupt_agent` 和 `list_agents`，并将派生请求中的 Sol / Terra / Luna 简写规范化为准确的 GPT-5.6 模型 ID。（[#1647](https://github.com/jlcodes99/cockpit-tools/issues/1647)）
+- **修复过期或残留的 Codex 账号删除后仍显示的问题（#1646）**：删除账号不再同步等待 API 服务网关重启，也不会仅因账号池同步暂时不可用而失败；账号池引用会先持久化清理，网关随后在后台同步，本地账号继续删除，因此无需再添加一个正常账号才能让问题账号消失。（[#1646](https://github.com/jlcodes99/cockpit-tools/issues/1646)）
+- **修复 HTTP 200 Responses 流内过载被当作不可重试 `400` 的问题（#1651）**：`server_is_overloaded` / `service_unavailable_error` 现在会让当前凭据短暂冷却，并仅在尚未输出内容时安全切换账号；`model_at_capacity` 会按可重试容量限制处理；最终失败时保留合法的 `response.failed` SSE 事件，使 Codex 展示真实上游错误，不再误报流提前断开。（[#1651](https://github.com/jlcodes99/cockpit-tools/issues/1651)）
+
+---
+## [1.3.8] - 2026-07-17
+
+### 新增
+
+- **已有 Codex 账号可直接加入 Codex API 服务（#1628）**：已导入 Cockpit 的符合条件账号，现在可在卡片、列表或表格视图中直接加入 API 服务，无需离开当前页面；操作复用增量加入账号池流程，并继续遵守 Free 账号、待授权账号和不兼容 API Key 的限制。感谢 @Ac-spider。
+- **Kiro 支持 AWS IAM Identity Center 登录**：添加账号弹框新增 AWS Builder ID 与企业账号设备授权；企业账号可填写 AWS Region 和 IAM Identity Center Start URL，授权成功后会保留客户端注册上下文并写入官方 AWS SSO 缓存文件，保证 Token 刷新与 Kiro 真实切号继续可用。
+
+### 修复
+
+- **修复第三方纯文本模型因图片工具结果中断 Codex 对话的问题**：Provider Gateway 现在按模型真实能力声明图片输入；模型不支持图片且没有有效视觉路由时，会将 `view_image` 结果及历史图片替换为明确的省略说明并继续使用当前模型，配置有效视觉路由时仍会自动切换处理图片，同时图片路由配置在应用重启后不再丢失。
+- **修复 macOS Codex 受管实例在窗口尚未就绪时被误报为已启动的问题**：实例现在通过 LaunchServices 的 `open -n -a` 启动，同时保留 `CODEX_HOME`、`CODEX_ELECTRON_USER_DATA_PATH` 和独立的 `--user-data-dir`；Cockpit 会匹配真实 ChatGPT 主进程 PID，不再保存临时 `open` launcher PID 或僵尸进程。
+- **修复 macOS 官方客户端迁移到 `/Applications/ChatGPT.app` 后，Codex 启动仍停留在旧 `/Applications/Codex.app` 路径的问题**：解析应用根目录前，会通过受保护的配置更新迁移精确匹配的官方旧路径；自定义安装位置以及未检测到 ChatGPT 应用的环境保持不变。（#1631）感谢 @jackychanisnotme。
+- **修复 Responses 流式响应提前输出半段 JSON 或合并多个事件的问题**：网络分片会先缓存到完整事件边界，符合严格条件的连续 JSON 事件会拆成独立 SSE 帧，避免客户端解析失败和后续事件丢失。（#1632）感谢 @Ac-spider。
+- **修复关闭历史存储时，长对话回放可能因 `Item with id not found` 失败的问题**：回放前清理缺少有效加密内容的孤立 reasoning ID，保留有效签名和明确启用 `store=true` 的请求，并将大型历史改为单次重建。（#1634）感谢 @Ac-spider。
+- **修复兼容 Chat Completions 供应商遗漏工具调用 ID 时 Codex 无法执行工具的问题**：流式与非流式 Responses 事件会生成并复用稳定的备用 ID，不覆盖规范供应商已经返回的 ID。（#1633）感谢 @Ac-spider。
+- **修复图片专用 `gpt-image-*` 模型被错误调度到 Chat Completions 的问题**：无效请求会在占用账号池并发前返回明确的 `400`，Responses 与图片专用端点的行为保持不变。（#1630）感谢 @Ac-spider。
+
+---
+## [1.3.7] - 2026-07-16
+
+### 新增
+
+- **Codex API 服务成为独立平台入口**：拥有独立的平台标识、导航和页面入口，集合成员与操作从普通 Codex 账号页收拢到该页面；现有平台布局会一次性将其加入 Codex 分组，首页、悬浮卡与数据传输会按无账号服务页处理；页面会标识当前切号状态，并提供明确的「启用 API 服务并切号」操作。
+- **Codex API 服务客户端模型目录支持 GPT-5.6 Sol / Terra / Luna**：补齐官方模型元数据（上下文窗口、搜索工具能力，以及模型支持的 `max` / `ultra` 等推理强度），并对这些模型启用 Responses Lite 路由。
+- **编辑 Codex API Key 供应商后会同步关联账号快照**：更新关联 API Key 账号的服务地址、协议、模型目录、视觉能力和 WebSocket 能力，同时保留账号使用时间等元数据。
+- **Codex API 服务页可在当前页面添加账号**：复用现有 Codex OAuth、Token / JSON、API Key 与本地导入流程，不再跳转到账号页；新账号可自动加入 API 服务，空集合可直接添加或管理成员，批量导入和账号备注等二级弹框也可正常使用，操作结果提示可单独关闭。
+
+### 变更
+
+- **Codex 页面切换时保留已加载数据**：Codex 账号页与 API 服务页首次使用后保持挂载，来回切换时继续显示已有数据，并在后台刷新。
+- **主窗口尺寸与位置记忆改为可选设置且默认关闭**：只有在「设置 → 通用」主动开启后，才会在重启或托盘重建时保存并恢复窗口状态，避免现有用户默认受到窗口位置恢复影响。
+- **Codex 客户端模型目录仅对官方模板模型且走 Codex 凭据时声明搜索工具**：合成模型或非 Codex 路由不再标 `supports_search_tool`，减少在不兼容链路上发起工具搜索失败的情况。
+- **Codex API 服务 Ollama 兼容元数据识别 GPT-5.6 与更高推理强度**：模型族/上下文映射覆盖 `gpt-5.6*`，thinking effort 在 `low` / `medium` / `high` / `xhigh` 之外支持 `max` / `ultra`。
+- **Codex API 服务的 Responses WebSocket 改为账号池调度开关**：新旧配置默认关闭，只有在账号池「调度选项」中主动开启后，OAuth API 服务及其多开实例 profile 才会使用 WebSocket；第三方模型供应商的 ProviderGateway 始终保持关闭。
+
+### 修复
+
+- **修复 Codex 客户端模型目录覆盖模板上下文上限的问题**：API 服务不再对所有模型强制写入硬编码 `max_context_window = 1000000`；官方模板值（含 GPT-5.6）会保留，仅对缺少字段的合成模型补默认值。
+- **修复 Codex Desktop Responses Lite 在 `tools: null` 时丢失工具定义的问题**：会合并 input 中的 `additional_tools` 工具定义、回放 custom 工具历史，并将 content-parts 形态的 freeform 工具输出拍平为文本，使模型仍能看到可用工具与历史结果。
+- **修复删除 Codex 账号时本地文件已删除但 API 服务账号池清理失败的问题**：现在会先按手动移除流程从 API 服务账号池移除账号，再删除本地凭据文件，避免前端显示删除失败但导出 JSON 为空。
+- **修复 Chat Completions 供应商新建 Codex 对话时先报 `auth_unavailable` 再恢复的问题**：Chat Completions 的 WebSocket 能力现在固定为 `false`，读取、创建或更新供应商配置时均不会被旧值重新开启，编辑界面也不再显示 WebSocket 开关；provider gateway 接管 profile 时会强制写入 `supports_websockets = false`，不受原 profile 配置覆盖影响；Sidecar 还会在服务端阻止 provider gateway 请求进入 Codex WebSocket auth 路由。
+- **修复 Windows 普通权限或跨盘路径下 Codex 多开实例无法创建共享目录的问题**：共享目录联接改为通过进程内原生 NTFS junction API 创建，不再调用 PowerShell 或 `mklink`；联接不可用时会安全降级复制目录，并拒绝覆盖非空目标路径。
+- **修复恢复主窗口位置后窗口可能闪现并移出屏幕的问题**：不再保存最小化状态下的异常坐标；恢复前会校验窗口与当前显示器范围，失效位置会改为居中并清理。
+- **修复 Windows Store 版 Codex 多开可能错误打开默认账号的问题**：受管实例无法可靠传递 `CODEX_HOME` 和实例数据目录时，不再回退到 Store AppUserModelID 或任意默认 Codex 进程，而是阻止启动并提示将该实例切换为 CLI 启动方式。
+- **修复待授权或凭据不完整的 OAuth 账号可能被加入 Codex API 服务的问题**：这类账号仍会显示在成员选择器中并说明不可用原因，但授权完成前不可勾选；后端账号池使用相同资格判断，避免写入无法提供 API 流量的账号。
+- **修复 Codex 批量删除在账号实际删除后仍卡在 `0/N` 的问题**：任务会先将选中账号一次性从 API 服务账号池移除，再删除本地账号文件；账号池清理限制为 5 秒并按 best effort 处理，账号页会轮询任务直到暂停、完成或失败后再刷新并清理成功任务。
+- **修复 Codex API Key 供应商的 WebSocket 变更未同步到已有关联账号的问题**：保存受管模型供应商后会更新关联 API Key 账号快照；当前账号命中时还会重写当前 `config.toml`，因此后续普通切号会为符合条件的自定义 Responses 供应商保留 `supports_websockets = true`；Chat Completions 与内置 OpenAI 仍保持关闭。
+- **修复 Codex sidecar 流式启动重试错误读取旧版单账号重试值的问题**：新 API 服务现在使用独立的流式启动重试配置。（#1572，PR #1617）感谢 @kin001。
+- **修复 Kiro IAM Identity Center 导入账号过期后无法刷新登录态的问题**：根据 `clientIdHash` 精确读取 AWS SSO 客户端注册文件，复用其中保存的 client ID 和 secret。（#1300，PR #1614）感谢 @kin001。
+- **修复唤醒任务遗漏上游排序元数据中未出现的可用模型**：保留模型映射中的有效模型，并按稳定顺序补充。（#1313，PR #1613）感谢 @kin001。
+- **修复 Claude Desktop 遇到 Cloudflare 校验后额度仍无法刷新的问题**：直连请求失败时可回退到带冷却保护的 Electron 页面上下文探测；探测失败则保留原始诊断信息。（#1337，PR #1612）感谢 @kin001。
+- **修复 Grok 账号列表可能显示已持久化测试夹具账号的问题**：仅按完整夹具指纹清理，不会仅凭邮箱误删真实账号。
+
+---
+## [1.3.6] - 2026-07-16
+
+### 新增
+
+- **主窗口支持快捷键缩放界面（#1601）**：macOS 使用 ⌘+/⌘- 放大缩小、⌘0 重置为 100%；Windows/Linux 使用 Ctrl 组合键；档位与设置 → 通用 → 界面缩放一致（90%～150%），结果写入 `ui_scale` 并在重启后保持。
+- **Codex API 服务统计展示缓存 Token**：用量卡片在输入/输出之外显示缓存 Token 数。感谢 @JesmonX（#1593）。
+- **Codex API 服务支持并发生图分流与每账号图请求上限**：同一账号同时进行中的图生/编辑默认限制为 1，优先空闲账号并本地排队；图请求可绕过会话粘性；设置中可配置每账号 1～16 路并发。感谢 @phatchau036（#1578）。
+- **供应商预设补充 MiniMax M3 / M2.7**：Codex 与 Claude 相关预设可选用 MiniMax-M3、MiniMax-M2.7，并更新文档链接。感谢 @octo-patch（#1558）。
+
+### 变更
+
+- **撤销 1.3.1 合并的 Codex 批量导入多任务后台队列（#1286），恢复 1.3.0 导入弹框交互**：从本地 JSON 文件导入仍打开单会话批量导入弹框，不再使用多任务排队与右下角全局任务条；默认关闭「导入前检测账号」，开启后列表实时显示检测进度，完成后勾选账号再导入；支持取消、继续，以及最小化后在账号页查看/丢弃任务。
+- **Codex 会话可见性改为实例启动前在后端按选中实例修复**：切换 OAuth / API / API 服务后，不再依赖前端修复进度弹框，而在下一次启动该实例时自动 reconcile。感谢 @deanjo（#1563）。
+- **Codex API 服务改 App Speed 可热更新 payload，无需重启 sidecar**：进行中的流不受打断；请求日志库补充 `service_tier` 列（旧库可迁移）。感谢 @kin001（#1587）。
+- **配额池展示真实用量窗口**：不再把主窗口一律标成 5h，按账号实际上报窗口聚合展示。感谢 @kin001（#1587）。
+- **悬浮卡平台下拉仅显示「平台布局 → 菜单栏显示」已勾选平台**，并保持布局顺序。感谢 @happyplum（#1596）。
+- **Windows NSIS 安装改为仅当前用户（`currentUser`）**：安装目录落在用户本地 AppData，安装与自动更新默认不再申请管理员权限，便于企业/学校等受限环境安装与升级。感谢 @xdd666t（#1602）。
+
+### 修复
+
+- **修复 Windows 关闭到托盘销毁主 WebView 后，悬浮卡再次打开主窗口可能只成功一次的问题**：托盘销毁后强制清理残留 `main` 句柄并在主线程重建窗口，延迟导航到 remount，正确聚焦主 HWND。感谢 @happyplum（#1595）。
+- **修复主窗口已销毁到托盘后，托盘菜单「退出」可能无法真正退出进程的问题**：退出前标记用户主动退出，避免 `ExitRequested` 仍按托盘保活拦截。见 #1595 / #1600。
+- **修复 Codex 多开「复制/创建实例」后未应用所选绑定账号的问题**：profile 初始化完成后、创建返回前会按 `bind_account_id` 写入目标目录凭据，避免仍沿用源实例账号。感谢 @kin001（#1604，#1599）。
+- **修复同一 API Key 更换模型供应商时出现重复归属与名称冲突的问题**：添加/编辑账号会携带原供应商身份，将复用 Key 从旧供应商迁移到新供应商并尽量保留已保存名称与时间戳，避免重复挂载。感谢 @kin001（#1605，#1597）。
+- **修复 Grok CLI OAuth 账号在与官方 CLI 同时刷新时容易显示过期的问题**：查询额度或启动/切号注入前，会从账号库、受管 profile 的 `auth.json` 与官方 `~/.grok/auth.json` 中，仅按 **同账号**（principal / user id / email）匹配并选用最新可用凭据；access 仍有效时优先直接使用，避免抢刷 refresh token；全部不可用时再刷新，失败则提示重新授权。
+- **修复合并并发生图改动后本地构建 sidecar 失败的问题**：补全会话粘性与图请求选择器组合，消除 Go `affinitySelector` 未使用导致的编译错误。
+- **修复账户标签编辑里「已有标签」全局删除仅用浏览器确认、易误点的问题**：删除前改为应用内确认弹窗（不可点遮罩关闭），确认后才从全部账号移除该标签。见 #645。
+- **修复 Codex 账号卡片标签过早折叠的问题**：同一卡片最多展示 8 个标签并支持换行，短标签不再在第 3 个就变成 `+N`。见 #962。
+- **修复部分语言环境下账号时间用 12 小时制、上下午难辨的问题**：列表/创建时间统一为 24 小时制。见 #859。
+- **修复 Codex 卡片、错误文案、OTP/邮件预览与会话 ID 等字体风格混用的问题**：界面文案统一设计系统无衬线字体，仅代码类内容使用 mono。见 #1089。
+- **修复删除账号后页顶红色报错仍残留的问题**：删除成功会清理 Antigravity、Codex 与共用账号页的页面级错误提示。见 #1160。
+- **修复 Codex 批量导入失败或无可导入账号后黄色任务条无法清掉的问题**：任务条始终可丢弃；进行中可取消并丢弃；恢复会话时若无可选账号会自动清理残留任务。见 #1445。
+- **修复 Codex 模型供应商页「全选」行与下方卡片之间没有间距的问题**：恢复选择栏与卡片网格间距。见 #1164。
+- **确认添加账号等弹窗仅可通过关闭/取消等明确操作关闭，点击遮罩不会误关**，与项目弹窗规则及 #999 反馈一致。
+- **Codex 账号总览筛选支持「0% 额度」「已过期」，并明确「授权失败」筛选项**：可在现有套餐/有效/异常筛选基础上快速筛出额度耗尽或订阅过期账号。见 #1156 / #681。
+- **Codex 支持一键导出全部授权失败账号**（总览操作区进入 JSON 导出）。见 #992。
+- **Codex 批量导入支持可选批量打标**：导入前填写逗号/空格分隔的标签，成功导入的账号会自动合并这些标签。见 #1166。
+- **修复 Codex 自定义排序切换页签后被重置的问题**：自定义排序标志为开启时，重新进入会恢复为自定义顺序，而不被过期的排序字段覆盖。见 #1123。
+- **修复 Antigravity 列表/卡片布局离开页面后丢失的问题**：视图模式始终持久化，不再依赖「筛选记忆」开关。见 #1200。
+- **葡萄牙语（巴西）语言包继续保持 key 完整，并为新增筛选/导出/导入文案提供本地化**。见 #860。
+- **主窗口尺寸与位置会在重启和托盘重新打开后保持**：拖拽缩放会写入本地状态；关闭到托盘销毁 WebView 与退出前也会快照；下次启动或托盘恢复主窗口时还原宽高（有记录时含位置），并继续遵守最小尺寸限制。见 #948 / #1132。
+
+---
 ## [1.3.5] - 2026-07-16
 
 ### 新增

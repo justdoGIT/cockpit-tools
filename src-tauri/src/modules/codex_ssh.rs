@@ -4,10 +4,10 @@ use crate::modules::atomic_write;
 use crate::modules::codex_account;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::Command;
 
 const STORE_FILE: &str = "codex_ssh_servers.json";
 #[cfg(target_os = "windows")]
@@ -43,14 +43,9 @@ pub fn sanitize_remote_codex_dir(raw: &str) -> Result<String, String> {
         return Err("远端 Codex 目录过长".to_string());
     }
     // Disallow shell metacharacters and whitespace to prevent injection into `ssh … sh -c`.
-    let allowed = |c: char| {
-        c.is_ascii_alphanumeric()
-            || matches!(c, '/' | '.' | '_' | '-' | '~')
-    };
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~');
     if !path.chars().all(allowed) {
-        return Err(
-            "远端 Codex 目录含非法字符（仅允许字母数字、~、/、.、_、-）".to_string(),
-        );
+        return Err("远端 Codex 目录含非法字符（仅允许字母数字、~、/、.、_、-）".to_string());
     }
     if path.contains("..") {
         return Err("远端 Codex 目录不允许包含 ..".to_string());
@@ -128,7 +123,10 @@ fn validate_ssh_user_or_host(kind: &str, value: &str) -> Result<String, String> 
     if trimmed.len() > 253 {
         return Err(format!("{kind} 过长"));
     }
-    if trimmed.chars().any(|c| c.is_whitespace() || c.is_control() || c == '@') {
+    if trimmed
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '@')
+    {
         return Err(format!("{kind} 含非法空白、控制字符或 @"));
     }
     Ok(trimmed.to_string())
@@ -298,18 +296,13 @@ pub fn sync_current_account(id: &str) -> Result<String, String> {
     }
 
     // Best-effort remote size check for auth.json (not full SHA when scp is used).
-    let remote_auth = format!(
-        "{}/auth.json",
-        remote_dir.trim_end_matches('/')
-    );
+    let remote_auth = format!("{}/auth.json", remote_dir.trim_end_matches('/'));
     let remote_auth_quoted = shell_single_quote(&remote_auth);
     let mut stat_args = ssh_base_args(&server);
     stat_args.push(format!("wc -c < {remote_auth_quoted}"));
     match run_hidden("ssh", &stat_args) {
         Ok(remote_len) => {
-            let local_len = fs::metadata(&local_auth)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let local_len = fs::metadata(&local_auth).map(|m| m.len()).unwrap_or(0);
             let remote_len = remote_len.trim().parse::<u64>().unwrap_or(0);
             if remote_len > 0 && local_len > 0 && remote_len != local_len {
                 return Err(format!(
@@ -324,20 +317,15 @@ pub fn sync_current_account(id: &str) -> Result<String, String> {
     }
 
     // Best-effort remote Codex app-server reload (#1404) so Desktop picks up new auth.
-    let mut reload_note = String::new();
     let reload_cmd = format!(
         "command -v pkill >/dev/null 2>&1 && pkill -f 'codex.*app-server' || true; command -v codex >/dev/null 2>&1 && (codex app-server --help >/dev/null 2>&1 || true)"
     );
     let mut reload_args = ssh_base_args(&server);
     reload_args.push(reload_cmd);
-    match run_hidden("ssh", &reload_args) {
-        Ok(_) => {
-            reload_note = "；已尝试重载远端 app-server".to_string();
-        }
-        Err(e) => {
-            reload_note = format!("；远端重载跳过: {e}");
-        }
-    }
+    let reload_note = match run_hidden("ssh", &reload_args) {
+        Ok(_) => "；已尝试重载远端 app-server".to_string(),
+        Err(e) => format!("；远端重载跳过: {e}"),
+    };
 
     Ok(format!(
         "已同步账号 {} 的 {} 到 {}@{}:{}{}",
@@ -389,10 +377,7 @@ mod tests {
 
     #[test]
     fn sanitize_remote_codex_dir_rejects_metacharacters() {
-        assert_eq!(
-            sanitize_remote_codex_dir("").unwrap(),
-            "~/.codex"
-        );
+        assert_eq!(sanitize_remote_codex_dir("").unwrap(), "~/.codex");
         assert_eq!(
             sanitize_remote_codex_dir("~/workspace/.codex").unwrap(),
             "~/workspace/.codex"

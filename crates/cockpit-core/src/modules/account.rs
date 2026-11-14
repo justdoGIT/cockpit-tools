@@ -1,3 +1,4 @@
+use crate::modules::antigravity_account_index_store::{AccountIndexStore, IndexRead, LEGACY_FILE};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -10,8 +11,6 @@ use uuid::Uuid;
 use crate::models::{Account, AccountIndex, AccountSummary, QuotaData, QuotaErrorInfo, TokenData};
 use crate::modules;
 
-static ACCOUNT_INDEX_LOCK: std::sync::LazyLock<Mutex<()>> =
-    std::sync::LazyLock::new(|| Mutex::new(()));
 static AUTO_SWITCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static QUOTA_ALERT_LAST_SENT: std::sync::LazyLock<Mutex<HashMap<String, i64>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -23,7 +22,6 @@ static LIST_ACCOUNTS_LOAD_LOCK: std::sync::LazyLock<Mutex<()>> =
 const QUOTA_ALERT_COOLDOWN_SECONDS: i64 = 300;
 const LIST_ACCOUNTS_CACHE_TTL_MS: u64 = 800;
 
-const ACCOUNTS_INDEX: &str = "accounts.json";
 const ACCOUNTS_DIR: &str = "accounts";
 
 #[derive(Clone)]
@@ -86,7 +84,6 @@ pub fn get_accounts_dir() -> Result<PathBuf, String> {
 }
 
 fn repair_account_index_from_details(reason: &str) -> Result<Option<AccountIndex>, String> {
-    let index_path = get_data_dir()?.join(ACCOUNTS_INDEX);
     let accounts_dir = get_accounts_dir()?;
     let mut accounts = crate::modules::account_index_repair::load_accounts_from_details(
         &accounts_dir,
@@ -117,17 +114,7 @@ fn repair_account_index_from_details(reason: &str) -> Result<Option<AccountIndex
         .collect();
     index.current_account_id = accounts.first().map(|account| account.id.clone());
 
-    let backup_path = crate::modules::account_index_repair::backup_existing_index(&index_path)
-        .unwrap_or_else(|err| {
-            modules::logger::log_warn(&format!(
-                "自动修复账号索引前备份失败，继续尝试重建: path={}, error={}",
-                index_path.display(),
-                err
-            ));
-            None
-        });
-
-    if let Err(err) = save_account_index(&index) {
+    if let Err(err) = save_account_index_locked(&index) {
         modules::logger::log_warn(&format!(
             "自动修复账号索引保存失败，将以内存结果继续运行: reason={}, recovered_accounts={}, error={}",
             reason,
@@ -137,78 +124,133 @@ fn repair_account_index_from_details(reason: &str) -> Result<Option<AccountIndex
     }
 
     modules::logger::log_warn(&format!(
-        "检测到账号索引异常，已根据详情文件自动重建: reason={}, recovered_accounts={}, backup_path={}",
-        reason,
-        index.accounts.len(),
-        backup_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "-".to_string())
+        "已根据账号详情重建索引并保留旧文件: reason={}, recovered_accounts={}",
+        reason, index.accounts.len(),
     ));
 
     Ok(Some(index))
 }
 
-/// 加载账号索引
+fn index_store() -> Result<AccountIndexStore, String> {
+    Ok(AccountIndexStore::new(get_data_dir()?))
+}
+
+fn lock_account_index() -> Result<fs::File, String> {
+    index_store()?.lock_writes()
+}
+
 pub fn load_account_index() -> Result<AccountIndex, String> {
-    let data_dir = get_data_dir()?;
-    let index_path = data_dir.join(ACCOUNTS_INDEX);
-
-    if !index_path.exists() {
-        if let Some(index) = repair_account_index_from_details("索引文件不存在")? {
+    let store = index_store()?;
+    match store.load()? {
+        IndexRead::Active(index) => return Ok(index),
+        IndexRead::Legacy(index) if !index.accounts.is_empty() => {
+            schedule_index_store(store);
             return Ok(index);
         }
-        return Ok(AccountIndex::new());
+        _ => {}
     }
+    let _lock = store.lock_writes()?;
+    load_account_index_locked()
+}
 
-    let content =
-        fs::read_to_string(&index_path).map_err(|e| format!("读取账号索引失败: {}", e))?;
-
-    if content.trim().is_empty() {
-        if let Some(index) = repair_account_index_from_details("索引文件为空")? {
-            return Ok(index);
-        }
-        return Ok(AccountIndex::new());
-    }
-
-    match crate::modules::atomic_write::parse_json_with_auto_restore::<AccountIndex>(
-        &index_path,
-        &content,
-    ) {
-        Ok(index) => {
-            if index.accounts.is_empty() {
-                if let Some(repaired) = repair_account_index_from_details("索引账号列表为空")?
-                {
-                    return Ok(repaired);
-                }
-            }
+fn load_account_index_locked() -> Result<AccountIndex, String> {
+    let store = index_store()?;
+    match store.load()? {
+        IndexRead::Active(index) => Ok(index),
+        IndexRead::Legacy(index) if !index.accounts.is_empty() => {
+            schedule_index_store(store);
             Ok(index)
         }
-        Err(e) => {
-            if let Some(index) = repair_account_index_from_details("索引文件损坏")? {
+        IndexRead::Legacy(index) => Ok(
+            repair_account_index_from_details("索引账号列表为空")?.unwrap_or(index),
+        ),
+        IndexRead::Missing => Ok(
+            repair_account_index_from_details("旧索引缺失或为空")?.unwrap_or_default(),
+        ),
+        IndexRead::InvalidLegacy(error) => {
+            if let Some(index) = repair_account_index_from_details("旧索引损坏")? {
                 return Ok(index);
             }
             Err(crate::error::file_corrupted_error(
-                ACCOUNTS_INDEX,
-                &index_path.to_string_lossy(),
-                &e.to_string(),
+                LEGACY_FILE,
+                &store.legacy_path().to_string_lossy(),
+                &error,
             ))
         }
     }
 }
 
-/// 保存账号索引
-pub fn save_account_index(index: &AccountIndex) -> Result<(), String> {
-    let data_dir = get_data_dir()?;
-    let index_path = data_dir.join(ACCOUNTS_INDEX);
-
-    let content =
-        serde_json::to_string_pretty(index).map_err(|e| format!("序列化账号索引失败: {}", e))?;
-
-    crate::modules::atomic_write::write_string_atomic(&index_path, &content)
-        .map_err(|e| format!("写入账号索引失败: {}", e))?;
+fn save_account_index_locked(index: &AccountIndex) -> Result<(), String> {
+    index_store()?.replace(index)?;
     invalidate_list_accounts_cache();
     Ok(())
+}
+
+#[cfg(test)]
+fn save_account_index(index: &AccountIndex) -> Result<(), String> {
+    let _lock = lock_account_index()?;
+    save_account_index_locked(index)
+}
+
+pub(crate) fn schedule_index_store<T>(store: crate::modules::antigravity_account_index_store::IndexStore<T>)
+where
+    T: crate::modules::antigravity_account_index_store::IndexDocument + Send + 'static,
+{
+    let key = store.migration_key();
+    schedule_index_job(key, move || store.migrate_batch());
+}
+
+pub(crate) fn schedule_index_job(
+    key: String,
+    mut batch: impl FnMut() -> Result<bool, String> + Send + 'static,
+) {
+    static MIGRATING: std::sync::LazyLock<Mutex<HashSet<String>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+    let Ok(mut jobs) = MIGRATING.lock() else { return };
+    if !jobs.insert(key.clone()) { return; }
+    drop(jobs);
+    let task_key = key.clone();
+    let worker = std::thread::Builder::new().name("account-index-migration".into()).spawn(move || {
+        loop {
+            match batch() {
+                Ok(true) => break,
+                Ok(false) => std::thread::sleep(std::time::Duration::from_millis(150)),
+                Err(error) => {
+                    modules::logger::log_warn(&format!("[AccountIndex] {error}"));
+                    break;
+                }
+            }
+        }
+        if let Ok(mut jobs) = MIGRATING.lock() { jobs.remove(&task_key); }
+    });
+    if let Err(error) = worker {
+        if let Ok(mut jobs) = MIGRATING.lock() { jobs.remove(&key); }
+        modules::logger::log_warn(&format!("[AccountIndex] 无法启动索引迁移: {error}"));
+    }
+}
+
+pub(crate) fn list_after_cli_index_batches<T>(
+    mut batch: impl FnMut() -> Result<bool, String>,
+    list: impl FnOnce() -> Result<Vec<T>, String>,
+) -> Result<(Vec<T>, Option<String>), String> {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let warning = loop {
+        match batch() {
+            Ok(true) => break None,
+            Ok(false) if Instant::now() >= deadline => {
+                break Some("账号索引恢复暂未完成，已保留进度，请重试".to_string());
+            }
+            Ok(false) => std::thread::sleep(Duration::from_millis(15)),
+            Err(error) => break Some(error),
+        }
+    };
+    match (list(), warning) {
+        (Ok(accounts), Some(warning)) if !accounts.is_empty() => Ok((accounts, Some(warning))),
+        (_, Some(error)) => Err(error),
+        (accounts, None) => accounts.map(|accounts| (accounts, None)),
+    }
 }
 
 /// 加载账号数据
@@ -220,11 +262,42 @@ pub fn load_account(account_id: &str) -> Result<Account, String> {
         return Err(format!("账号不存在: {}", account_id));
     }
 
-    let content =
-        fs::read_to_string(&account_path).map_err(|e| format!("读取账号数据失败: {}", e))?;
-
-    crate::modules::atomic_write::parse_json_with_auto_restore::<Account>(&account_path, &content)
-        .map_err(|e| format!("解析账号数据失败: {}", e))
+    let mut account: Account = crate::modules::secure_account_storage::read_account_file(&account_path)?;
+    // 若账号已有可用模型配额，但残留了由 retrieveUserQuotaSummary 产生的假性 SUBSCRIPTION_REQUIRED 错误，自动修复
+    if let Some(ref q) = account.quota {
+        if !q.models.is_empty() {
+            let is_spurious = account
+                .quota_error
+                .as_ref()
+                .map(|e| {
+                    e.reason.as_deref() == Some("SUBSCRIPTION_REQUIRED")
+                        || e.message.contains("valid license")
+                })
+                .unwrap_or(false);
+            if is_spurious {
+                account.quota_error = None;
+                if account.disabled_reason.as_deref() == Some("subscription_required") {
+                    account.disabled_reason = None;
+                    if account.disabled {
+                        account.disabled = false;
+                        account.disabled_at = None;
+                    }
+                }
+            }
+        }
+    }
+    // 同步：若 quota_error 明确要求网页验证，确保 disabled_reason 同步为 verification_required
+    if account.disabled_reason.is_none() {
+        if let Some(ref err) = account.quota_error {
+            if err.reason.as_deref() == Some("VALIDATION_REQUIRED")
+                || err.validation_url.is_some()
+                || err.message.contains("Verify your account")
+            {
+                account.disabled_reason = Some("verification_required".to_string());
+            }
+        }
+    }
+    Ok(account)
 }
 
 /// 保存账号数据
@@ -232,11 +305,23 @@ pub fn save_account(account: &Account) -> Result<(), String> {
     let accounts_dir = get_accounts_dir()?;
     let account_path = accounts_dir.join(format!("{}.json", account.id));
 
-    let content =
-        serde_json::to_string_pretty(account).map_err(|e| format!("序列化账号数据失败: {}", e))?;
-
-    crate::modules::atomic_write::write_string_atomic(&account_path, &content)
-        .map_err(|e| format!("保存账号数据失败: {}", e))?;
+    crate::modules::secure_account_storage::write_account_file_preserving_fields(
+        &account_path,
+        "antigravity",
+        account,
+        &[(
+            "",
+            &[
+                "two_factor_secret",
+                "account_password",
+                "phone_number",
+                "mail_url",
+                "aux_email",
+                "pending_oauth",
+            ],
+        )],
+    )
+    .map_err(|e| format!("保存账号数据失败: {}", e))?;
     invalidate_list_accounts_cache();
     Ok(())
 }
@@ -339,7 +424,7 @@ fn is_strict_account_identity_match(existing: &Account, email: &str, token: &Tok
         }
     }
 
-    if existing.email == email {
+    if existing.email.eq_ignore_ascii_case(email) {
         if let Some(project_id) = non_empty(token.project_id.as_deref()) {
             if non_empty(existing.token.project_id.as_deref()) == Some(project_id) {
                 return true;
@@ -350,12 +435,26 @@ fn is_strict_account_identity_match(existing: &Account, email: &str, token: &Tok
     false
 }
 
+/// 生成基于邮箱的确定性账号存储 ID（与 Codex 等平台对齐）
+pub fn build_account_storage_id(email: &str) -> String {
+    let seed = email.trim().to_lowercase();
+    format!("antigravity_{:x}", md5::compute(seed.as_bytes()))
+}
+
 fn find_matching_account_id(
     index: &AccountIndex,
     email: &str,
     token: &TokenData,
 ) -> Result<Option<String>, String> {
+    let normalized_email = email.trim();
+    let generated_id = build_account_storage_id(normalized_email);
+    let mut email_matches: Vec<Account> = Vec::new();
+
     for summary in &index.accounts {
+        if summary.id == generated_id {
+            return Ok(Some(summary.id.clone()));
+        }
+
         let existing = match load_account(&summary.id) {
             Ok(account) => account,
             Err(err) => {
@@ -367,50 +466,50 @@ fn find_matching_account_id(
             }
         };
 
-        if is_strict_account_identity_match(&existing, email, token) {
+        if is_strict_account_identity_match(&existing, normalized_email, token) {
             return Ok(Some(existing.id));
+        }
+
+        if existing.email.trim().eq_ignore_ascii_case(normalized_email) {
+            email_matches.push(existing);
+        }
+    }
+
+    if email_matches.len() == 1 {
+        modules::logger::log_info(&format!(
+            "账号匹配走单邮箱覆盖路径: email={}, id={}",
+            normalized_email, email_matches[0].id
+        ));
+        return Ok(Some(email_matches.remove(0).id));
+    }
+
+    if email_matches.len() > 1 {
+        let target_pid = non_empty(token.project_id.as_deref());
+        if let Some(pid) = target_pid {
+            if let Some(target) = email_matches
+                .iter()
+                .find(|acc| non_empty(acc.token.project_id.as_deref()) == Some(pid))
+            {
+                return Ok(Some(target.id.clone()));
+            }
+        }
+        let mut sorted = email_matches;
+        sorted.sort_by_key(|acc| (acc.disabled, std::cmp::Reverse(acc.last_used)));
+        if let Some(best) = sorted.first() {
+            return Ok(Some(best.id.clone()));
         }
     }
 
     Ok(None)
 }
 
-/// 添加账号
+/// 添加账号（若已存在同邮箱老账号则执行更新覆盖）
 pub fn add_account(
     email: String,
     name: Option<String>,
     token: TokenData,
 ) -> Result<Account, String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
-
-    if find_matching_account_id(&index, &email, &token)?.is_some() {
-        return Err(format!("账号已存在: {}", email));
-    }
-
-    let account_id = Uuid::new_v4().to_string();
-    let mut account = Account::new(account_id.clone(), email.clone(), token);
-    account.name = name.clone();
-
-    save_account(&account)?;
-
-    index.accounts.push(AccountSummary {
-        id: account_id.clone(),
-        email: email.clone(),
-        name: name.clone(),
-        created_at: account.created_at,
-        last_used: account.last_used,
-    });
-
-    if index.current_account_id.is_none() {
-        index.current_account_id = Some(account_id);
-    }
-
-    save_account_index(&index)?;
-
-    Ok(account)
+    upsert_account(email, name, token)
 }
 
 /// 添加或更新账号
@@ -419,59 +518,71 @@ pub fn upsert_account(
     name: Option<String>,
     token: TokenData,
 ) -> Result<Account, String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
+    let email = email.trim().to_string();
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
+    let existing_account_id = find_matching_account_id(&index, &email, &token)?.or_else(|| {
+        index
+            .accounts
+            .iter()
+            .find(|s| s.email.trim().eq_ignore_ascii_case(&email))
+            .map(|s| s.id.clone())
+    });
 
-    let existing_account_id = find_matching_account_id(&index, &email, &token)?;
-
-    if let Some(account_id) = existing_account_id {
-        match load_account(&account_id) {
-            Ok(mut account) => {
-                account.token = token;
-                account.name = name.clone();
-                if account.disabled {
-                    account.disabled = false;
-                    account.disabled_reason = None;
-                    account.disabled_at = None;
-                }
-                account.update_last_used();
-                save_account(&account)?;
-
-                if let Some(idx_summary) = index.accounts.iter_mut().find(|s| s.id == account_id) {
-                    idx_summary.name = name;
-                    save_account_index(&index)?;
-                }
-
-                return Ok(account);
-            }
-            Err(e) => {
-                modules::logger::log_warn(&format!("账号文件缺失，正在重建: {}", e));
-                let mut account = Account::new(account_id.clone(), email.clone(), token);
-                account.name = name.clone();
-                save_account(&account)?;
-
-                if let Some(idx_summary) = index.accounts.iter_mut().find(|s| s.id == account_id) {
-                    idx_summary.name = name;
-                    save_account_index(&index)?;
-                }
-
-                return Ok(account);
-            }
+    // Existing IDs are referenced by instances, wakeup tasks and groups. Reimport
+    // updates credentials in place; deterministic IDs apply only to new accounts.
+    let mut account = if let Some(account_id) = existing_account_id {
+        let mut account = load_account(&account_id)?;
+        let mut next_token = token;
+        if next_token.project_id.is_none() {
+            next_token.project_id = account.token.project_id.clone();
         }
+        if next_token.session_id.is_none() {
+            next_token.session_id = account.token.session_id.clone();
+        }
+        account.token = next_token;
+        account.email = email.clone();
+        if account.disabled {
+            account.disabled = false;
+            account.disabled_reason = None;
+            account.disabled_at = None;
+        } else if account.disabled_reason.as_deref() == Some("verification_required") {
+            account.disabled_reason = None;
+        }
+        account.quota_error = None;
+        account.update_last_used();
+        account
+    } else {
+        Account::new(build_account_storage_id(&email), email.clone(), token)
+    };
+    if name.is_some() {
+        account.name = name;
     }
-
-    drop(_lock);
-    add_account(email, name, token)
+    save_account(&account)?;
+    if let Some(summary) = index.accounts.iter_mut().find(|item| item.id == account.id) {
+        summary.email = account.email.clone();
+        summary.name = account.name.clone();
+        summary.last_used = account.last_used;
+    } else {
+        index.accounts.push(AccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            name: account.name.clone(),
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+    }
+    if index.current_account_id.is_none() {
+        index.current_account_id = Some(account.id.clone());
+    }
+    save_account_index_locked(&index)?;
+    Ok(account)
 }
 
 /// 删除账号
 pub fn delete_account(account_id: &str) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
 
     let original_len = index.accounts.len();
     index.accounts.retain(|s| s.id != account_id);
@@ -484,7 +595,7 @@ pub fn delete_account(account_id: &str) -> Result<(), String> {
         index.current_account_id = index.accounts.first().map(|s| s.id.clone());
     }
 
-    save_account_index(&index)?;
+    save_account_index_locked(&index)?;
 
     let accounts_dir = get_accounts_dir()?;
     let account_path = accounts_dir.join(format!("{}.json", account_id));
@@ -498,12 +609,8 @@ pub fn delete_account(account_id: &str) -> Result<(), String> {
 
 /// 批量删除账号
 pub fn delete_accounts(account_ids: &[String]) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
-
-    let accounts_dir = get_accounts_dir()?;
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
 
     for account_id in account_ids {
         index.accounts.retain(|s| &s.id != account_id);
@@ -512,25 +619,42 @@ pub fn delete_accounts(account_ids: &[String]) -> Result<(), String> {
             index.current_account_id = None;
         }
 
-        let account_path = accounts_dir.join(format!("{}.json", account_id));
-        if account_path.exists() {
-            let _ = fs::remove_file(&account_path);
-        }
+
     }
 
     if index.current_account_id.is_none() {
         index.current_account_id = index.accounts.first().map(|s| s.id.clone());
     }
 
-    save_account_index(&index)
+    save_account_index_locked(&index)?;
+    let accounts_dir = get_accounts_dir()?;
+    let mut cleanup_error = None;
+    for account_id in account_ids {
+        let path = accounts_dir.join(format!("{account_id}.json"));
+        if let Err(error) = remove_deleted_account_file(&path) {
+            cleanup_error.get_or_insert(error);
+        }
+    }
+    match cleanup_error {
+        Some(error) => Err(format!("账号索引已更新，清理账号文件失败: {error}")),
+        None => Ok(()),
+    }
 }
+
+fn remove_deleted_account_file(path: &std::path::Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+
 
 /// 重新排序账号列表
 pub fn reorder_accounts(account_ids: &[String]) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
+    let _lock = lock_account_index()?;
+    let mut index = load_account_index_locked()?;
 
     let id_to_summary: std::collections::HashMap<_, _> = index
         .accounts
@@ -553,13 +677,15 @@ pub fn reorder_accounts(account_ids: &[String]) -> Result<(), String> {
 
     index.accounts = new_accounts;
 
-    save_account_index(&index)
+    save_account_index_locked(&index)
 }
 
 /// 获取当前账号 ID
 pub fn get_current_account_id() -> Result<Option<String>, String> {
-    let index = load_account_index()?;
-    Ok(index.current_account_id)
+    if let Some(current) = index_store()?.active_current()? {
+        return Ok(current);
+    }
+    Ok(load_account_index()?.current_account_id)
 }
 
 /// 获取当前激活账号
@@ -575,12 +701,17 @@ pub fn get_current_account() -> Result<Option<Account>, String> {
 
 /// 设置当前激活账号 ID
 pub fn set_current_account_id(account_id: &str) -> Result<(), String> {
-    let _lock = ACCOUNT_INDEX_LOCK
-        .lock()
-        .map_err(|e| format!("获取锁失败: {}", e))?;
-    let mut index = load_account_index()?;
-    index.current_account_id = Some(account_id.to_string());
-    save_account_index(&index)?;
+    let _lock = lock_account_index()?;
+    if index_store()?.set_active_current(account_id)? {
+        invalidate_list_accounts_cache();
+    } else {
+        let mut index = load_account_index_locked()?;
+        if !index.accounts.iter().any(|account| account.id == account_id) {
+            return Err(format!("找不到账号 ID: {account_id}"));
+        }
+        index.current_account_id = Some(account_id.to_string());
+        save_account_index_locked(&index)?;
+    }
 
     // 同时写入 current_account.json 供扩展读取
     if let Ok(account) = load_account(account_id) {
@@ -719,9 +850,26 @@ struct AutoSwitchTriggerContext {
 fn default_auto_switch_groups() -> Vec<AutoSwitchGroupDefinition> {
     vec![
         AutoSwitchGroupDefinition {
+            id: "g4_argon".into(),
+            name: "Gemini 4 Argon".into(),
+            models: vec![
+                "gemini-4-argon".into(),
+                "gemini-4-argon-medium".into(),
+                "gemini-4-argon-high".into(),
+                "argon:weekly".into(),
+                "gemini-argon-wtu-weekly".into(),
+            ],
+        },
+        AutoSwitchGroupDefinition {
             id: "claude_45".to_string(),
             name: "Claude".to_string(),
             models: vec![
+                "claude-opus-5-5".into(),
+                "claude-opus-5-5-medium".into(),
+                "claude-opus-5-5-high".into(),
+                "claude-sonnet-5-5".into(),
+                "claude-sonnet-5-5-medium".into(),
+                "claude-sonnet-5-5-high".into(),
                 "claude-opus-4-6-thinking".to_string(),
                 "claude-opus-4-6".to_string(),
                 "claude-opus-4-5-thinking".to_string(),
@@ -758,6 +906,11 @@ fn default_auto_switch_groups() -> Vec<AutoSwitchGroupDefinition> {
             id: "g3_flash".to_string(),
             name: "Gemini Flash".to_string(),
             models: vec![
+                "gemini-3.8-flash".into(),
+                "gemini-3.8-flash-low".into(),
+                "gemini-3.8-flash-medium".into(),
+                "gemini-3.8-flash-high".into(),
+                "MODEL_PLACEHOLDER_M318".into(),
                 "gemini-3-flash".to_string(),
                 "gemini-3.1-flash".to_string(),
                 "gemini-3-flash-image".to_string(),
@@ -868,6 +1021,23 @@ fn resolve_monitored_auto_switch_groups(
 
 fn normalize_model_for_group_match(value: &str) -> String {
     let normalized = value.trim().to_lowercase();
+    if normalized.starts_with("gemini-4-argon")
+        || matches!(
+            normalized.as_str(),
+            "argon:weekly" | "gemini-argon-wtu-weekly"
+        )
+    {
+        return "gemini-4-argon".into();
+    }
+    if normalized.starts_with("gemini-3.8-flash") {
+        return "gemini-3.8-flash".into();
+    }
+    if normalized.starts_with("claude-sonnet-5-5") {
+        return "claude-sonnet-5-5".into();
+    }
+    if normalized.starts_with("claude-opus-5-5") {
+        return "claude-opus-5-5".into();
+    }
     if normalized.is_empty() {
         return normalized;
     }
@@ -929,6 +1099,22 @@ fn collect_group_quotas(
                 percentage: average,
             })
         })
+        .collect()
+}
+
+// Newly added default groups must not exclude accounts whose current client
+// does not report that model family. Explicit selected-group rules stay strict.
+fn reported_auto_switch_groups(
+    scope: &str,
+    groups: Vec<AutoSwitchGroupDefinition>,
+    reported: &[AutoSwitchGroupQuota],
+) -> Vec<AutoSwitchGroupDefinition> {
+    if scope != AUTO_SWITCH_SCOPE_ANY_GROUP || reported.is_empty() {
+        return groups;
+    }
+    groups
+        .into_iter()
+        .filter(|group| reported.iter().any(|quota| quota.id == group.id))
         .collect()
 }
 
@@ -1066,6 +1252,10 @@ fn build_auto_switch_reason(
         rule: context.rule.clone(),
         threshold: context.threshold,
         scope_mode: context.scope_mode.clone(),
+        credits_enabled: false,
+        credits_threshold: None,
+        credits_triggered: false,
+        current_credits_remaining: None,
         selected_group_ids: context.selected_group_ids.clone(),
         selected_group_names: context.selected_group_names.clone(),
         hit_groups: context.hit_groups.clone(),
@@ -1354,6 +1544,9 @@ async fn run_auto_switch_if_needed_inner() -> Result<Option<Account>, String> {
         None => return Ok(None),
     };
 
+    let reported = collect_group_quotas(current, &monitored_groups);
+    let monitored_groups = reported_auto_switch_groups(&scope_mode, monitored_groups, &reported);
+
     let Some(trigger_context) =
         evaluate_auto_switch_trigger(current, threshold, &scope_mode, &monitored_groups)
     else {
@@ -1538,6 +1731,12 @@ pub async fn fetch_quota_with_fresh_token(
             account.quota_error = Some(QuotaErrorInfo {
                 code: None,
                 message: format!("OAuth error: {}", e),
+                reason: if e.contains("invalid_grant") {
+                    Some("invalid_grant".to_string())
+                } else {
+                    None
+                },
+                validation_url: None,
                 timestamp: chrono::Utc::now().timestamp(),
             });
             let _ = save_account(account);
@@ -1563,18 +1762,65 @@ pub async fn fetch_quota_with_fresh_token(
                 ));
                 account.clear_disabled();
             }
-            account.quota_error = payload.error.map(|err| QuotaErrorInfo {
-                code: err.code,
-                message: err.message,
-                timestamp: chrono::Utc::now().timestamp(),
-            });
+            if let Some(ref err) = payload.error {
+                account.quota_error = Some(QuotaErrorInfo {
+                    code: err.code,
+                    message: err.message.clone(),
+                    reason: err.reason.clone(),
+                    validation_url: err.validation_url.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                });
+
+                if err.reason.as_deref() == Some("VALIDATION_REQUIRED")
+                    || err.message.contains("Verify your account")
+                {
+                    modules::logger::log_warn(&format!(
+                        "账号需要重新授权/验证 (VALIDATION_REQUIRED): {}",
+                        account.email
+                    ));
+                    account.disabled_reason = Some("verification_required".to_string());
+                } else if err.reason.as_deref() == Some("SUBSCRIPTION_REQUIRED") {
+                    modules::logger::log_warn(&format!(
+                        "账号需要有效订阅 (SUBSCRIPTION_REQUIRED): {}",
+                        account.email
+                    ));
+                    account.disabled_reason = Some("subscription_required".to_string());
+                }
+            } else {
+                account.quota_error = None;
+                // 配额获取成功且无部分错误，如果之前是 verification_required / subscription_required，自动解除
+                if account.disabled_reason.as_deref() == Some("verification_required")
+                    || account.disabled_reason.as_deref() == Some("subscription_required")
+                {
+                    modules::logger::log_info(&format!(
+                        "账号配额获取成功，自动解除状态: email={}, reason={:?}",
+                        account.email, account.disabled_reason
+                    ));
+                    account.disabled_reason = None;
+                    if account.disabled {
+                        account.disabled = false;
+                        account.disabled_at = None;
+                    }
+                }
+            }
+
             let _ = save_account(account);
             Ok(payload.quota)
         }
         Err(err) => {
+            let err_msg = err.to_string();
+            let mut reason: Option<String> = None;
+            if err_msg.contains("Verify your account") {
+                reason = Some("VALIDATION_REQUIRED".to_string());
+                account.disabled_reason = Some("verification_required".to_string());
+            } else if err_msg.contains("invalid_grant") {
+                reason = Some("invalid_grant".to_string());
+            }
             account.quota_error = Some(QuotaErrorInfo {
                 code: None,
-                message: err.to_string(),
+                message: err_msg,
+                reason,
+                validation_url: None,
                 timestamp: chrono::Utc::now().timestamp(),
             });
             let _ = save_account(account);
@@ -1609,12 +1855,24 @@ pub async fn switch_account_internal(account_id: &str) -> Result<Account, String
         modules::logger::log_warn(&format!("[Switch] 更新默认实例绑定账号失败: {}", e));
     }
 
-    // 6. 对齐默认实例启动逻辑：按默认实例目录关闭受管进程，再注入默认实例目录
+    // 6. 对齐默认实例启动逻辑：按默认实例目录关闭受管进程，再同步注入所有存在的 Antigravity 目录
     let default_dir = modules::instance::get_default_user_data_dir()?;
     let default_dir_str = default_dir.to_string_lossy().to_string();
     modules::process::close_antigravity_instances(&[default_dir_str], 20)?;
     let _ = modules::instance::update_default_pid(None);
     modules::instance::inject_account_to_profile(&default_dir, account_id)?;
+    for target_dir in modules::instance::get_all_antigravity_user_data_dirs() {
+        if target_dir == default_dir {
+            continue;
+        }
+        if let Err(e) = modules::instance::inject_account_to_profile(&target_dir, account_id) {
+            modules::logger::log_warn(&format!(
+                "[Switch] 注入目录 {} 失败: {}",
+                target_dir.display(),
+                e
+            ));
+        }
+    }
 
     // 7. 启动 Antigravity IDE（带默认实例自定义启动参数；启动失败不阻断切号，保持原行为）
     modules::logger::log_info("[Switch] 正在启动 Antigravity IDE 默认实例...");
@@ -1639,9 +1897,13 @@ pub async fn switch_account_internal(account_id: &str) -> Result<Account, String
     Ok(account)
 }
 
-fn persist_switch_history(item: modules::antigravity_switch_history::AntigravitySwitchHistoryItem) {
-    if let Err(err) = modules::antigravity_switch_history::add_history_item(item) {
-        modules::logger::log_warn(&format!("写入 Antigravity IDE 切号记录失败: {}", err));
+async fn persist_switch_history(item: modules::antigravity_switch_history::AntigravitySwitchHistoryItem) {
+    let result = tokio::task::spawn_blocking(move || modules::antigravity_switch_history::add_history_item(item))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+    if let Err(error) = result {
+        modules::logger::log_warn(&format!("保存 Antigravity 切号记录失败: {error}"));
     }
 }
 
@@ -1739,7 +2001,7 @@ pub async fn switch_account_dual_no_restart(
                     seamless_finished_at: None,
                     auto_switch_reason: auto_switch_reason.clone(),
                 },
-            );
+            ).await;
             return Err(error);
         }
     };
@@ -1772,7 +2034,7 @@ pub async fn switch_account_dual_no_restart(
                     seamless_finished_at: None,
                     auto_switch_reason: auto_switch_reason.clone(),
                 },
-            );
+            ).await;
             if error.starts_with("APP_PATH_NOT_FOUND:") {
                 return Err(error);
             }
@@ -1827,7 +2089,7 @@ pub async fn switch_account_dual_no_restart(
                     seamless_finished_at: Some(response.finished_at),
                     auto_switch_reason: auto_switch_reason.clone(),
                 },
-            );
+            ).await;
             Ok(account)
         }
         Ok(response) => {
@@ -1856,7 +2118,7 @@ pub async fn switch_account_dual_no_restart(
                     seamless_finished_at: Some(response.finished_at),
                     auto_switch_reason: auto_switch_reason.clone(),
                 },
-            );
+            ).await;
             Err(format!(
                 "本地切换已完成，但扩展无感切号失败: {}",
                 response
@@ -1890,7 +2152,7 @@ pub async fn switch_account_dual_no_restart(
                     seamless_finished_at: None,
                     auto_switch_reason,
                 },
-            );
+            ).await;
             Err(format!("本地切换已完成，但扩展无感切号失败: {}", error))
         }
     }
@@ -1923,6 +2185,18 @@ pub async fn switch_account_local_no_restart(account_id: &str) -> Result<Account
 
     let default_dir = modules::instance::get_default_user_data_dir()?;
     modules::instance::inject_account_to_profile(&default_dir, account_id)?;
+    for target_dir in modules::instance::get_all_antigravity_user_data_dirs() {
+        if target_dir == default_dir {
+            continue;
+        }
+        if let Err(e) = modules::instance::inject_account_to_profile(&target_dir, account_id) {
+            modules::logger::log_warn(&format!(
+                "[Switch][NoRestart] 注入目录 {} 失败: {}",
+                target_dir.display(),
+                e
+            ));
+        }
+    }
 
     modules::logger::log_info(&format!(
         "[Switch][NoRestart] 本地切号完成: {}",
@@ -1943,4 +2217,234 @@ pub async fn prepare_account_for_injection(account_id: &str) -> Result<Account, 
         save_account(&account)?;
     }
     Ok(account)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestEnvGuard {
+        data_dir: std::path::PathBuf,
+        previous_data_dir: Option<std::ffi::OsString>,
+    }
+
+    impl TestEnvGuard {
+        fn new(prefix: &str) -> Self {
+            let data_dir = std::env::temp_dir().join(format!(
+                "{}-{}-{}",
+                prefix,
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ));
+            let _ = std::fs::remove_dir_all(&data_dir);
+            std::fs::create_dir_all(&data_dir).expect("create test data dir");
+
+            let previous_data_dir = std::env::var_os("COCKPIT_TOOLS_DATA_DIR");
+            std::env::set_var("COCKPIT_TOOLS_DATA_DIR", &data_dir);
+
+            Self {
+                data_dir,
+                previous_data_dir,
+            }
+        }
+    }
+
+    impl Drop for TestEnvGuard {
+        fn drop(&mut self) {
+            match self.previous_data_dir.as_ref() {
+                Some(value) => std::env::set_var("COCKPIT_TOOLS_DATA_DIR", value),
+                None => std::env::remove_var("COCKPIT_TOOLS_DATA_DIR"),
+            }
+            let _ = std::fs::remove_dir_all(&self.data_dir);
+        }
+    }
+
+    static TEST_ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+    #[test]
+    fn upsert_account_overwrites_existing_same_email_with_new_refresh_token() {
+        let _lock = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _guard = TestEnvGuard::new("antigravity-upsert-dedupe-test");
+
+        let token1 = TokenData::new(
+            "access-token-1".to_string(),
+            "refresh-token-1".to_string(),
+            3600,
+            Some("user@example.com".to_string()),
+            Some("proj-1".to_string()),
+            Some("session-1".to_string()),
+        );
+        let first = upsert_account(
+            "user@example.com".to_string(),
+            Some("Original Name".to_string()),
+            token1,
+        )
+        .expect("first add");
+        assert_eq!(load_account_index().unwrap().accounts.len(), 1);
+
+        // 重新导入同一邮箱：新 refresh_token，无 project_id，无 session_id，邮箱大小写不同
+        let token2 = TokenData::new(
+            "access-token-2".to_string(),
+            "refresh-token-2".to_string(),
+            3600,
+            Some("User@Example.com".to_string()),
+            None,
+            None,
+        );
+        let second =
+            upsert_account("User@Example.com".to_string(), None, token2).expect("second upsert");
+
+        // 验证：ID 必须保持一致，卡片数量不能增加
+        assert_eq!(first.id, build_account_storage_id("user@example.com"));
+        assert_eq!(second.id, first.id);
+        let index = load_account_index().unwrap();
+        assert_eq!(index.accounts.len(), 1);
+
+        // 验证：token 已被更新，老授权被覆盖
+        let loaded = load_account(&first.id).expect("load updated account");
+        assert_eq!(loaded.token.refresh_token, "refresh-token-2");
+        assert_eq!(loaded.token.access_token, "access-token-2");
+        // 验证：老账号原有的 project_id 和 session_id 被继承保留，原有名称保留
+        assert_eq!(loaded.token.project_id.as_deref(), Some("proj-1"));
+        assert_eq!(loaded.token.session_id.as_deref(), Some("session-1"));
+        assert_eq!(loaded.name.as_deref(), Some("Original Name"));
+    }
+
+    #[test]
+    fn upsert_account_preserves_legacy_id_and_all_existing_references() {
+        let _lock = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _guard = TestEnvGuard::new("antigravity-upsert-legacy-uuid-test");
+
+        let legacy_id = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let legacy_email = "legacy.user@example.com".to_string();
+        let token_old = TokenData::new(
+            "old-access-token".to_string(),
+            "old-refresh-token".to_string(),
+            3600,
+            Some(legacy_email.clone()),
+            Some("old-proj".to_string()),
+            Some("old-session".to_string()),
+        );
+
+        // 模拟历史老账号落盘（UUID 命名）
+        let mut old_account = Account::new(legacy_id.clone(), legacy_email.clone(), token_old);
+        old_account.name = Some("Old Name".to_string());
+        old_account.notes = Some("Important Note".to_string());
+        save_account(&old_account).expect("save legacy account");
+
+        let mut index = AccountIndex::new();
+        index.accounts.push(AccountSummary {
+            id: legacy_id.clone(),
+            email: legacy_email.clone(),
+            name: Some("Old Name".to_string()),
+            created_at: old_account.created_at,
+            last_used: old_account.last_used,
+        });
+        index.current_account_id = Some(legacy_id.clone());
+        save_account_index(&index).expect("save legacy index");
+
+        // 模拟分组中关联了该旧 UUID
+        let data_dir = get_data_dir().unwrap();
+        let groups_path = data_dir.join("account_groups.json");
+        let initial_groups = serde_json::json!([
+            {
+                "id": "group-alpha",
+                "name": "Alpha Group",
+                "accountIds": [legacy_id.clone()]
+            }
+        ]);
+        std::fs::write(&groups_path, initial_groups.to_string()).expect("write initial groups");
+
+        // 现在新增导入同邮箱的新账号（邮箱包含空格和大小写混合）
+        let token_new = TokenData::new(
+            "new-access-token".to_string(),
+            "new-refresh-token".to_string(),
+            3600,
+            Some("Legacy.User@Example.com ".to_string()),
+            None,
+            None,
+        );
+        let updated = upsert_account(" Legacy.User@Example.com ".to_string(), None, token_new)
+            .expect("upsert account");
+
+        let expected_canonical_id = build_account_storage_id("legacy.user@example.com");
+        assert_eq!(updated.id, legacy_id);
+        assert_eq!(updated.token.refresh_token, "new-refresh-token");
+        assert_eq!(updated.token.project_id.as_deref(), Some("old-proj"));
+        assert_eq!(updated.notes.as_deref(), Some("Important Note"));
+
+        // 旧文件和 ID 保留，不创建替代 ID，已有引用继续可解析。
+        let accounts_dir = get_accounts_dir().unwrap();
+        assert!(accounts_dir.join(format!("{}.json", legacy_id)).exists());
+        assert!(!accounts_dir
+            .join(format!("{}.json", expected_canonical_id))
+            .exists());
+
+        // 索引保持旧 ID，且不会增加重复账号
+        let loaded_index = load_account_index().unwrap();
+        assert_eq!(loaded_index.accounts.len(), 1);
+        assert_eq!(loaded_index.accounts[0].id, legacy_id);
+        assert_eq!(
+            loaded_index.current_account_id.as_deref(),
+            Some(legacy_id.as_str())
+        );
+
+        // 原分组保持不变，不需要迁移
+        let groups_str = std::fs::read_to_string(&groups_path).expect("read groups");
+        let parsed_groups: serde_json::Value = serde_json::from_str(&groups_str).unwrap();
+        let group_account_ids = parsed_groups[0]["accountIds"].as_array().unwrap();
+        assert_eq!(group_account_ids.len(), 1);
+        assert_eq!(group_account_ids[0].as_str(), Some(legacy_id.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod new_antigravity_model_tests {
+    use super::*;
+    #[test]
+    fn new_default_families_do_not_block_legacy_auto_switch_candidates() {
+        let reported = vec![AutoSwitchGroupQuota {
+            id: "claude_45".into(),
+            name: "Claude".into(),
+            percentage: 10,
+        }];
+        let groups = reported_auto_switch_groups(
+            AUTO_SWITCH_SCOPE_ANY_GROUP,
+            default_auto_switch_groups(),
+            &reported,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, "claude_45");
+        let explicit = reported_auto_switch_groups(
+            AUTO_SWITCH_SCOPE_SELECTED_GROUPS,
+            default_auto_switch_groups(),
+            &reported,
+        );
+        assert!(explicit.iter().any(|group| group.id == "g4_argon"));
+    }
+
+    #[test]
+    fn new_groups_keep_legacy_models_and_separate_new_versions() {
+        let groups = default_auto_switch_groups();
+        assert!(groups.iter().any(|group| group.id == "g3_pro"));
+        let argon = groups.iter().find(|group| group.id == "g4_argon").unwrap();
+        assert!(argon.models.contains(&"gemini-4-argon-high".into()));
+        assert_eq!(
+            normalize_model_for_group_match("gemini-4-argon-high"),
+            "gemini-4-argon"
+        );
+        assert_ne!(
+            normalize_model_for_group_match("claude-sonnet-4-6"),
+            normalize_model_for_group_match("claude-sonnet-5-5-high")
+        );
+        assert_ne!(
+            normalize_model_for_group_match("gemini-3-flash"),
+            normalize_model_for_group_match("gemini-3.8-flash-high")
+        );
+    }
 }

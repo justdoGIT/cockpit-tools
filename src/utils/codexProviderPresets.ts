@@ -1,8 +1,18 @@
+import defaultModels from "./codexProviderDefaultModels.json";
+import opencodeGoCatalog from "./opencodeGoCatalog.json";
+export { opencodeGoCatalog };
+
 export interface CodexApiProviderPreset {
   id: string;
   name: string;
   baseUrls: string[];
   modelCatalog?: string[];
+  /**
+   * Models from `modelCatalog` that accept image input. Models that are left out
+   * fall back to the provider-level default, so a preset can describe a catalog
+   * that mixes vision-capable and text-only models.
+   */
+  visionModelCatalog?: string[];
   website?: string;
   apiKeyUrl?: string;
   isOfficial?: boolean;
@@ -14,6 +24,34 @@ export const CODEX_API_PROVIDER_CUSTOM_ID = "custom";
 export const COCKPIT_API_PROVIDER_ID = "cockpit_api";
 export const COCKPIT_API_PROVIDER_NAME = "Cockpit Api";
 export const COCKPIT_API_BASE_URL = "https://chongcodex.cn/v1";
+export const DEEPSEEK_API_PROVIDER_ID = "deepseek";
+export const DEEPSEEK_API_BASE_URL = "https://api.deepseek.com";
+export const DEEPSEEK_CODEX_MODEL_CATALOG = [
+  "deepseek-flash",
+  "deepseek-v4-pro",
+] as const;
+/**
+ * DeepSeek's image-capable models. `deepseek-v4-flash` 与官方新名 `deepseek-flash`
+ * 都由 V4.1 Flash 承接并支持识图，Pro 仍为纯文本。用户可在模型列表里逐条开关。
+ */
+export const DEEPSEEK_CODEX_VISION_MODEL_CATALOG = [
+  "deepseek-flash",
+  "deepseek-v4-flash",
+  "deepseek-v4-flash-vision-exp",
+] as const;
+export const OPENCODE_GO_API_PROVIDER_ID = "opencode_go";
+export const OPENCODE_GO_API_BASE_URL = opencodeGoCatalog.baseUrls[0];
+export const MINIMAX_API_PROVIDER_ID = "minimax";
+export const MINIMAX_EN_API_PROVIDER_ID = "minimax_en";
+export const MINIMAX_CODEX_MODEL_CATALOG = [
+  "MiniMax-M3",
+  "MiniMax-M3.1-Flash",
+  "MiniMax-M2.7",
+] as const;
+/** MiniMax models whose published input modalities include images. */
+export const MINIMAX_CODEX_VISION_MODEL_CATALOG = ["MiniMax-M3", "MiniMax-M3.1-Flash"] as const;
+/** OpenCode Go models exposed through its OpenAI-compatible chat completions API. */
+export const OPENCODE_GO_CODEX_MODEL_CATALOG = [...opencodeGoCatalog.legacyModels, opencodeGoCatalog.imageModel];
 
 const COCKPIT_API_HIDDEN_BASE_URLS = [COCKPIT_API_BASE_URL] as const;
 
@@ -33,6 +71,15 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     website:
       "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/codex",
     isOfficial: true,
+  },
+  {
+    id: DEEPSEEK_API_PROVIDER_ID,
+    name: "DeepSeek",
+    baseUrls: [DEEPSEEK_API_BASE_URL, `${DEEPSEEK_API_BASE_URL}/v1`],
+    modelCatalog: [...DEEPSEEK_CODEX_MODEL_CATALOG],
+    visionModelCatalog: [...DEEPSEEK_CODEX_VISION_MODEL_CATALOG],
+    website: "https://platform.deepseek.com/",
+    apiKeyUrl: "https://platform.deepseek.com/api_keys",
   },
   {
     id: "packycode",
@@ -136,8 +183,34 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     id: "openrouter",
     name: "OpenRouter",
     baseUrls: ["https://openrouter.ai/api/v1"],
+    modelCatalog: ["openai/gpt-5.6-luna-pro"],
     website: "https://openrouter.ai/",
     apiKeyUrl: "https://openrouter.ai/keys",
+  },
+  {
+    id: OPENCODE_GO_API_PROVIDER_ID,
+    name: "OpenCode Go",
+    baseUrls: [...opencodeGoCatalog.baseUrls],
+    modelCatalog: [...OPENCODE_GO_CODEX_MODEL_CATALOG],
+    visionModelCatalog: [opencodeGoCatalog.imageModel],
+    website: "https://opencode.ai/",
+    apiKeyUrl: "https://opencode.ai/auth",
+  },
+  {
+    id: "uberllm",
+    name: "UberLLM",
+    baseUrls: ["https://api.uberllm.dev/v1"],
+    modelCatalog: ["deepseek/deepseek-v4.1-flash", "z-ai/glm-5.3", "anthropic/claude-sonnet-4.6"],
+    website: "https://uberllm.dev/",
+    apiKeyUrl: "https://uberllm.dev/signup",
+  },
+  {
+    id: "runcrate",
+    name: "Runcrate",
+    baseUrls: ["https://api.runcrate.ai/v1"],
+    modelCatalog: ["zai-org/GLM-5.3", "deepseek-ai/DeepSeek-V4.1-Flash"],
+    website: "https://www.runcrate.ai/",
+    apiKeyUrl: "https://www.runcrate.ai/dashboard/api-keys",
   },
   {
     id: "aicodemirror",
@@ -165,14 +238,6 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     website: "https://www.crazyrouter.com",
     apiKeyUrl: "https://www.crazyrouter.com/register?aff=OZcm&ref=cc-switch",
     isPartner: true,
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    baseUrls: ["https://api.deepseek.com", "https://api.deepseek.com/v1"],
-    modelCatalog: ["deepseek-v4-pro", "deepseek-v4-flash"],
-    website: "https://platform.deepseek.com/",
-    apiKeyUrl: "https://platform.deepseek.com/api_keys",
   },
   {
     id: "moonshot",
@@ -213,6 +278,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     id: "volcengine_agentplan",
     name: "火山Agentplan",
     baseUrls: ["https://ark.cn-beijing.volces.com/api/coding/v3"],
+    modelCatalog: defaultModels["https://ark.cn-beijing.volces.com/api/coding/v3"],
     website: "https://www.volcengine.com/product/ark",
   },
   {
@@ -225,6 +291,7 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     id: "doubaoseed",
     name: "DouBaoSeed",
     baseUrls: ["https://ark.cn-beijing.volces.com/api/v3"],
+    modelCatalog: defaultModels["https://ark.cn-beijing.volces.com/api/v3"],
     website: "https://www.volcengine.com/product/ark",
   },
   {
@@ -264,16 +331,20 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     website: "https://longcat.chat/",
   },
   {
-    id: "minimax",
+    id: MINIMAX_API_PROVIDER_ID,
     name: "MiniMax",
     baseUrls: ["https://api.minimaxi.com/v1"],
-    website: "https://www.minimaxi.com/",
+    modelCatalog: [...MINIMAX_CODEX_MODEL_CATALOG],
+    visionModelCatalog: [...MINIMAX_CODEX_VISION_MODEL_CATALOG],
+    website: "https://platform.minimaxi.com/docs",
   },
   {
-    id: "minimax_en",
+    id: MINIMAX_EN_API_PROVIDER_ID,
     name: "MiniMax en",
     baseUrls: ["https://api.minimax.io/v1"],
-    website: "https://www.minimax.io/",
+    modelCatalog: [...MINIMAX_CODEX_MODEL_CATALOG],
+    visionModelCatalog: [...MINIMAX_CODEX_VISION_MODEL_CATALOG],
+    website: "https://platform.minimax.io/docs",
   },
   {
     id: "bailing",
@@ -285,12 +356,14 @@ export const CODEX_API_PROVIDER_PRESETS: readonly CodexApiProviderPreset[] = [
     id: "xiaomi_mimo",
     name: "Xiaomi MiMo",
     baseUrls: ["https://api.xiaomimimo.com/v1"],
+    modelCatalog: defaultModels["https://api.xiaomimimo.com/v1"],
     website: "https://www.xiaomimimo.com/",
   },
   {
     id: "xiaomi_mimo_token_plan",
     name: "Xiaomi MiMo Token Plan",
     baseUrls: ["https://token-plan-cn.xiaomimimo.com/v1"],
+    modelCatalog: defaultModels["https://token-plan-cn.xiaomimimo.com/v1"],
     website: "https://www.xiaomimimo.com/",
   },
   {
@@ -394,4 +467,19 @@ export function resolveCodexApiProviderPresetId(rawBaseUrl: string): string {
     findCodexApiProviderPresetByBaseUrl(rawBaseUrl)?.id ??
     CODEX_API_PROVIDER_CUSTOM_ID
   );
+}
+
+/**
+ * Per-model image input support declared by a preset, keyed the same way the
+ * stored provider and account capability maps are keyed (trimmed, lowercased).
+ */
+export function codexApiProviderPresetVisionSupport(
+  preset: CodexApiProviderPreset | null | undefined,
+): Record<string, boolean> {
+  const support: Record<string, boolean> = {};
+  (preset?.visionModelCatalog ?? []).forEach((model) => {
+    const key = model.trim().toLowerCase();
+    if (key) support[key] = true;
+  });
+  return support;
 }

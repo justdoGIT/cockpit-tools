@@ -1,35 +1,57 @@
+import { reloadSideNavPreferences } from './stores/useSideNavLayoutStore';
+import { reloadUiTimeDisplayPreference } from './stores/useUiConfigStore';
+import { installTauriEventCleanupGuard, subscribeTauriEvent } from "./utils/tauriEventListener";
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
 import { initI18n } from "./i18n";
 import { AppRuntimeGuard } from "./components/AppRuntimeGuard";
+import { CodexProxyEngineProvider } from "./components/codex/CodexProxyEngineProvider";
 import {
   captureError,
   initErrorReporter,
   markFrontendReady,
   recordFrontendStage,
 } from "./utils/errorReporter";
+import { setBootSplashStage } from "./utils/bootSplash";
+import { applyPlatformLayoutSnapshot, hydrateUiPreferences } from "./utils/uiPreferences";
+import { applyDurableUiSnapshot, hydrateDurableUiSettings } from "./utils/durableUiSettings";
 
 initErrorReporter();
 recordFrontendStage("script_loaded");
+setBootSplashStage("script_loaded");
 void initI18n();
 
-const rootElement = document.getElementById("root");
-if (!rootElement) {
-  const error = new Error("Root element not found");
-  captureError(error, { source: "frontend_boot", phase: "root_lookup" });
-  throw error;
-}
+void (async () => {
+  const { default: App } = await import("./App");
 
-recordFrontendStage("react_mount_start");
-ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <AppRuntimeGuard>
-      <App />
-    </AppRuntimeGuard>
-  </React.StrictMode>,
-);
+  const rootElement = document.getElementById("root");
+  if (!rootElement) {
+    const error = new Error("Root element not found");
+    captureError(error, { source: "frontend_boot", phase: "root_lookup" });
+    throw error;
+  }
 
-window.requestAnimationFrame(() => {
-  markFrontendReady("react_mounted");
-});
+  recordFrontendStage("react_mount_start");
+  installTauriEventCleanupGuard();
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <AppRuntimeGuard>
+        <CodexProxyEngineProvider><App /></CodexProxyEngineProvider>
+      </AppRuntimeGuard>
+    </React.StrictMode>,
+  );
+
+  window.requestAnimationFrame(() => {
+    setBootSplashStage("react_mounted");
+    markFrontendReady("react_mounted");
+  });
+  // Durable preferences hydrate in the background; never block the first render.
+  void hydrateUiPreferences();
+  subscribeTauriEvent<Parameters<typeof applyDurableUiSnapshot>[0]>('ui-preferences:updated', event => {
+    applyDurableUiSnapshot(event.payload);
+    applyPlatformLayoutSnapshot(event.payload);
+  });
+  window.addEventListener('agtools:ui-time-display-changed', reloadUiTimeDisplayPreference);
+  window.addEventListener('agtools:side-nav-preferences-changed', reloadSideNavPreferences);
+  void hydrateDurableUiSettings().catch(error => console.warn('[UI preferences]', error));
+})();
